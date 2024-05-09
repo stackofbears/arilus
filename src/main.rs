@@ -1,6 +1,3 @@
-// TODO
-//   make refcounts atomic; read https://doc.rust-lang.org/nomicon/atomics.html, links at https://stackoverflow.com/questions/30407121/which-stdsyncatomicordering-to-use
-
 // Grammar
 // expr:
 //  small (verb small?)+ | name ":" expr
@@ -25,6 +22,7 @@ mod compile;
 mod lex;
 mod parse;
 mod ptr_range;
+mod util;
 mod vm;
 
 use std::fs;
@@ -49,7 +47,10 @@ fn go(text: &str) -> Result<(), String> {
     dbg!(&exprs);
     let code = compile::compile(&exprs)?;
     dbg!(&code);
+    println!();
+
     let mut mem = vm::Mem::new(512);
-    let status = mem.execute(&code)?;  // TODO use exit status
+    mem.set_code(&code);
+    let status = mem.execute(0)?;  // TODO use exit status
     Ok(())
 }

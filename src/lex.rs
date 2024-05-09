@@ -3,6 +3,8 @@ use std::{
     fmt::{Display, Formatter, Error},
 };
 
+// TODO unused but possible tokens:
+//   ## (length of length / length of take / train:take of length (possible) / train:take of take (possible but unlikely (pad w/0)))
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     // TODO floats, DoubleQuestion (??), BangEqual (!=)
@@ -71,9 +73,11 @@ pub enum PrimAdverb {
     SingleQuote,  // '
     Tilde,  // ~
     Backslash, // \
+    // TODO converge/do-times/do-while
 }
 
 // TODO better error than String
+// TODO comments
 pub fn tokenize(mut text: &str) -> Result<Vec<Token>, String> {
     use Token::*;
     let literal_symbols = literal_symbol_tokens();

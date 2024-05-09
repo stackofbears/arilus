@@ -1,5 +1,5 @@
+use crate::lex;
 use crate::lex::*;
-use crate::lex::PrimVerb;
 
 // TODO better error type than string
 // Ok(Some(_)): Successfuly parsed an A
@@ -47,6 +47,7 @@ pub enum Verb {
 
 #[derive(Debug, Clone)]
 pub enum SmallNoun {
+    PrimNoun(lex::PrimNoun),
     LowerName(String),
     Block(Vec<Expr>),  // parenthesized
     IntLiteral(i64),
@@ -57,7 +58,7 @@ pub enum SmallNoun {
 #[derive(Debug, Clone)]
 pub enum SmallVerb {
     UpperName(String),
-    PrimVerb(PrimVerb),
+    PrimVerb(lex::PrimVerb),
     // TODO explicit args
     Lambda(Vec<Expr>),
     Adverb(PrimAdverb, Box<SmallExpr>),
@@ -133,7 +134,12 @@ impl Parser {
     }
 
     fn parse_small_noun(&mut self) -> Parsed<SmallNoun> {
+        // TODO prim nouns
         let small_noun = match self.peek() {
+            Some(&Token::PrimNoun(prim)) => {
+                self.skip();
+                PrimNoun(prim)
+            }
             Some(Token::LowerName(name)) => {
                 let noun = LowerName(name.clone());
                 self.skip();

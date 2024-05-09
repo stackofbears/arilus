@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::bytecode::*;
-use crate::lex::*;
+use crate::lex::{self, *};
 use crate::parse::*;
 
 // TODO better error than string
@@ -24,6 +24,7 @@ struct Compiler {
 }
 
 // TODO be able to compile globals for repl
+// TODO adverb nounification (') (for ultimate adverb verbification)
 impl Compiler {
     fn new() -> Self {
         let mut globals = HashMap::new();
@@ -214,6 +215,12 @@ impl Compiler {
     fn compile_small_noun(&mut self, small_noun: &SmallNoun) -> Result<(), String> {
         use SmallNoun::*;
         match small_noun {
+            PrimNoun(prim) => match prim {
+                lex::PrimNoun::Print => {
+                    self.code.push(Instr::PushPrimVerb { prim: PrimVerb::Print });
+                    self.code.push(Instr::MoveVerbToSubject1);
+                }
+            }
             LowerName(name) => {
                 dbg!(&"Fetching name ", &name);
                 let src = self.fetch_var(name)?;

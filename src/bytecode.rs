@@ -9,6 +9,7 @@ use crate::lex::*;
 // enum, read parameters afterward)
 //
 // TODO optimize PushSubject1+PopToSubject2 -> LoadSubject2
+// TODO instead of subject2, maybe we just have call1 and call2 instructions (less shuffling around)
 #[derive(Debug)]
 pub enum Instr {
     Nop,
@@ -34,9 +35,6 @@ pub enum Instr {
     MakeString { num_bytes: usize }, // Followed by num_bytes/8 LiteralBytes.
     LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal
     
-    // Push an empty array onto subject1 with capacity for at elast num_elements elements
-    MakeArray { num_elems: usize },
-
     // Collects the top `num_elems` on the subject1 stack into an array, which is pushed to subject1.
     CollectToArray { num_elems: usize },
 }
