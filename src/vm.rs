@@ -451,10 +451,25 @@ impl<'a> Mem<'a> {
                     )?),
                 }
             }
+            Backtick => match maybe_y {
+                None => match iter_val(&x) {
+                    None => self.call_val(operand, x, None)?,
+                    Some(iter) => RcVal::new(collect_list(
+                        iter.map(|val| self.call_val(operand.clone(), val, None))
+                    )?),
+                }
+                Some(y) => match iter_val(&y) {
+                    None => self.call_val(operand.clone(), x, Some(y))?,
+                    Some(iter) => RcVal::new(collect_list(
+                        iter.map(|y_val| self.call_val(operand.clone(), x.clone(), Some(y_val)))
+                    )?),
+                }
+            }
             Tilde => match maybe_y {
                 None => self.call_val(operand, x.clone(), Some(x))?,
                 Some(y) => self.call_val(operand, y, Some(x))?,
             }
+            Backslash => self.fold_val(operand, x, maybe_y)?,
             _ => todo!("Implement adverb {adverb}"),
         };
         Ok(result)
@@ -472,10 +487,6 @@ impl<'a> Mem<'a> {
         }
     }
 
-    fn call_prim_adverb_dyad(&mut self, adverb: PrimAdverb, operand_heap_slot: usize, x: Val, y: Val) -> Result<Val, String> {
-        todo!()
-    }
-
     fn call_prim_verb(&mut self, prim: PrimVerb) -> Result<(), String> {
         let x = self.subject1.pop().unwrap();  // TODO drop val?
         let ret = if let Some(y) = self.subject2.take() {  // TODO drop val?
@@ -489,10 +500,12 @@ impl<'a> Mem<'a> {
 
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
-        match v {
-            Print => { self.print_val(&x)?; Ok(x) }
+        let result = match v {
+            Print => { self.print_val(&x)?; x }
+            Hash => RcVal::new(Val::Int(x.len().unwrap_or(1) as i64)),
             _ => todo!("{x:?} {v:?}")
-        }
+        };
+        Ok(result)
     }
 
     fn call_prim_dyad(&mut self, v: PrimVerb, x: RcVal, y: RcVal) -> Result<RcVal, String> {
@@ -502,7 +515,11 @@ impl<'a> Mem<'a> {
             Minus => subtract_vals(&*x, &*y),
             Asterisk => multiply_vals(&*x, &*y),
             Slash => integer_divide_vals(&*x, &*y),
-            Divide => subtract_vals(&*x, &*y),
+            Hash => take(x, &*y),
+            Comma => append(x, y),
+            Equals => compare(EqOp{}, &x, &y),
+            GreaterThan => compare(GtOp{}, &x, &y),
+            LessThan => compare(LtOp{}, &x, &y),
             Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
         }
@@ -534,23 +551,24 @@ impl<'a> Mem<'a> {
         
         Ok(())
     }
-
-    // Slices and lists index normally, and atoms cycle.
-    // fn get_nth_item(&self, x: &Val, i: usize) -> Option<&Val> {
-    //     use Val::*;
-    //     match x {
-    //         Int(_) |
-    //         Char(_) |
-    //         PrimFunc(_) |
-    //         ExplicitFunc {..} |
-    //         AdverbDerivedFunc {..} => Some(x),
-    //         List(list) => index_list_as_val(list.deref, i),
-    //         Slice(handle) => irrefutable!(&self.heap[handle.heap_slot],
-    //                                       List(list) => index_list_as_val(list.deref(), handle.start_offset + i)),
-    //     }
-    // }
-
     
+
+    fn fold_val(&mut self, f: RcVal, x: RcVal, maybe_y: Option<RcVal>) -> Result<RcVal, String> {
+        let (mut seed, start) = match maybe_y {
+            Some(y) => (y, 0),
+            None => match index_or_cycle_val(&x, 0) {
+                Some(first) => (first, 1),
+                None => return Err(format!("Error: fold with no input")),
+            }
+        };
+
+        for i in start..x.len().unwrap_or(1) {
+            seed = self.call_val(f.clone(), seed, index_or_cycle_val(&x, i))?;
+        }
+
+        Ok(seed)
+    }
+
     // TODO
     // fn index(&mut self, x: RcVal, y: RcVal) -> Result<RcVal, String> {
     //     match x {
@@ -560,23 +578,7 @@ impl<'a> Mem<'a> {
     // }
 }
 
-// TODO
-// fn as_vals<'a>(list: &'a List) -> impl Iterator<Item=Cow<'a, Val>> {
-//     match list {
-//         List::I64s(x) => x.iter().map(|i| Cow::Owned(Val::Int(*i))),
-//         List::U8s(x) => x.iter().map(|ch| Cow::Owned(Val::Char(*ch))),
-//         List::Vals(x) => x.iter().map(|val| Cow::Borrowed(val)),
-//     }
-// }
-
-// fn index_list_as_val(list: &List, i: usize) -> Option<&Val> {
-//     match list {
-//         List::I64s(ints) => ints.get(i).copied().map(Val::Int),
-//         List::U8s(chars) => Val::Char(chars.get(i)?),
-//         List::Vals(vals) => vals.get(i),
-//     }        
-// }
-
+#[derive(Clone)]
 struct ValIter {
     x: RcVal,
     i: usize,
@@ -816,6 +818,93 @@ fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
                 .collect::<Result<_, _>>()?
         ),
         _ => return Err(format!("Error in `*': Can't multiply {x:?} and {y:?}")),
+    };
+    Ok(RcVal::new(result))
+}
+
+fn take(x: RcVal, y: &Val) -> Result<RcVal, String> {
+    let count = match y {
+        &Val::Int(i) => if i >= 0 { i as usize } else { todo!("implement # with negative y") },
+        _ => return Err(format!("Error in `#': Invalid right argument {y:?}")),
+    };
+    
+    let result = match x.as_val() {
+        Val::I64s(ints) => Val::I64s(ints.iter().copied().cycle().take(count).collect()),
+        Val::U8s(chars) => Val::U8s(chars.iter().copied().cycle().take(count).collect()),
+        Val::Vals(vals) => Val::Vals(vals.iter().cloned().cycle().take(count).collect()),
+        Val::Int(int) => {
+            let mut ints = vec![];
+            ints.resize(count, *int);
+            Val::I64s(ints)
+        }
+        Val::Char(c) => {
+            let mut chars = vec![];
+            chars.resize(count, *c);
+            Val::U8s(chars)
+        }
+        other_atom => {
+            let mut vals = vec![];
+            vals.resize(count, x.clone());
+            Val::Vals(vals)
+        }
+    };
+    Ok(RcVal::new(result))
+}
+
+fn append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
+    use std::iter::once;
+    let val = match (x.as_val(), y.as_val()) {
+        (Val::Char(x), Val::Char(y)) => Val::U8s(vec![*x, *y]),
+        (Val::Char(x), Val::U8s(y)) => Val::U8s(once(*x).chain(y.iter().copied()).collect()),
+        (Val::U8s(x), Val::Char(y)) => Val::U8s(x.iter().copied().chain(once(*y)).collect()),
+        (Val::U8s(x), Val::U8s(y)) => Val::U8s(x.iter().chain(y.iter()).copied().collect()),
+
+        (Val::Int(x), Val::Int(y)) => Val::I64s(vec![*x, *y]),
+        (Val::Int(x), Val::I64s(y)) => Val::I64s(once(*x).chain(y.iter().copied()).collect()),
+        (Val::I64s(x), Val::Int(y)) => Val::I64s(x.iter().copied().chain(once(*y)).collect()),
+        (Val::I64s(x), Val::I64s(y)) => Val::I64s(x.iter().chain(y.iter()).copied().collect()),
+
+        (Val::Vals(x), Val::Vals(y)) => Val::Vals(x.iter().chain(y.iter()).cloned().collect()),
+        (Val::Vals(x), _) => Val::Vals(x.iter().cloned().chain(once(y)).collect()),
+        (_, Val::Vals(y)) => Val::Vals(once(x).chain(y.iter().cloned()).collect()),
+        (_, _) => Val::Vals(vec![x, y]),
+    };
+    Ok(RcVal::new(val))
+}
+
+trait AtomOp2: Copy {
+    fn on_ints(self, x: i64, y: i64) -> Val;
+    fn on_chars(self, x: u8, y: u8) -> Val;
+}
+
+#[derive(Clone, Copy)] struct EqOp {}
+impl AtomOp2 for EqOp {
+    fn on_ints(self, x: i64, y: i64) -> Val { Val::Int((x == y) as i64) }
+    fn on_chars(self, x: u8, y: u8)  -> Val { Val::Int((x == y) as i64) }
+}
+
+#[derive(Clone, Copy)] struct GtOp {}
+impl AtomOp2 for GtOp {
+    fn on_ints(self, x: i64, y: i64) -> Val { Val::Int((x > y) as i64) }
+    fn on_chars(self, x: u8, y: u8)  -> Val { Val::Int((x > y) as i64) }
+}
+
+#[derive(Clone, Copy)] struct LtOp {}
+impl AtomOp2 for LtOp {
+    fn on_ints(self, x: i64, y: i64) -> Val { Val::Int((x < y) as i64) }
+    fn on_chars(self, x: u8, y: u8)  -> Val { Val::Int((x < y) as i64) }
+}
+
+fn compare<Op: AtomOp2>(op: Op, x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+    use Val::*;
+    let result = match zip_vals(&x, &y) {
+        None => match (x.as_val(), y.as_val()) {
+            (Int(x), Int(y)) => op.on_ints(*x, *y),
+            (Char(x), Char(y)) => op.on_chars(*x, *y),
+            (x, y) => return Err(format!("Unable to compare {x:?} and {y:?}")),
+        }
+        // TODO we know this will consist of ints already
+        Some(iter) => collect_list(iter?.map(|(x, y)| compare(op, &x, &y)))?
     };
     Ok(RcVal::new(result))
 }

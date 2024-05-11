@@ -19,7 +19,6 @@ pub enum Token {
     RBrace,  // }
     Colon,  // :
     Semicolon, // ;
-    Backtick,  // `
 
     PrimNoun(PrimNoun),
     PrimVerb(PrimVerb),
@@ -72,6 +71,7 @@ pub enum PrimVerb {
 pub enum PrimAdverb {
     Dot,  // .
     SingleQuote,  // '
+    Backtick,  // `
     Tilde,  // ~
     Backslash, // \
     // TODO converge/do-times/do-while
@@ -163,7 +163,6 @@ impl Display for Token {
             RBrace => f.write_str("}"),
             Colon => f.write_str(":"),
             Semicolon => f.write_str(";"),
-            Backtick => f.write_str("`"),
             UpperName(name) => f.write_str(name),
             LowerName(name) => f.write_str(name),
             PrimNoun(prim) => Display::fmt(prim, f),
@@ -224,6 +223,7 @@ impl Display for PrimAdverb {
         use PrimAdverb::*;
         let s: &str = match self {
             SingleQuote => "'",
+            Backtick => "`",
             Dot => ".",
             Tilde => "~",
             Backslash => "\\",
@@ -241,7 +241,6 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
     use crate::lex::PrimVerb::*;
     use crate::lex::PrimAdverb::*;
     let mut ret: Vec<_> = [
-        Backtick,
         Colon,
         LBrace,
         LBracket,
@@ -272,6 +271,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(Question),
         PrimVerb(Slash),
 
+        PrimAdverb(Backtick),
         PrimAdverb(Backslash),
         PrimAdverb(Dot),
         PrimAdverb(SingleQuote),
