@@ -121,7 +121,10 @@ impl Parser {
                 match small_noun {
                     LowerName(name) => match self.parse_noun()? {
                         Some(rhs) => LowerAssign(name, Box::new(rhs)),
-                        None => return Err(format!("Unexpected end of input; expected RHS of assignment"))
+                        None => return match self.peek() {
+                            Some(bad) => Err(format!("Unexpected `{bad}'; expected RHS of noun assignment")),
+                            None => Err(format!("Unexpected end of input; expected RHS of noun assignment")),
+                        },
                     }
                     _ => return Err(format!("Invalid noun assignment target: {small_noun:?}")),
                 }
@@ -219,7 +222,10 @@ impl Parser {
                 match small_verb {
                     UpperName(name) => match self.parse_verb()? {
                         Some(rhs) => UpperAssign(name, Box::new(rhs)),
-                        None => return Err(format!("Unexpected end of input; expected RHS of assignment")),
+                        None => return match self.peek() {
+                            Some(bad) => Err(format!("Unexpected `{bad}'; expected RHS of verb assignment")),
+                            None => Err(format!("Unexpected end of input; expected RHS of verb assignment")),
+                        },
                     }
                     _ => return Err(format!("Invalid verb assignment target: {small_verb:?}")),
                 }
@@ -260,7 +266,10 @@ impl Parser {
                 self.skip();
                 match self.parse_small_expr()? {
                     Some(adverb_operand) => Adverb(prim_adverb, Box::new(adverb_operand)),
-                    None => return Err(format!("Unexpected end of input; expected operand for adverb `{prim_adverb}'")),
+                    None => return match self.peek() {
+                        Some(bad) => Err(format!("Unexpected `{bad}'; expected operand for adverb `{prim_adverb}'")),
+                        None => Err(format!("Unexpected end of input; expected operand for adverb `{prim_adverb}'")),
+                    }
                 }
             }
             _ => return Ok(None),

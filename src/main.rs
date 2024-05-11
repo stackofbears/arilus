@@ -49,7 +49,7 @@ fn go(text: &str) -> Result<(), String> {
     dbg!(&code);
     println!();
 
-    let mut mem = vm::Mem::new(512);
+    let mut mem = vm::Mem::new();
     mem.set_code(&code);
     let status = mem.execute(0)?;  // TODO use exit status
     Ok(())

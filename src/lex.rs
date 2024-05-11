@@ -46,6 +46,7 @@ pub enum PrimVerb {
     Comma,  // ,
     Plus,   // +
     Minus,  // -
+    Asterisk,  // *
     Hash,   // #
     Slash,  // /
     Caret,  // ^
@@ -195,6 +196,7 @@ impl Display for PrimVerb {
             Comma => ",",
             Plus => "+",
             Minus => "-",
+            Asterisk => "*",
             Hash => "#",
             Slash => "/",
             Caret => "^",
@@ -251,6 +253,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         Semicolon,
 
         PrimVerb(Ampersand),
+        PrimVerb(Asterisk),
         PrimVerb(At),
         PrimVerb(Bang),
         PrimVerb(Caret),
