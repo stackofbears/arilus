@@ -47,7 +47,7 @@ impl Compiler {
         for expr in &exprs[0..exprs.len()-1] {
             self.compile_expr(expr)?;
             if matches!(expr, Expr::Verb(_)) {
-                self.code.push(Instr::PopVerb);
+                self.code.push(Instr::PopVerb);  // TODO is this right?
             } else {
                 self.code.push(Instr::Pop);
             }
@@ -213,6 +213,8 @@ impl Compiler {
     }
 
     fn compile_small_noun(&mut self, small_noun: &SmallNoun) -> Result<(), String> {
+        // TODO currently V N pushes N but doesn't pop it unless another
+        // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
         match small_noun {
             PrimNoun(prim) => match prim {
@@ -222,13 +224,16 @@ impl Compiler {
                 }
             }
             LowerName(name) => {
-                dbg!(&"Fetching name ", &name);
                 let src = self.fetch_var(name)?;
-                dbg!(&src);
                 self.code.push(Instr::PushVar { src });
             }
             Block(exprs) => self.compile_block(exprs)?,
             IntLiteral(int) => self.code.push(Instr::PushLiteralInteger(*int)),
+            CharLiteral(byte) => {
+                let mut bytes = [0; 8];
+                bytes[0] = *byte;
+                self.code.push(Instr::LiteralBytes { bytes });
+            }
             StringLiteral(s) => {
                 self.code.push(Instr::MakeString { num_bytes: s.len() });
                 for i in (0..s.len()).step_by(8) {

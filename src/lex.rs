@@ -19,6 +19,7 @@ pub enum Token {
     RBrace,  // }
     Colon,  // :
     Semicolon, // ;
+    Newline,  // \n
 
     PrimNoun(PrimNoun),
     PrimVerb(PrimVerb),
@@ -85,7 +86,7 @@ pub fn tokenize(mut text: &str) -> Result<Vec<Token>, String> {
     let literal_identifiers = literal_identifier_tokens();
     let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
     'next_token: loop {
-        text = text.trim_start_matches(|c: char| c.is_whitespace());
+        text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
         if text.is_empty() { break }
 
         // Literal tokens/keywords
@@ -163,7 +164,13 @@ impl Display for Token {
             RBrace => f.write_str("}"),
             Colon => f.write_str(":"),
             Semicolon => f.write_str(";"),
-            UpperName(name) => f.write_str(name),
+            Newline => f.write_str("\n"),
+            UpperName(name) => {
+                for c in char::from_u32(name.as_bytes()[0] as u32).unwrap().to_uppercase() {
+                    std::fmt::Write::write_char(f, c)?;
+                }
+                f.write_str(&name[1..])
+            }
             LowerName(name) => f.write_str(name),
             PrimNoun(prim) => Display::fmt(prim, f),
             PrimVerb(prim) => Display::fmt(prim, f),
@@ -250,6 +257,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         RParen,
         RightArrow,
         Semicolon,
+        Newline,
 
         PrimVerb(Ampersand),
         PrimVerb(Asterisk),

@@ -368,8 +368,26 @@ impl<'a> Mem<'a> {
                     let operand = self.verb.pop().unwrap();
                     self.verb.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
                 }
-                MakeString { num_bytes } => todo!("string literals"),
-                LiteralBytes { bytes } => todo!("char literals"),                
+                MakeString { num_bytes } => {
+                    ip += 1;
+                    let mut s = Vec::with_capacity(num_bytes);
+                    for i in (0..num_bytes).step_by(8) {
+                        match &self.code[ip] {
+                            LiteralBytes { bytes } => {
+                                ip += 1;
+                                for j in i..(i+8).min(num_bytes) {
+                                    s.push(bytes[j-i]);
+                                }
+                            }
+                            bad => unreachable!("Malformed code at ip {ip}: expected LiteralBytes after MakeString, but found {bad:?}"),
+                        }
+                    }
+                    self.subject1.push(RcVal::new(Val::U8s(s)));
+                }
+                LiteralBytes { bytes } => {
+                    ip += 1;
+                    self.subject1.push(RcVal::new(Val::Char(bytes[0])));
+                }
                 CollectToArray { num_elems } => {
                     ip += 1;
                     let mut all_ints = true;
@@ -403,7 +421,7 @@ impl<'a> Mem<'a> {
     }
 
     fn call_val(&mut self, val: RcVal, x: RcVal, y: Option<RcVal>) -> Result<RcVal, String> {
-        let result = match &*val {
+        let result = match val.as_val() {
             &Val::ExplicitFunc { ref closure_env, code_index } => {
                 let frame = StackFrame {
                     closure_env: closure_env.clone(),
@@ -503,6 +521,9 @@ impl<'a> Mem<'a> {
         let result = match v {
             Print => { self.print_val(&x)?; x }
             Hash => RcVal::new(Val::Int(x.len().unwrap_or(1) as i64)),
+            Slash => RcVal::new(iota(&*x)),
+            Pipe => reverse(&x),
+            Comma => ravel(&x),
             _ => todo!("{x:?} {v:?}")
         };
         Ok(result)
@@ -515,11 +536,13 @@ impl<'a> Mem<'a> {
             Minus => subtract_vals(&*x, &*y),
             Asterisk => multiply_vals(&*x, &*y),
             Slash => integer_divide_vals(&*x, &*y),
+            Caret => exponentiate_vals(&*x, &*y),
             Hash => take(x, &*y),
             Comma => append(x, y),
             Equals => compare(EqOp{}, &x, &y),
             GreaterThan => compare(GtOp{}, &x, &y),
             LessThan => compare(LtOp{}, &x, &y),
+            At => self.index_val(&x, &y),
             Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
         }
@@ -529,7 +552,7 @@ impl<'a> Mem<'a> {
     fn print_val(&self, x: &Val) -> Result<(), String> {
         match x {
             Val::Int(i) => println!("{i}"),
-            Val::Char(c) => println!("{c}"),
+            Val::Char(c) => println!("{}", char::from_u32(*c as u32).unwrap()),
             Val::PrimFunc(prim) => println!("{prim}"),
             Val::I64s(ints) => println!("{ints:?}"),
             Val::U8s(chars) => match std::str::from_utf8(chars) {  // TODO unicode
@@ -569,13 +592,49 @@ impl<'a> Mem<'a> {
         Ok(seed)
     }
 
-    // TODO
-    // fn index(&mut self, x: RcVal, y: RcVal) -> Result<RcVal, String> {
-    //     match x {
-    //         &PrimFunc(prim) => self.call_prim_dyad(prim, x, y),
-    //         &ExplicitFunc { 
-    //     }
-    // }
+    fn index_val(&mut self, x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+        fn oob(len: usize, i: i64) -> String {
+            format!("Error in `@': index out of bounds (index {i}, but length is {len})")
+        }
+        fn to_index(len: usize, i: i64) -> usize {
+            if i >= 0 { i as usize } else { (len as i64 + i) as usize }  // TODO overflow?
+        }
+        fn index<A>(slice: &[A], i: i64) -> Result<&A, String> {
+            slice.get(to_index(slice.len(), i)).ok_or_else(|| oob(slice.len(), i))
+        }
+
+        use Val::*;
+        let val = match (x.as_val(), y.as_val()) {
+            (Int(_) | Char(_), &Int(i)) =>
+                return if to_index(1, i) == 0 { Ok(x.clone()) } else { Err(oob(1, i)) },
+            (&Int(int), I64s(is)) => I64s(
+                is.iter()
+                    .map(|i| if to_index(1, *i) == 0 { Ok(int) } else { Err(oob(1, *i)) })
+                    .collect::<Result<_, _>>()?
+            ),
+            (&Char(ch), I64s(is)) => U8s(
+                is.iter()
+                    .map(|i| if to_index(1, *i) == 0 { Ok(ch) } else { Err(oob(1, *i)) })
+                    .collect::<Result<_, _>>()?
+            ),
+            (I64s(ints), &Int(i)) => Int(*index(ints, i)?),
+            (I64s(ints), I64s(is)) => I64s(
+                is.iter().map(|i| index(ints, *i).copied()).collect::<Result<_, _>>()?
+            ),
+            (U8s(chars), &Int(i)) => Char(*index(chars, i)?),
+            (U8s(chars), I64s(is)) => U8s(
+                is.iter().map(|i| index(chars, *i).copied()).collect::<Result<_, _>>()?
+            ),
+            (Vals(vals), &Int(i)) => return Ok(index(vals, i)?.clone()),
+            (Vals(vals), I64s(is)) => collect_list(is.iter().map(|i| index(vals, *i).cloned()))?,
+            (Int(_) | Char(_) | I64s(_) | U8s(_) | Vals(_), Vals(is)) => collect_list(
+                is.iter().map(|i| self.index_val(x, i))
+            )?,
+
+            _ => return self.call_val(x.clone(), y.clone(), None),
+        };
+        Ok(RcVal::new(val))
+    }
 }
 
 #[derive(Clone)]
@@ -654,7 +713,7 @@ fn add_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     use Val::*;
     let result = match (x, y) {
         (Int(i), Int(j)) => Int(i + j),
-        (Int(i), Char(c)) | (Char(c), Int(i)) => Char((*c as i64 + i) as u8),
+        (Int(i), Char(c)) | (Char(c), Int(i)) => Char((*c as i64 + *i) as u8),
         (I64s(ints), Int(i)) | (Int(i), I64s(ints)) => I64s(
             ints.iter().map(|int| *int + *i).collect()
         ),
@@ -713,6 +772,9 @@ fn subtract_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
         ),
         (U8s(chars), I64s(ints)) => U8s(
             zip_exact(chars.iter(), ints.iter())?.map(|(ch, i)| (*ch as i64 - *i) as u8).collect()
+        ),
+        (U8s(chars), Char(c)) => I64s(
+            chars.iter().map(|ch| *ch as i64 - *c as i64).collect()
         ),
         (U8s(x_chars), U8s(y_chars)) => I64s(
             zip_exact(x_chars.iter(), y_chars.iter())?.map(|(x, y)| *x as i64 - *y as i64).collect()
@@ -822,6 +884,57 @@ fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     Ok(RcVal::new(result))
 }
 
+fn exponentiate_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
+    use Val::*;
+    // TODO negative exponents
+    let result = match (x, y) {
+        (Int(i), Int(j)) => Int(i.pow(*j as u32)),
+        (I64s(ints), Int(i)) => I64s(
+            ints.iter().map(|int| int.pow(*i as u32)).collect()
+        ),
+        (Int(i), I64s(ints)) => I64s(
+            ints.iter().map(|int| i.pow(*int as u32)).collect()
+        ),
+        (I64s(x_ints), I64s(y_ints)) => I64s(
+            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| i.pow(*j as u32)).collect()
+        ),
+        (Vals(vals), Int(i)) => Vals(
+            vals.iter().map(|rc_val| exponentiate_vals(&*rc_val, y)).collect::<Result<_, _>>()?
+        ),
+        (Int(i), Vals(vals)) => Vals(
+            vals.iter().map(|rc_val| exponentiate_vals(x, &*rc_val)).collect::<Result<_, _>>()?
+        ),
+        (Vals(vals), I64s(ints)) => Vals(
+            zip_exact(vals.iter(), ints.iter())?
+                .map(|(rc_val, int)| exponentiate_vals(&*rc_val, &Val::Int(*int)))
+                .collect::<Result<_, _>>()?
+        ),
+        (I64s(ints), Vals(vals)) => Vals(
+            zip_exact(ints.iter(), vals.iter())?
+                .map(|(int, rc_val)| exponentiate_vals(&Val::Int(*int), &*rc_val))
+                .collect::<Result<_, _>>()?
+        ),
+        (Vals(x_vals), Vals(y_vals)) => Vals(
+            zip_exact(x_vals.iter(), y_vals.iter())?
+                .map(|(x_rc_val, y_rc_val)| exponentiate_vals(&*x_rc_val, &*y_rc_val))
+                .collect::<Result<_, _>>()?
+        ),
+        _ => return Err(format!("Error in `^': Can't raise {x:?} to power {y:?}")),
+    };
+    Ok(RcVal::new(result))
+}
+
+fn reverse(x: &RcVal) -> RcVal {
+    use Val::*;
+    match x.as_val() {
+        I64s(ints) => RcVal::new(I64s(ints.iter().cloned().rev().collect())),
+        U8s(chars) => RcVal::new(U8s(chars.iter().cloned().rev().collect())),
+        Vals(vals) => RcVal::new(Vals(vals.iter().cloned().rev().collect())),
+        
+        Int(_) | Char(_) | PrimFunc(_) | ExplicitFunc{..} | AdverbDerivedFunc{..} => x.clone(),
+    }
+}
+
 fn take(x: RcVal, y: &Val) -> Result<RcVal, String> {
     let count = match y {
         &Val::Int(i) => if i >= 0 { i as usize } else { todo!("implement # with negative y") },
@@ -872,6 +985,16 @@ fn append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
     Ok(RcVal::new(val))
 }
 
+fn ravel(x: &RcVal) -> RcVal {
+    match x.as_val() {
+        Val::I64s(_) | Val::U8s(_) => x.clone(),
+        Val::Int(_) | Val::Char(_) | Val::PrimFunc(_) | Val::ExplicitFunc{..} | Val::AdverbDerivedFunc{..} => RcVal::new(Val::Vals(vec![x.clone()])),
+        Val::Vals(_) => RcVal::new(collect_list(
+            ValIter { x: x.clone(), i: 0 }.flat_map(|val| ValIter { x: ravel(&val), i: 0 }).map(|val| -> Result<RcVal, ()> { Ok(val) })
+        ).unwrap()),
+    }
+}
+
 trait AtomOp2: Copy {
     fn on_ints(self, x: i64, y: i64) -> Val;
     fn on_chars(self, x: u8, y: u8) -> Val;
@@ -907,6 +1030,14 @@ fn compare<Op: AtomOp2>(op: Op, x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
         Some(iter) => collect_list(iter?.map(|(x, y)| compare(op, &x, &y)))?
     };
     Ok(RcVal::new(result))
+}
+
+fn iota(x: &Val) -> Val {
+    use Val::*;
+    match x {
+        &Int(i) => Val::I64s(if i >= 0 { 0..i } else { i..0 }.collect()),
+        _ => todo!("Implement / on non-ints"),
+    }
 }
 
 fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val, E> {

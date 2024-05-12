@@ -33,7 +33,7 @@ pub enum Instr {
     CallPrimAdverb { prim: PrimAdverb },  // Operates on verb
     MoveVerbToSubject1,
     MakeString { num_bytes: usize }, // Followed by num_bytes/8 LiteralBytes.
-    LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal
+    LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal. TODO currently this is only ascii, and the first byte is the character; the rest are 0
     
     // Collects the top `num_elems` on the subject1 stack into an array, which is pushed to subject1.
     CollectToArray { num_elems: usize },

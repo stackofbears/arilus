@@ -2,17 +2,19 @@ use crate::lex;
 use crate::lex::*;
 
 // TODO better error type than string
+
 // Ok(Some(_)): Successfuly parsed an A
 // Ok(None): Found no A and consumed no input
 // Err(_): Parse failed
 pub type Parsed<A> = Result<Option<A>, String>;
-type Many<A> = Result<Vec<A>, String>;
+pub type Many<A> = Result<Vec<A>, String>;
 
 pub fn parse(tokens: Vec<Token>) -> Many<Expr> {
     let mut parser = Parser::new(tokens);
     let parsed = parser.parse_exprs()?;
     if parser.token_index < parser.tokens.len() - 1 {
-        return Err(format!("Unexpected {}; expected expressions", parser.tokens[0]));
+        return Err(format!("Unexpected token `{}'; expected `;', newline, or end of input",
+                           parser.tokens[parser.token_index]));
     }
     Ok(parsed)
 }
@@ -51,6 +53,7 @@ pub enum SmallNoun {
     LowerName(String),
     Block(Vec<Expr>),  // parenthesized
     IntLiteral(i64),
+    CharLiteral(u8),
     StringLiteral(String),
     ArrayLiteral(Vec<Expr>),
 }
@@ -88,12 +91,22 @@ impl Parser {
     fn peek(&self) -> Option<&Token> { self.tokens.get(self.token_index) }
     fn skip(&mut self) { self.token_index += 1; }
 
-    // TODO lex newlines, right now semicolons are required
+    fn skip_newlines(&mut self) {
+        while let Some(Token::Newline) = self.peek() { self.skip() }
+    }
+
     fn parse_exprs(&mut self) -> Many<Expr> {
+        self.skip_newlines();
         let mut exprs = vec![];  // TODO reserve
         while let Some(expr) = self.parse_expr()? {
             exprs.push(expr);
-            if let Some(Token::Semicolon) = self.peek() { self.skip(); }
+            let separator = {
+                let before = self.token_index;
+                if let Some(Token::Semicolon) = self.peek() { self.skip(); }
+                self.skip_newlines();
+                self.token_index > before
+            };
+            if !separator { break; }
         }
         Ok(exprs)
     }
@@ -154,7 +167,11 @@ impl Parser {
                 noun
             }
             Some(Token::StrLit(s)) => {
-                let noun = StringLiteral(s.clone());
+                let noun = if s.len() == 1 {
+                    CharLiteral(s.as_bytes()[0])
+                } else {
+                    StringLiteral(s.clone())
+                };
                 self.skip();
                 noun
             }
