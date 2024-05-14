@@ -32,16 +32,17 @@ pub enum Token {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum PrimNoun {
     Print,
+    Rand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum PrimVerb {
-    DoublePipe, // ||
-    DoubleAmpersand, // &&
+    DoublePipe,  // ||
+    DoubleAmpersand,  // &&
+    DoubleEquals,  // ==
+    EqualBang,  // =!
     At,  // @
     Comma,  // ,
     Plus,   // +
@@ -61,6 +62,7 @@ pub enum PrimVerb {
     Ampersand, // &
 
     Print,
+    Rand,
 
     // Hidden primitives below; these have no string representation and
     // shouldn't be in the token enum. TODO move these to compilation.
@@ -68,7 +70,6 @@ pub enum PrimVerb {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum PrimAdverb {
     Dot,  // .
     SingleQuote,  // '
@@ -78,13 +79,18 @@ pub enum PrimAdverb {
     // TODO converge/do-times/do-while
 }
 
+pub fn tokenize_to_vec(text: &str) -> Result<Vec<Token>, String> {
+    let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
+    tokenize(text, &mut tokens)?;
+    Ok(tokens)
+}
+
 // TODO better error than String
 // TODO comments
-pub fn tokenize(mut text: &str) -> Result<Vec<Token>, String> {
+pub fn tokenize(mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
     use Token::*;
     let literal_symbols = literal_symbol_tokens();
     let literal_identifiers = literal_identifier_tokens();
-    let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
     'next_token: loop {
         text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
         if text.is_empty() { break }
@@ -147,8 +153,7 @@ pub fn tokenize(mut text: &str) -> Result<Vec<Token>, String> {
 
         return Err(format!("Invalid syntax: {}...", &text[0..10.min(text.len())]));
     }
-
-    Ok(tokens)
+    Ok(())
 }
 
 impl Display for Token {
@@ -183,9 +188,9 @@ impl Display for Token {
 
 impl Display for PrimNoun {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        use PrimNoun::*;
         let s: &str = match self {
-            Print => "print",
+            PrimNoun::Print => "print",
+            PrimNoun::Rand => "rand",
         };
 
         f.write_str(s)
@@ -198,6 +203,8 @@ impl Display for PrimVerb {
         let s: &str = match self {
             DoublePipe => "||",
             DoubleAmpersand => "&&",
+            DoubleEquals => "==",
+            EqualBang => "=!",
             At => "@",
             Comma => ",",
             Plus => "+",
@@ -216,6 +223,7 @@ impl Display for PrimVerb {
             Question => "?",
             Ampersand => "&",
             Print => "Print",
+            Rand => "Rand",
 
             // The verbs below are technically hidden from the user.
             Snoc => "Snoc",
@@ -268,6 +276,8 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(Dollar),
         PrimVerb(DoubleAmpersand),
         PrimVerb(DoublePipe),
+        PrimVerb(DoubleEquals),
+        PrimVerb(EqualBang),
         PrimVerb(Equals),
         PrimVerb(GreaterThan),
         PrimVerb(Hash),
@@ -297,6 +307,8 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),
+        Token::PrimNoun(PrimNoun::Rand),
+        Token::PrimVerb(PrimVerb::Rand),
     ].iter().map(|t| (t.to_string(), t.clone())).collect()
 }
 

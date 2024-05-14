@@ -9,11 +9,11 @@ use crate::lex::*;
 // enum, read parameters afterward)
 //
 // TODO optimize PushSubject1+PopToSubject2 -> LoadSubject2
-// TODO instead of subject2, maybe we just have call1 and call2 instructions (less shuffling around)
+// TODO instead of subject2, maybe we just have call1 and call2 instructions (less shuffling around). Can we do all this with just one stack? [..., x, v, y] -> v(x, y)
 #[derive(Debug)]
 pub enum Instr {
     Nop,
-    Halt { exit_status: u8 },
+    Halt { exit_status: i32 },  // Terminate the virtual machine and return `exit_status` to the OS.
     MakeClosure { num_closure_vars: usize },  // Immediately followed by MakeFunc and the function's body, then `num_closure_vars` PushVar instructions which form the closure environment.  Leaves the function object in subject1. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions).
     AllocLocals { num_locals: usize },  // Allocates space for `num_locals` locals on the current stack frame.

@@ -1,10 +1,3 @@
-// TODO there are definitely some places here where we don't track the refcounts
-// correctly
-//
-// TODO make refcounts atomic; read
-// https://doc.rust-lang.org/nomicon/atomics.html, links at
-// https://stackoverflow.com/questions/30407121/which-stdsyncatomicordering-to-use
-
 use std::{
     rc::Rc,
 };
@@ -67,12 +60,12 @@ maybe closure envs are refs by default
 
 */
 
+// TODO save an alloc+indirection: move small values out so RcVal is Small | Rc<BigVal>
 type RcVal = Rc<Val>;
 
 // TODO Ref
-// TODO write Clone instance manually and panic on List
 #[derive(Debug, Clone)]
-enum Val {
+pub enum Val {
     Int(i64),  // TODO TwoInts, ThreeInts
     Char(u8),
 
@@ -124,24 +117,6 @@ impl Val {
     }
 }
 
-// TODO Refs
-#[derive(Debug, Clone)]
-enum List {
-    I64s(Vec<i64>),
-    U8s(Vec<u8>),
-    Vals(Vec<Val>),
-}    
-
-impl List {
-    fn len(&self) -> usize {
-        match self {
-            List::I64s(v) => v.len(),
-            List::U8s(v) => v.len(),
-            List::Vals(v) => v.len(),
-        }
-    }
-}
-
 #[derive(Debug)]
 struct StackFrame {
     // Always points to Val::Vals
@@ -155,11 +130,11 @@ struct StackFrame {
     ret_addr: usize,
 }
 
-pub struct Mem<'a> {
-    code: &'a [Instr],
+pub struct Mem {
+    pub code: Vec<Instr>,
 
     // TODO can we merge locals_stack, subject1, subject2, and verb?
-    subject1: Vec<RcVal>,
+    pub subject1: Vec<RcVal>,
     verb: Vec<RcVal>,
     subject2: Option<RcVal>,
     
@@ -171,10 +146,10 @@ pub struct Mem<'a> {
     zero: RcVal,
 }
 
-impl<'a> Mem<'a> {
+impl Mem {
     pub fn new() -> Self {
         Self {
-            code: &[],
+            code: vec![],
             subject1: vec![],
             verb: vec![],
             subject2: None,
@@ -189,40 +164,12 @@ impl<'a> Mem<'a> {
         }
     }
 
-    pub fn set_code(&mut self, code: &'a [Instr]) {
-        self.code = code;
-    }
-
-    fn store(&mut self, dst: Var, val: RcVal) {
-        let frame = self.stack_frames.last().unwrap();
-        match dst.place {
-            Place::Local => {
-                let absolute_slot = frame.locals_start + dst.slot;
-                if absolute_slot >= self.locals_stack.len() {
-                    self.locals_stack.resize(absolute_slot + 1, self.zero.clone());  // TODO is zero right?
-                }
-                self.locals_stack[absolute_slot] = val;
-            }
-            Place::ClosureEnv => match &*frame.closure_env {
-                // SAFETY this seems bad, but we want closures to share an
-                // environment. We can restructure how closures work in a way
-                // that Rust likes, but this "works" for now.
-                Val::Vals(vals) => unsafe { (vals.as_ptr() as *mut RcVal).add(dst.slot).replace(val); }
-                // TODO if a closure env consists of one value, it's fine not to
-                // use a whole list.
-                // TODO consolidate closure envs of all-matching types to
-                // e.g. Int64s instead of Vals.
-                _ => unreachable!(),  
-            }
-        }
-    }
-
-    pub fn execute(&mut self, mut ip: usize) -> Result<u8, String> {
+    pub fn execute(&mut self, mut ip: usize) -> Result<i32, String> {
         use Instr::*;
         while ip < self.code.len() {
             match self.code[ip] {
                 Nop => ip += 1,
-                Halt { exit_status } => return Ok(exit_status),
+                Halt { exit_status } => std::process::exit(exit_status),
                 MakeClosure { num_closure_vars } => {
                     ip += 1;
                     let num_instructions = match &self.code[ip] {
@@ -397,7 +344,7 @@ impl<'a> Mem<'a> {
                         all_chars &= matches!(&**elem, Val::Char(_));
                     }
 
-                    let mut elems = self.subject1.drain((self.subject1.len() - num_elems)..);
+                    let elems = self.subject1.drain((self.subject1.len() - num_elems)..);
                     let list_val = if all_ints {
                         Val::I64s(elems.map(|elem| irrefutable!(*elem, Val::Int(int) => int)).collect())
                     } else if all_chars {
@@ -410,6 +357,42 @@ impl<'a> Mem<'a> {
             }
         }
         Ok(0)
+    }
+
+    fn load(&mut self, var: Var) -> &RcVal {
+        // TODO do all local/closure vars point to non-lists (instead to slices)?
+        let frame = self.stack_frames.last().unwrap();
+        match var.place {
+            Place::Local => &self.locals_stack[frame.locals_start + var.slot],
+            Place::ClosureEnv => match &*frame.closure_env {
+                Val::Vals(vals) => &vals[var.slot],
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn store(&mut self, dst: Var, val: RcVal) {
+        let frame = self.stack_frames.last().unwrap();
+        match dst.place {
+            Place::Local => {
+                let absolute_slot = frame.locals_start + dst.slot;
+                if absolute_slot >= self.locals_stack.len() {
+                    self.locals_stack.resize(absolute_slot + 1, self.zero.clone());  // TODO is zero right?
+                }
+                self.locals_stack[absolute_slot] = val;
+            }
+            Place::ClosureEnv => match &*frame.closure_env {
+                // SAFETY this seems bad, but we want closures to share an
+                // environment. We can restructure how closures work in a way
+                // that Rust likes, but this "works" for now.
+                Val::Vals(vals) => unsafe { (vals.as_ptr() as *mut RcVal).add(dst.slot).replace(val); }
+                // TODO if a closure env consists of one value, it's fine not to
+                // use a whole list.
+                // TODO consolidate closure envs of all-matching types to
+                // e.g. Int64s instead of Vals.
+                _ => unreachable!(),  
+            }
+        }
     }
 
     fn call_adverb_derived_func(&mut self, adverb: PrimAdverb, operand: RcVal) -> Result<(), String> {
@@ -488,21 +471,8 @@ impl<'a> Mem<'a> {
                 Some(y) => self.call_val(operand, y, Some(x))?,
             }
             Backslash => self.fold_val(operand, x, maybe_y)?,
-            _ => todo!("Implement adverb {adverb}"),
         };
         Ok(result)
-    }
-
-    fn load(&mut self, var: Var) -> &RcVal {
-        // TODO do all local/closure vars point to non-lists (instead to slices)?
-        let frame = self.stack_frames.last().unwrap();
-        match var.place {
-            Place::Local => &self.locals_stack[frame.locals_start + var.slot],
-            Place::ClosureEnv => match &*frame.closure_env {
-                Val::Vals(vals) => &vals[var.slot],
-                _ => unreachable!(),
-            }
-        }
     }
 
     fn call_prim_verb(&mut self, prim: PrimVerb) -> Result<(), String> {
@@ -540,6 +510,8 @@ impl<'a> Mem<'a> {
             Hash => take(x, &*y),
             Comma => append(x, y),
             Equals => compare(EqOp{}, &x, &y),
+            DoubleEquals => match_vals(x.as_val(), y.as_val()),
+            EqualBang => compare(EqOp{}, &x, &y),
             GreaterThan => compare(GtOp{}, &x, &y),
             LessThan => compare(LtOp{}, &x, &y),
             At => self.index_val(&x, &y),
@@ -565,10 +537,12 @@ impl<'a> Mem<'a> {
                 println!("]");
             }
             Val::AdverbDerivedFunc { adverb, operand } => {
-                todo!("implement adverb-derived verb printing")
+                print!("{adverb}");
+                self.print_val(operand.as_val())?;
             }
             Val::ExplicitFunc { closure_env, code_index } => {
-                todo!("implement explicit func printing")  // map code index -> tokens?
+                // map code index -> tokens?
+                println!("(explicit func; TODO: implement printing)")
             }
         }
         
@@ -845,6 +819,7 @@ fn multiply_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     Ok(RcVal::new(result))
 }
 
+// TODO division by 0
 fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     use Val::*;
     let result = match (x, y) {
@@ -898,10 +873,10 @@ fn exponentiate_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
         (I64s(x_ints), I64s(y_ints)) => I64s(
             zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| i.pow(*j as u32)).collect()
         ),
-        (Vals(vals), Int(i)) => Vals(
+        (Vals(vals), Int(_)) => Vals(
             vals.iter().map(|rc_val| exponentiate_vals(&*rc_val, y)).collect::<Result<_, _>>()?
         ),
-        (Int(i), Vals(vals)) => Vals(
+        (Int(_), Vals(vals)) => Vals(
             vals.iter().map(|rc_val| exponentiate_vals(x, &*rc_val)).collect::<Result<_, _>>()?
         ),
         (Vals(vals), I64s(ints)) => Vals(
@@ -955,7 +930,7 @@ fn take(x: RcVal, y: &Val) -> Result<RcVal, String> {
             chars.resize(count, *c);
             Val::U8s(chars)
         }
-        other_atom => {
+        _ => {
             let mut vals = vec![];
             vals.resize(count, x.clone());
             Val::Vals(vals)
@@ -1037,6 +1012,32 @@ fn iota(x: &Val) -> Val {
     match x {
         &Int(i) => Val::I64s(if i >= 0 { 0..i } else { i..0 }.collect()),
         _ => todo!("Implement / on non-ints"),
+    }
+}
+
+fn match_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
+    Ok(RcVal::new(Val::Int(match_vals_bool(x, y) as i64)))
+}
+
+fn match_vals_bool(x: &Val, y: &Val) -> bool {
+    use Val::*;
+    match (x, y) {
+        (Int(i), Int(j)) => *i == *j,
+        (Char(c), Char(d)) => *c == *d,
+        (PrimFunc(p), PrimFunc(q)) => *p == *q,
+        (ExplicitFunc { closure_env: x_env, code_index: x_code },
+         ExplicitFunc { closure_env: y_env, code_index: y_code }) =>
+            *x_code == *y_code && match_vals_bool(x_env.as_val(), y_env.as_val()),
+        (AdverbDerivedFunc { adverb: x_adverb, operand: x_operand },
+         AdverbDerivedFunc { adverb: y_adverb, operand: y_operand }) =>
+            *x_adverb == *y_adverb && match_vals_bool(x_operand.as_val(), y_operand.as_val()),
+        (I64s(xs), I64s(ys)) => xs == ys,
+        (U8s(xs), U8s(ys)) => xs == ys,
+        (Vals(xs), Vals(ys)) =>
+            xs.len() == ys.len() &&
+            xs.iter().zip(ys.iter())
+            .all(|(x, y)| match_vals_bool(x.as_val(), y.as_val())),
+        _ => false,
     }
 }
 

@@ -9,7 +9,7 @@ use crate::lex::*;
 pub type Parsed<A> = Result<Option<A>, String>;
 pub type Many<A> = Result<Vec<A>, String>;
 
-pub fn parse(tokens: Vec<Token>) -> Many<Expr> {
+pub fn parse(tokens: &[Token]) -> Many<Expr> {
     let mut parser = Parser::new(tokens);
     let parsed = parser.parse_exprs()?;
     if parser.token_index < parser.tokens.len() - 1 {
@@ -18,8 +18,6 @@ pub fn parse(tokens: Vec<Token>) -> Many<Expr> {
     }
     Ok(parsed)
 }
-
-pub type Program = Vec<Expr>;
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -73,8 +71,8 @@ pub enum SmallExpr {
     Verb(SmallVerb),
 }
 
-struct Parser {
-    tokens: Vec<Token>,
+struct Parser<'a> {
+    tokens: &'a [Token],
     token_index: usize,
 }
 
@@ -83,8 +81,8 @@ use Verb::*;
 use crate::parse::SmallNoun::*;
 use crate::parse::SmallVerb::*;
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+impl<'a> Parser<'a> {
+    fn new(tokens: &'a [Token]) -> Self {
         Parser { tokens, token_index: 0 }
     }
 
@@ -305,8 +303,4 @@ impl Parser {
         };
         Ok(Some(small_expr))
     }
-}
-
-fn require<A>(expected: &str, p: Parsed<A>) -> Result<A, String> {
-    p.and_then(|opt| opt.ok_or_else(|| format!("Error: expected {}", expected)))
 }

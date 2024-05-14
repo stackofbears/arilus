@@ -11,22 +11,16 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<Instr>, String> {
     Ok(compiler.code)
 }
 
-struct Scope {
-    num_locals: usize,
-    // TODO need to track origin of closure vars
-    names: HashMap<String, Var>,
-}
-
 // Invariants: `scopes` non-empty after `new`.
-struct Compiler {
-    code: Vec<Instr>,
+pub struct Compiler {
+    pub code: Vec<Instr>,
     scopes: Vec<HashMap<String, Var>>,
 }
 
 // TODO be able to compile globals for repl
 // TODO adverb nounification (') (for ultimate adverb verbification)
 impl Compiler {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut globals = HashMap::new();
         for (i, name) in get_stdlib_names().iter().enumerate() {
             globals.insert(name.to_string(), Var { place: Place::Local, slot: i });
@@ -36,12 +30,7 @@ impl Compiler {
                scopes: vec![globals] }
     }
 
-    fn push(&mut self, instr: Instr) -> usize {
-        self.code.push(instr);
-        self.code.len() - 1
-    }
-
-    fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
+    pub fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
         if exprs.is_empty() { todo!("Compile ()"); }
 
         for expr in &exprs[0..exprs.len()-1] {
@@ -59,6 +48,11 @@ impl Compiler {
         }
 
         Ok(())
+    }
+
+    fn push(&mut self, instr: Instr) -> usize {
+        self.code.push(instr);
+        self.code.len() - 1
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
@@ -217,11 +211,13 @@ impl Compiler {
         // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
         match small_noun {
-            PrimNoun(prim) => match prim {
-                lex::PrimNoun::Print => {
-                    self.code.push(Instr::PushPrimVerb { prim: PrimVerb::Print });
-                    self.code.push(Instr::MoveVerbToSubject1);
-                }
+            PrimNoun(prim) => {
+                let verb = match prim {
+                    lex::PrimNoun::Print => PrimVerb::Print,
+                    lex::PrimNoun::Rand => PrimVerb::Rand,
+                };
+                self.code.push(Instr::PushPrimVerb { prim: verb });
+                self.code.push(Instr::MoveVerbToSubject1);
             }
             LowerName(name) => {
                 let src = self.fetch_var(name)?;
@@ -273,10 +269,6 @@ fn get_num_local_vars(scope: &HashMap<String, Var>) -> usize {
 fn next_local_var(scope: &HashMap<String, Var>) -> Var {
     let slot = get_num_local_vars(scope);
     local_var(slot)
-}
-
-fn add_local_var(name: &str, scope: &mut HashMap<String, Var>) {
-    scope.insert(name.to_string(), next_local_var(scope));
 }
 
 fn get_num_closure_vars(scope: &mut HashMap<String, Var>) -> usize {
