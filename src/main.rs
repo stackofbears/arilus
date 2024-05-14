@@ -1,3 +1,5 @@
+// next: Rec primitive for self-reference; unpacking assignment; refactor closures to avoid unsafe code
+
 // Grammar
 // expr:
 //  small (verb small?)+ | name ":" expr
@@ -56,7 +58,7 @@ fn run_repl() -> Result<(), String> {
     let mut mem = vm::Mem::new();
 
     let print_and_pop_result = vec![
-        bytecode::Instr::CallPrimVerb { prim: lex::PrimVerb::Print },
+        bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::Print },
         bytecode::Instr::Pop,
     ];
     mem.code = print_and_pop_result;
@@ -92,6 +94,7 @@ fn run_repl() -> Result<(), String> {
         compiler.compile_block(&exprs)?;
 
         mem::swap(&mut mem.code, &mut compiler.code);
+        dbg!(&mem.code);
         mem.execute(code_start)?;
 
         mem::swap(&mut mem.code, &mut compiler.code);
@@ -126,6 +129,6 @@ fn go(text: &str) -> Result<(), String> {
     let code = compile_string(text)?;
     let mut mem = vm::Mem::new();
     mem.code = code;
-    let status = mem.execute(0)?;
-    std::process::exit(status);
+    mem.execute(0)?;
+    Ok(())
 }

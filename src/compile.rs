@@ -35,18 +35,10 @@ impl Compiler {
 
         for expr in &exprs[0..exprs.len()-1] {
             self.compile_expr(expr)?;
-            if matches!(expr, Expr::Verb(_)) {
-                self.code.push(Instr::PopVerb);  // TODO is this right?
-            } else {
-                self.code.push(Instr::Pop);
-            }
+            self.code.push(Instr::Pop);
         }
         let last_expr = &exprs[exprs.len()-1];
         self.compile_expr(last_expr)?;
-        if matches!(last_expr, Expr::Verb(_)) {
-            self.code.push(Instr::MoveVerbToSubject1);
-        }
-
         Ok(())
     }
 
@@ -67,7 +59,7 @@ impl Compiler {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs)?;
                 let dst = self.fetch_var_in_current_scope(name);
-                self.code.push(Instr::StoreVerbTo { dst });
+                self.code.push(Instr::StoreTo { dst });
             }
             Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb)?,
         }
@@ -78,7 +70,7 @@ impl Compiler {
         match small_verb {
             SmallVerb::UpperName(name) => {
                 let src = self.fetch_var(name)?;
-                self.code.push(Instr::PushVerb { src });
+                self.code.push(Instr::PushVar { src });
             }
             SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim: *prim }),
             SmallVerb::Lambda(exprs) => {
@@ -123,7 +115,6 @@ impl Compiler {
                     }
                     SmallExpr::Noun(small_noun) => {
                         self.compile_small_noun(small_noun)?;
-                        self.code.push(Instr::PopToVerb);
                         self.code.push(Instr::CallPrimAdverb { prim: *prim });
                     }
                 }
@@ -159,13 +150,15 @@ impl Compiler {
                             }
                             if let Some(y) = maybe_y_arg {
                                 self.compile_small_noun(y)?;
-                                self.code.push(Instr::PopToSubject2);
                             }
-                            match verb {
-                                &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) =>
-                                    self.code.push(Instr::CallPrimVerb { prim }),
-                                _ => self.code.push(Instr::Call),
-                            }
+                            self.code.push(match verb {
+                                &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) => 
+                                    if maybe_y_arg.is_some() { Instr::CallPrimVerb2 { prim } }
+                                else { Instr::CallPrimVerb1 { prim } },
+                                _ =>
+                                    if maybe_y_arg.is_some() { Instr::Call2 }
+                                    else { Instr::Call1 }
+                            });
                         }
                         Predicate::ForwardAssignment(name) => {
                             let dst = self.fetch_var_in_current_scope(name);
@@ -217,7 +210,6 @@ impl Compiler {
                     lex::PrimNoun::Rand => PrimVerb::Rand,
                 };
                 self.code.push(Instr::PushPrimVerb { prim: verb });
-                self.code.push(Instr::MoveVerbToSubject1);
             }
             LowerName(name) => {
                 let src = self.fetch_var(name)?;
@@ -243,9 +235,6 @@ impl Compiler {
             ArrayLiteral(exprs) => {
                 for expr in exprs {
                     self.compile_expr(expr)?;
-                    if let Expr::Verb(_) = expr {
-                        self.code.push(Instr::MoveVerbToSubject1);
-                    }
                 }
                 self.code.push(Instr::CollectToArray { num_elems: exprs.len() });
             }

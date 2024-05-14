@@ -1,16 +1,15 @@
 use crate::lex::*;
 
 // The machine has
-//   - Three registers: subject1, verb, and subject2 (subject1 and verb are both stacks - is subject2 too? (verb formation))
+//   - An value stack: values - data and functions - are pushed onto the stack and popped to call functions
 //   - A function call stack (frames contain locals and a pointer to the closure environment)
-//   - A heap
 //
 // TODO repr(c) and store parameters inline (i.e. [i32], decode instructions to
 // enum, read parameters afterward)
 //
 // TODO optimize PushSubject1+PopToSubject2 -> LoadSubject2
 // TODO instead of subject2, maybe we just have call1 and call2 instructions (less shuffling around). Can we do all this with just one stack? [..., x, v, y] -> v(x, y)
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Instr {
     Nop,
     Halt { exit_status: i32 },  // Terminate the virtual machine and return `exit_status` to the OS.
@@ -19,23 +18,19 @@ pub enum Instr {
     AllocLocals { num_locals: usize },  // Allocates space for `num_locals` locals on the current stack frame.
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
     PushLiteralInteger(i64),   // Copies value to subject1, pushing subject1's previous contents (if any)
-    PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: copies src to subject1, pushing subject1's previous contents (if any)
-    PushPrimVerb { prim: PrimVerb },  // Copies src to verb, pushing verb's previous contents (if any)
-    PushVerb { src: Var },            // Copies src to verb, pushing verb's previous contents (if any)  (TODO instead provide start instr?)
-    Call,  // Calls verb on subject1 and, if present, subject2. Discards subject1, verb, and subject2.
-    Pop,  //  Reinstates the previous subject1 (/verb? and discards subject2?)
-    PopVerb,  //  Reinstates the previous verb
-    PopToSubject2,  // Copies subject1 to subject2 and reinstates the previous subject1
-    PopToVerb,      // Copies subject1 to verb and reinstates the previous subject1
-    StoreVerbTo { dst: Var }, // Copies verb to dst
-    StoreTo { dst: Var },     // Copies subject1 to dst
-    CallPrimVerb { prim: PrimVerb },  // Calls prim on subject1 and, if present, subject2; places the result in subject1
-    CallPrimAdverb { prim: PrimAdverb },  // Operates on verb
-    MoveVerbToSubject1,
-    MakeString { num_bytes: usize }, // Followed by num_bytes/8 LiteralBytes.
-    LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal. TODO currently this is only ascii, and the first byte is the character; the rest are 0
-    
-    // Collects the top `num_elems` on the subject1 stack into an array, which is pushed to subject1.
+    PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
+    PushPrimVerb { prim: PrimVerb },  // Pushes `prim` onto stack.
+    Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
+    Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
+    Pop,  // TODO currenltly we compile multi-statment expressions into (E1; Pop; E2; Pop; ...; EN) - can we instead do (E1; E2; ...; Pop(N-1); EN)? Pro - fewer pops; con - hold onto vals longer than necessary, may make a reference non-unique when it can be
+    StoreTo { dst: Var }, // Copies the top stack value into dst.
+    CallPrimVerb1 { prim: PrimVerb },  // Pops the top stack value, calls `prim` on it, and pushes the result
+    CallPrimVerb2 { prim: PrimVerb },  // Let [x, y] be the top two stack values (y on top). Pops both, calls `prim` with x and y as its left and right arguments, and pushes the result.
+    CallPrimAdverb { prim: PrimAdverb },  // Let [f] be the top stack value. Pops `f`, Calls `prim` on it, and pushes the result.
+    MakeString { num_bytes: usize }, // Followed by ceil(num_bytes/8) LiteralBytes.
+    LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal. TODO as a char literal, this is currently only ascii, and the first byte is the character; the rest are 0
+
+    // Pops the top `num_elems` stack elements and collects them into an array, which is then pushed.
     CollectToArray { num_elems: usize },
 }
                

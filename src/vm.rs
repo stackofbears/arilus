@@ -79,12 +79,13 @@ pub enum Val {
     //   []F  \ 2
     //   []G  \ Currently this returns 3. Should G have its own copy of the env, making this 2?
     ExplicitFunc {
-        // Always points to Val::Vals.
-        closure_env: RcVal,
         // The function's first instruction (ALWAYS points after MakeFunc, so
         // you can get the function's instruction count with
         // code[func.code_index-1]
         code_index: usize,
+
+        // Always points to Val::Vals.
+        closure_env: RcVal,
     },
     
     AdverbDerivedFunc {
@@ -109,40 +110,32 @@ impl Val {
             Int(_) | Char(_) | PrimFunc(_) | ExplicitFunc {..} | AdverbDerivedFunc {..} => None,
         }
     }
-    
-    fn length_mismatch(&self, other: &Val) -> Option<(usize, usize)> {
-        let len1 = self.len()?;
-        let len2 = other.len()?;
-        if len1 == len2 { None } else { Some((len1, len2)) }
-    }
 }
 
 #[derive(Debug)]
 struct StackFrame {
-    // Always points to Val::Vals
+    // The first instruction of this function.
+    code_index: usize,
+
+    // Always points to Val::Vals.
     closure_env: RcVal,
 
     // Index into locals_stack. Local slots are offsets from this index.
     locals_start: usize,
-
-    // Code index after Call; or, if usize::MAX, return from the execute
-    // loop. TODO replace with Option<NonZeroUsize>?
-    ret_addr: usize,
 }
 
 pub struct Mem {
     pub code: Vec<Instr>,
 
-    // TODO can we merge locals_stack, subject1, subject2, and verb?
-    pub subject1: Vec<RcVal>,
-    verb: Vec<RcVal>,
-    subject2: Option<RcVal>,
+    pub stack: Vec<RcVal>,
     
     // Stack of local scopes
     locals_stack: Vec<RcVal>,
+
+    // Details about the explicit function (or global scope) we're currently in.
     stack_frames: Vec<StackFrame>,
 
-    // TODO intern small ints
+    // TODO intern small ints (actually not necessary if we do Small | Rc<Big>)
     zero: RcVal,
 }
 
@@ -150,28 +143,26 @@ impl Mem {
     pub fn new() -> Self {
         Self {
             code: vec![],
-            subject1: vec![],
-            verb: vec![],
-            subject2: None,
+            stack: vec![],
             locals_stack: vec![],  // TODO stdlib?
             stack_frames: vec![StackFrame {
                 closure_env: Rc::new(Val::Vals(vec![])),
                 locals_start: 0,
-                ret_addr: usize::MAX,
+                code_index: usize::MAX,
             }],
 
             zero: Rc::new(Val::Int(0)),
         }
     }
 
-    pub fn execute(&mut self, mut ip: usize) -> Result<i32, String> {
+    pub fn execute(&mut self, mut ip: usize) -> Result<(), String> {
         use Instr::*;
         while ip < self.code.len() {
-            match self.code[ip] {
-                Nop => ip += 1,
+            ip += 1;
+            match self.code[ip - 1] {
+                Nop => {}
                 Halt { exit_status } => std::process::exit(exit_status),
                 MakeClosure { num_closure_vars } => {
-                    ip += 1;
                     let num_instructions = match &self.code[ip] {
                         MakeFunc { num_instructions } => { ip += 1; num_instructions }
                         bad => panic!("Malformed code at ip {ip}: expected MakeFunc after MakeClosure, but found {bad:?}"),
@@ -191,160 +182,85 @@ impl Mem {
                         }
                     }
                     let closure_env = RcVal::new(Val::Vals(closure_data));
-                    self.verb.push(RcVal::new(Val::ExplicitFunc { closure_env, code_index }));
+                    self.push(RcVal::new(Val::ExplicitFunc { closure_env, code_index }));
                 }
                 MakeFunc { num_instructions } => {
-                    self.subject1.push(RcVal::new(
+                    self.push(RcVal::new(
                         Val::ExplicitFunc {
                             closure_env: RcVal::new(Val::Vals(vec![])),
                             code_index: ip + 1,
                         }
                     ));
-                    ip += num_instructions;
+                    ip += num_instructions - 1;
                 }
                 AllocLocals { num_locals } => {
-                    ip += 1;
                     // TODO is 0 the right thing to fill with here?
                     self.locals_stack.resize(self.locals_stack.len() + num_locals, self.zero.clone());
                 }
                 Return => {
                     let frame = self.stack_frames.pop().unwrap();
                     self.locals_stack.truncate(frame.locals_start);
-                    self.verb.pop();
-
-                    if frame.ret_addr == usize::MAX { return Ok(0); }
-                    else { ip = frame.ret_addr; }
+                    return Ok(())
                 }
-                PushLiteralInteger(value) => {
-                    ip += 1;
-                    self.subject1.push(RcVal::new(Val::Int(value)));
-                }
+                PushLiteralInteger(value) => self.push(RcVal::new(Val::Int(value))),
                 PushVar { src } => {
-                    ip += 1;
                     let val = self.load(src).clone();
-                    self.subject1.push(val);
+                    self.push(val);
                 }
-                PushPrimVerb { prim } => {
-                    ip += 1;
-                    self.verb.push(RcVal::new(Val::PrimFunc(prim)));
+                PushPrimVerb { prim } => self.push(RcVal::new(Val::PrimFunc(prim))),
+                Call1 => {
+                    let func = self.pop();
+                    println!("Calling {func:?}");
+                    let x = self.pop();
+                    let result = self.call_val(func, x, None)?;
+                    self.push(result);
                 }
-                PushVerb { src } => {
-                    ip += 1;
-                    let val = self.load(src).clone();
-                    self.verb.push(val);
+                Call2 => {
+                    let y = self.pop();
+                    let func = self.pop();
+                    let x = self.pop();
+                    let result = self.call_val(func, x, Some(y))?;
+                    self.push(result);
                 }
-                // TODO call1/call2
-                Call => {
-                    let verb = self.verb.pop().unwrap();
-                    match &*verb {
-                        Val::PrimFunc(prim) => {
-                            ip += 1;
-                            self.call_prim_verb(*prim)?;
-                        }
-
-                        Val::AdverbDerivedFunc { adverb, operand } => {
-                            ip += 1;
-                            self.call_adverb_derived_func(*adverb, operand.clone())?;
-                        }
-
-                        &Val::ExplicitFunc { ref closure_env, code_index } => {
-                            self.stack_frames.push(StackFrame {
-                                closure_env: closure_env.clone(),
-                                locals_start: self.locals_stack.len(),
-                                ret_addr: ip + 1,
-                            });
-
-                            // Keep in mind, Return pops the verb.
-                            // TODO Return doesn't pop the verb & we put code_index into StackFrame
-                            self.verb.push(verb);
-                            let x = self.subject1.pop().unwrap();
-                            self.locals_stack.push(x);
-                            self.locals_stack.push(
-                                self.subject2.take().unwrap_or(self.zero.clone())  // TODO monads won't even mention y, but locals slot 1 is always y
-                            );
-                            ip = code_index;
-                        }
-
-                        Val::Int(_) | Val::Char(_) | Val::I64s(_) | Val::U8s(_) | Val::Vals(_) => {
-                            ip += 1;
-                            self.subject1.pop();
-                            self.subject2.take();
-                            self.subject1.push(verb);
-                        }
-                    }
-                },
-                CallPrimVerb { prim } => {
-                    ip += 1;
-                    self.call_prim_verb(prim)?;
+                CallPrimVerb1 { prim } => {
+                    let x = self.pop();
+                    let result = self.call_prim_monad(prim, x)?;
+                    self.push(result);
                 }
-                Pop => {
-                    ip += 1;
-                    self.subject1.pop();
-                    
-                    // TODO find out if we discard verb here
-                    if self.subject2.is_some() {
-                        todo!("Pop should discard subject2")
-                    }
+                CallPrimVerb2 { prim } => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    let result = self.call_prim_dyad(prim, x, y)?;
+                    self.push(result)
                 }
-                PopVerb => {
-                    ip += 1;
-                    self.verb.pop();
-                } 
-                PopToSubject2 => {
-                    ip += 1;
-                    self.subject2 = self.subject1.pop();
-                }
-                PopToVerb => {
-                    ip += 1;
-                    self.verb.push(self.subject1.pop().unwrap());
-                }
-                MoveVerbToSubject1 => {
-                    ip += 1;
-                    self.subject1.push(self.verb.pop().unwrap());
-                }
-                StoreTo { dst } => {
-                    ip += 1;
-                    self.store(dst, self.subject1.last().unwrap().clone());
-                }
-                StoreVerbTo { dst } => {
-                    ip += 1;
-                    self.store(dst, self.verb.last().unwrap().clone());
-                }
+                Pop => { self.pop(); }
+                StoreTo { dst } => self.store(dst, self.stack.last().unwrap().clone()),
                 CallPrimAdverb { prim: adverb } => {
-                    ip += 1;
-                    let operand = self.verb.pop().unwrap();
-                    self.verb.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
+                    let operand = self.pop();
+                    self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
                 }
                 MakeString { num_bytes } => {
-                    ip += 1;
                     let mut s = Vec::with_capacity(num_bytes);
                     for i in (0..num_bytes).step_by(8) {
-                        match &self.code[ip] {
-                            LiteralBytes { bytes } => {
-                                ip += 1;
-                                for j in i..(i+8).min(num_bytes) {
-                                    s.push(bytes[j-i]);
-                                }
+                        irrefutable!(self.code[ip], LiteralBytes { bytes } => {
+                            ip += 1;
+                            for j in i..(i+8).min(num_bytes) {
+                                s.push(bytes[j-i]);
                             }
-                            bad => unreachable!("Malformed code at ip {ip}: expected LiteralBytes after MakeString, but found {bad:?}"),
-                        }
+                        });
                     }
-                    self.subject1.push(RcVal::new(Val::U8s(s)));
+                    self.push(RcVal::new(Val::U8s(s)));
                 }
-                LiteralBytes { bytes } => {
-                    ip += 1;
-                    self.subject1.push(RcVal::new(Val::Char(bytes[0])));
-                }
+                LiteralBytes { bytes } => self.push(RcVal::new(Val::Char(bytes[0]))),
                 CollectToArray { num_elems } => {
-                    ip += 1;
                     let mut all_ints = true;
                     let mut all_chars = true;
-                    for elem in &self.subject1[(self.subject1.len() - num_elems)..] {
+                    for elem in &self.stack[(self.stack.len() - num_elems)..] {
                         all_ints &= matches!(&**elem, Val::Int(_));
                         all_chars &= matches!(&**elem, Val::Char(_));
                     }
 
-                    let elems = self.subject1.drain((self.subject1.len() - num_elems)..);
+                    let elems = self.stack.drain((self.stack.len() - num_elems)..);
                     let list_val = if all_ints {
                         Val::I64s(elems.map(|elem| irrefutable!(*elem, Val::Int(int) => int)).collect())
                     } else if all_chars {
@@ -352,16 +268,31 @@ impl Mem {
                     } else {
                         Val::Vals(elems.collect())
                     };
-                    self.subject1.push(RcVal::new(list_val))
+                    self.push(RcVal::new(list_val))
                 }
             }
         }
-        Ok(0)
+        Ok(())
+    }
+
+    #[inline]
+    fn push(&mut self, val: RcVal) {
+        self.stack.push(val)
+    }
+
+    #[inline]
+    fn pop(&mut self) -> RcVal {
+        self.stack.pop().unwrap()
+    }
+
+    #[inline]
+    fn current_frame(&self) -> &StackFrame {
+        self.stack_frames.last().unwrap()
     }
 
     fn load(&mut self, var: Var) -> &RcVal {
         // TODO do all local/closure vars point to non-lists (instead to slices)?
-        let frame = self.stack_frames.last().unwrap();
+        let frame = self.current_frame();
         match var.place {
             Place::Local => &self.locals_stack[frame.locals_start + var.slot],
             Place::ClosureEnv => match &*frame.closure_env {
@@ -372,7 +303,7 @@ impl Mem {
     }
 
     fn store(&mut self, dst: Var, val: RcVal) {
-        let frame = self.stack_frames.last().unwrap();
+        let frame = self.current_frame();
         match dst.place {
             Place::Local => {
                 let absolute_slot = frame.locals_start + dst.slot;
@@ -383,8 +314,9 @@ impl Mem {
             }
             Place::ClosureEnv => match &*frame.closure_env {
                 // SAFETY this seems bad, but we want closures to share an
-                // environment. We can restructure how closures work in a way
-                // that Rust likes, but this "works" for now.
+                // environment. We'll restructure how closures work in a way
+                // that Rust likes (hold them in a member vec & access by
+                // index), but this "works" for now.
                 Val::Vals(vals) => unsafe { (vals.as_ptr() as *mut RcVal).add(dst.slot).replace(val); }
                 // TODO if a closure env consists of one value, it's fine not to
                 // use a whole list.
@@ -395,28 +327,19 @@ impl Mem {
         }
     }
 
-    fn call_adverb_derived_func(&mut self, adverb: PrimAdverb, operand: RcVal) -> Result<(), String> {
-        let x = self.subject1.pop().unwrap();
-        let y = self.subject2.take();
-        let ret = self.call_prim_adverb(adverb, operand, x, y)?;
-        self.subject1.push(ret);
-        Ok(())
-    }
-
     fn call_val(&mut self, val: RcVal, x: RcVal, y: Option<RcVal>) -> Result<RcVal, String> {
         let result = match val.as_val() {
             &Val::ExplicitFunc { ref closure_env, code_index } => {
                 let frame = StackFrame {
+                    code_index,
                     closure_env: closure_env.clone(),
                     locals_start: self.locals_stack.len(),
-                    ret_addr: usize::MAX,
                 };
                 self.stack_frames.push(frame);
-                self.verb.push(val);
                 self.locals_stack.push(x);
                 self.locals_stack.push(y.unwrap_or(self.zero.clone()));
-                self.execute(code_index)?;  // TODO throwing away exit status?
-                self.subject1.pop().unwrap()
+                self.execute(code_index)?;
+                self.pop()
             }
             Val::AdverbDerivedFunc { adverb, operand } =>
                 self.call_prim_adverb(*adverb, operand.clone(), x, y)?,
@@ -473,17 +396,6 @@ impl Mem {
             Backslash => self.fold_val(operand, x, maybe_y)?,
         };
         Ok(result)
-    }
-
-    fn call_prim_verb(&mut self, prim: PrimVerb) -> Result<(), String> {
-        let x = self.subject1.pop().unwrap();  // TODO drop val?
-        let ret = if let Some(y) = self.subject2.take() {  // TODO drop val?
-            self.call_prim_dyad(prim, x, y)?
-        } else {
-            self.call_prim_monad(prim, x)?
-        };
-        self.subject1.push(ret);
-        Ok(())
     }
 
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
@@ -910,6 +822,7 @@ fn reverse(x: &RcVal) -> RcVal {
     }
 }
 
+// TODO reshape on list y
 fn take(x: RcVal, y: &Val) -> Result<RcVal, String> {
     let count = match y {
         &Val::Int(i) => if i >= 0 { i as usize } else { todo!("implement # with negative y") },
