@@ -1,4 +1,11 @@
-// next: Rec primitive for self-reference; unpacking assignment; refactor closures to avoid unsafe code
+// next: unpacking assignment; refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; arg syntax
+//
+// possible match conjunction (also usable as monad/dyad) (after arg syntax)
+// {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
+//
+// e.g.
+// Add:{(x) x + 1}::{(x;y) x + y}
+// MoveFirstToEnd:{([x;..rest]) rest,[x]}::{x}
 
 // Grammar
 // expr:
@@ -58,7 +65,7 @@ fn run_repl() -> Result<(), String> {
     let mut mem = vm::Mem::new();
 
     let print_and_pop_result = vec![
-        bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::Print },
+        bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint },
         bytecode::Instr::Pop,
     ];
     mem.code = print_and_pop_result;
@@ -94,7 +101,6 @@ fn run_repl() -> Result<(), String> {
         compiler.compile_block(&exprs)?;
 
         mem::swap(&mut mem.code, &mut compiler.code);
-        dbg!(&mem.code);
         mem.execute(code_start)?;
 
         mem::swap(&mut mem.code, &mut compiler.code);

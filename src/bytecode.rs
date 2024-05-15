@@ -17,7 +17,8 @@ pub enum Instr {
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions).
     AllocLocals { num_locals: usize },  // Allocates space for `num_locals` locals on the current stack frame.
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
-    PushLiteralInteger(i64),   // Copies value to subject1, pushing subject1's previous contents (if any)
+    PushLiteralInteger(i64),
+    PushLiteralFloat(f64),
     PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
     PushPrimVerb { prim: PrimVerb },  // Pushes `prim` onto stack.
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.

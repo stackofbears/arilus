@@ -51,6 +51,7 @@ pub enum SmallNoun {
     LowerName(String),
     Block(Vec<Expr>),  // parenthesized
     IntLiteral(i64),
+    FloatLiteral(f64),
     CharLiteral(u8),
     StringLiteral(String),
     ArrayLiteral(Vec<Expr>),
@@ -148,6 +149,24 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_small_noun(&mut self) -> Parsed<SmallNoun> {
+        let small_noun = match self.parse_small_noun_no_stranding()? {
+            None => return Ok(None),
+            Some(small_noun) => small_noun,
+        };
+        match self.parse_small_noun_no_stranding()? {
+            None => Ok(Some(small_noun)),
+            Some(next_small_noun) => {
+                let mut stranded_nouns = vec![Expr::Noun(Noun::SmallNoun(small_noun)),
+                                              Expr::Noun(Noun::SmallNoun(next_small_noun))];
+                while let Some(next_small_noun) = self.parse_small_noun_no_stranding()? {
+                    stranded_nouns.push(Expr::Noun(Noun::SmallNoun(next_small_noun)));
+                }
+                Ok(Some(ArrayLiteral(stranded_nouns)))
+            }
+        }
+    }
+
+    fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let small_noun = match self.peek() {
             Some(&Token::PrimNoun(prim)) => {
@@ -155,18 +174,21 @@ impl<'a> Parser<'a> {
                 PrimNoun(prim)
             }
             Some(Token::LowerName(name)) => {
-                let noun = LowerName(name.clone());
+                let name_clone = name.clone();
                 self.skip();
-                noun
+                LowerName(name_clone)
             }
-            Some(Token::IntLit(int)) => {
-                let noun = IntLiteral(*int);
+            Some(&Token::IntLit(int)) => {
                 self.skip();
-                noun
+                IntLiteral(int)
+            }
+            Some(&Token::FloatLit(float)) => {
+                self.skip();
+                FloatLiteral(float)
             }
             Some(Token::StrLit(s)) => {
                 let noun = if s.len() == 1 {
-                    CharLiteral(s.as_bytes()[0])
+                    CharLiteral(s.as_bytes()[0])  // TODO unicode
                 } else {
                     StringLiteral(s.clone())
                 };
@@ -196,10 +218,9 @@ impl<'a> Parser<'a> {
                     Some(bad) => return Err(format!("Unexpected `{bad}'; expected `]'")),
                     None => return Err(format!("Unexpected end of input; expected `]'")),
                 }
-            }                        
+            }
             _ => return Ok(None),
         };
-
         Ok(Some(small_noun))
     }
 

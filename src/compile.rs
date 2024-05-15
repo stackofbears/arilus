@@ -72,7 +72,8 @@ impl Compiler {
                 let src = self.fetch_var(name)?;
                 self.code.push(Instr::PushVar { src });
             }
-            SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim: *prim }),
+            SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
+            &SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim }),
             SmallVerb::Lambda(exprs) => {
                 let make_closure_index = self.push(Instr::Nop);
                 let make_func_index = self.push(Instr::Nop);
@@ -208,6 +209,11 @@ impl Compiler {
                 let verb = match prim {
                     lex::PrimNoun::Print => PrimVerb::Print,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
+                    lex::PrimNoun::Rec => PrimVerb::Rec,
+                    lex::PrimNoun::C0 => {
+                        self.code.push(Instr::LiteralBytes { bytes: [0; 8] });
+                        return Ok(())
+                    }
                 };
                 self.code.push(Instr::PushPrimVerb { prim: verb });
             }
@@ -217,6 +223,7 @@ impl Compiler {
             }
             Block(exprs) => self.compile_block(exprs)?,
             IntLiteral(int) => self.code.push(Instr::PushLiteralInteger(*int)),
+            FloatLiteral(float) => self.code.push(Instr::PushLiteralFloat(*float)),
             CharLiteral(byte) => {
                 let mut bytes = [0; 8];
                 bytes[0] = *byte;
