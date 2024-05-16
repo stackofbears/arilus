@@ -208,6 +208,7 @@ impl Compiler {
             PrimNoun(prim) => {
                 let verb = match prim {
                     lex::PrimNoun::Print => PrimVerb::Print,
+                    lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
                     lex::PrimNoun::Rec => PrimVerb::Rec,
                     lex::PrimNoun::C0 => {

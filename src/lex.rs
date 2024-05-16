@@ -111,12 +111,14 @@ pub enum Token {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimNoun {
     Print,
+    ReadFile,
     Rand,
     Rec,
     C0,  // The null character
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// TODO -: remove
 pub enum PrimVerb {
     DoublePipe,  // ||
     DoubleAmpersand,  // &&
@@ -146,6 +148,7 @@ pub enum PrimVerb {
     Ampersand, // &
 
     Print,
+    ReadFile,
     Rand,
     Rec,
     C0,
@@ -239,7 +242,23 @@ pub fn tokenize(mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
                     continue 'next_token;
                 }
                 if c == '\\' {
-                    if let Some(c2) = chars.next() { c = c2 } else { break }
+                    match chars.next() {
+                        None => break,
+                        // TODO more escapes, numeric escapes
+                        Some(c2) => c = match c2 {
+                            '"' => '"',
+                            '\\' => '\\',
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '0' => '\0',
+                            'x' => match chars.next().and_then(hex_digit_to_value).zip(chars.next().and_then(hex_digit_to_value)) {
+                                Some((hex1, hex2)) => char::from(hex1 * 16 + hex2),
+                                None => return Err(format!("Expected two hex digits after `\\x' escape in string literal")),
+                            },
+                            _ => c2,  // Just ignore the escape.
+                        },
+                    }
                 }
                 literal.push(c);
             }
@@ -285,6 +304,7 @@ impl Display for Token {
 impl Display for PrimNoun {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         let s: &str = match self {
+            PrimNoun::ReadFile => "readFile",
             PrimNoun::Print => "print",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
@@ -326,6 +346,7 @@ impl Display for PrimVerb {
             Question => "?",
             Ampersand => "&",
             Print => "Print",
+            ReadFile => "ReadFile",
             DebugPrint => "DebugPrint",
             Rand => "Rand",
             Rec => "Rec",
@@ -417,6 +438,8 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),
+        Token::PrimNoun(PrimNoun::ReadFile),
+        Token::PrimVerb(PrimVerb::ReadFile),
         Token::PrimNoun(PrimNoun::Rand),
         Token::PrimVerb(PrimVerb::Rand),
         Token::PrimNoun(PrimNoun::Rec),
@@ -431,5 +454,15 @@ fn prefix<F: FnMut(char) -> bool>(s: &str, mut pred: F) -> Option<(&str, &str)> 
         Some(0) => None,
         Some(i) => Some(s.split_at(i)),
         None => Some((s, "")),
+    }
+}
+
+fn hex_digit_to_value(c: char) -> Option<u8> {
+    if c.is_ascii_digit() {
+        Some(c as u8 - '0' as u8)
+    } else if c.is_ascii_hexdigit() {
+        Some(c.to_ascii_uppercase() as u8 - 'A' as u8 + 10)
+    } else {
+        None
     }
 }

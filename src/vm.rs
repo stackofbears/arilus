@@ -64,7 +64,7 @@ maybe closure envs are refs by default
 // TODO save an alloc+indirection: move small values out so RcVal is Small | Rc<BigVal>
 type RcVal = Rc<Val>;
 
-// TODO Ref
+// TODO Ref, Box to say functions shouldn't pervade
 #[derive(Debug, Clone)]
 pub enum Val {
     Char(u8),
@@ -76,7 +76,7 @@ pub enum Val {
     // TODO switch this out for the non-token type (some primitives won't have
     // token representations)
     PrimFunc(PrimVerb),
-    
+
     AdverbDerivedFunc {
         adverb: PrimAdverb,
         operand: RcVal,
@@ -109,6 +109,61 @@ macro_rules! atom {
     }
 }
 
+// trait Dispatch {
+//     type Output;
+//     fn on_atoms(x: Atom, y: Atom) -> Self::Output;
+//     fn // TODO godbolt basically zippevalls, do we have to keep matching for every element?
+// }
+
+// enum ClassifiedVal<'a> {
+//     Atom(Atom<'a>),
+//     List(List<'a>),
+// }
+
+// impl<'a> ClassifiedVal<'a> {
+//     fn data_atom(data: DataAtom) -> Self {
+//         ClassifiedVal::Atom(Atom::Data(data))
+//     }
+//     fn func_atom(data: FuncAtom<'a>) -> Self {
+//         ClassifiedVal::Atom(Atom::Func(data))
+//     }
+// }
+
+// enum List<'a> {
+//     U8s(&'a [u8]),
+//     I64s(&'a [i64]),
+//     F64s(&'a [f64]),
+//     Vals(&'a [RcVal]),
+// }
+
+// #[derive(Clone, Copy)]
+// enum Atom<'a> {
+//     Data(DataAtom),
+//     Func(FuncAtom<'a>),
+// }
+
+// #[derive(Clone, Copy)]
+// enum DataAtom {
+//     Char(u8),
+//     Int(i64),
+//     Float(f64),
+// }
+
+// #[derive(Clone, Copy)]
+// enum FuncAtom<'a> {
+//     PrimFunc(PrimVerb),
+
+//     AdverbDerivedFunc {
+//         adverb: PrimAdverb,
+//         operand: &'a RcVal,
+//     },
+
+//     ExplicitFunc {
+//         code_index: usize,
+//         closure_env: &'a RcVal,
+//     },
+// }
+
 impl Val {
     fn as_val(&self) -> &Self { &self }
 
@@ -122,9 +177,29 @@ impl Val {
             Vals(vec) => Some(vec.len()),
         }
     }
+
+    // fn classify<'a>(&'a self) -> ClassifiedVal<'a> {
+    //     use Val::*;
+    //     match self {
+    //         &Char(x) => ClassifiedVal::data_atom(DataAtom::Char(x)),
+    //         &Int(x) => ClassifiedVal::data_atom(DataAtom::Int(x)),
+    //         &Float(x) => ClassifiedVal::data_atom(DataAtom::Float(x)),
+
+    //         &PrimFunc(prim) => ClassifiedVal::func_atom(FuncAtom::PrimFunc(prim)),
+    //         &AdverbDerivedFunc { adverb, ref operand } =>
+    //             ClassifiedVal::func_atom(FuncAtom::AdverbDerivedFunc { adverb, operand }),
+    //         &ExplicitFunc { code_index, ref closure_env } =>
+    //             ClassifiedVal::func_atom(FuncAtom::ExplicitFunc { code_index, closure_env }),
+
+    //         U8s(vec) => ClassifiedVal::List(List::U8s(vec)),
+    //         I64s(vec) => ClassifiedVal::List(List::I64s(vec)),
+    //         F64s(vec) => ClassifiedVal::List(List::F64s(vec)),
+    //         Vals(vec) => ClassifiedVal::List(List::Vals(vec)),
+    //     }
+    // }
 }
 
-// This is used to implement sorting of opaque vals.
+// Val instances for val sorting.
 
 impl PartialEq for Val {
     fn eq(&self, other: &Val) -> bool {
@@ -138,9 +213,7 @@ impl PartialOrd for Val {
     }
 }
 
-impl Eq for Val {
-    
-}
+impl Eq for Val {}
 
 impl Ord for Val {
     fn cmp(&self, other: &Val) -> Ordering {
@@ -504,6 +577,7 @@ impl Mem {
         use PrimVerb::*;
         let result = match v {
             Print => { self.print_val(&x)?; x }
+            ReadFile => RcVal::new(read_file(x.as_val())?),
             DebugPrint => { self.debug_print_val(&x)?; x }
             Hash => RcVal::new(Val::Int(x.len().unwrap_or(1) as i64)),
             Slash => RcVal::new(iota(&*x)),
@@ -536,6 +610,8 @@ impl Mem {
             GreaterThanEquals => compare(&x, &y, |ord| ord >= Ordering::Equal),
             LessThan => compare(&x, &y, |ord| ord < Ordering::Equal),
             LessThanEquals => compare(&x, &y, |ord| ord <= Ordering::Equal),
+            LessThanColon => todo!(),  // min_vals(&x, &y),
+            GreaterThanColon => todo!(),  // max_vals(&x, &y),
             At => self.index_val(&x, &y),
             Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
@@ -686,6 +762,16 @@ struct ZippedVals {
     i: usize,
 }
 
+impl Iterator for ZippedVals {
+    type Item = (RcVal, RcVal);
+    fn next(&mut self) -> Option<Self::Item> {
+        let x_val = index_or_cycle_val(&self.x, self.i)?;
+        let y_val = index_or_cycle_val(&self.y, self.i)?;
+        self.i += 1;
+        Some((x_val, y_val))
+    }
+}
+
 fn iter_val(x: &RcVal) -> Option<ValIter> {
     if x.len().is_none() { return None }
     Some(ValIter { x: x.clone(), i: 0 })
@@ -711,16 +797,6 @@ fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
     })
 }
 
-impl Iterator for ZippedVals {
-    type Item = (RcVal, RcVal);
-    fn next(&mut self) -> Option<Self::Item> {
-        let x_val = index_or_cycle_val(&self.x, self.i)?;
-        let y_val = index_or_cycle_val(&self.y, self.i)?;
-        self.i += 1;
-        Some((x_val, y_val))
-    }
-}
-
 fn zip_exact<X: ExactSizeIterator, Y: ExactSizeIterator>(x: X, y: Y) -> Result<impl Iterator<Item=(X::Item, Y::Item)>, String> {
     let xlen = x.len();
     let ylen = y.len();
@@ -738,6 +814,21 @@ fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
 }
 
 // Primitives
+
+fn read_file(x: &Val) -> Result<Val, String> {
+    let mut byte: [u8; 1] = [0; 1];
+    let path = std::str::from_utf8(
+        match x {
+            Val::Char(c) => { byte[0] = *c; &byte }
+            Val::U8s(chars) => chars,
+            _ => return Err(format!("Error in `ReadFile': expected string filepath, got {x:?}")),
+        }
+    ).map_err(|err| err.to_string())?;
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(Val::U8s(contents.into_bytes())),
+        Err(err) => Err(err.to_string()),
+    }
+}
 
 fn float_as_int(f: f64) -> Option<i64> {
     let trunc = f.trunc();
@@ -835,6 +926,35 @@ fn add_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     };
     Ok(RcVal::new(result))
 }
+
+// fn add_vals2(x: &Val, y: &Val) -> Result<RcVal, String> {
+//     use Val::*;
+//     fn add_char_int(c: u8, i: i64) -> u8 {
+//         (c as i64 + i) as u8
+//     }
+
+//     fn as_int_or_fail(f: f64) -> Result<i64, String> {
+//         float_as_int(f).ok_or_else(|| format!("Error in `+': Expected integer, got float {f}"))
+//     }
+
+//     fn add_char_float(c: u8, f: f64) -> Result<u8, String> {
+//         Ok(add_char_int(c, as_int_or_fail(f)?))
+//     }
+
+//     let result = match (x.classify(), y.classify()) {
+//         (ClassifiedVal::Atom(Atom::Data(x)),
+//          ClassifiedVal::Atom(Atom::Data(y))) => {
+//             match (x, y) {
+//                 (DataAtom::Char(x), DataAtom::Int(y)) |  =>
+//             }
+//         }
+//         (ClassifiedVal::Atom(x), ClassifiedVal::List(ys)) => {}
+//         (ClassifiedVal::List(xs), ClassifiedVal::Atom(y)) => {}
+//         (ClassifiedVal::List(xs), ClassifiedVal::List(ys)) => {}
+//     };
+
+//     Ok(RcVal::new(result))
+// }
 
 fn subtract_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     use Val::*;
@@ -1287,6 +1407,21 @@ fn cmp_floats(down: bool, a: &f64, b: &f64) -> Ordering {
     let up = a.total_cmp(b);
     if down { up.reverse() } else { up }
 }
+
+// TODO
+// fn min_max(down: bool, x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+//     match zip_vals(x.as_val(), y.as_val()) {
+//         None => match cmp(x.as_val(), y.as_val()) {
+//             Ordering::Less => y.clone(),
+//             _ => x.clone(),
+//         }
+        
+//         Some(iter) => iter.map(
+//         (Val::U8s(chars), Val::Char(c)) => Val::I64s(
+//             chars.iter().
+//         ),
+//     }
+// }
 
 fn grade(x: &RcVal, down: bool) -> Val {
     let mut indices: Vec<i64> = vec![];
