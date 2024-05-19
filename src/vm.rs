@@ -109,6 +109,25 @@ macro_rules! atom {
     }
 }
 
+// enum Vals<'a> {
+//     Chars(Chars),
+//     Ints(Ints),
+//     Floats(Floats),
+//     Vals(Vals),
+
+//     CharsInts(CharsInts),
+//     CharsFloats(CharsFoats),
+//     CharsVals(CharsVals),
+
+//     IntsFloats(IntsFloats),
+//     IntsVals(IntsVals),
+// }
+
+// struct Chars<'a> {
+//     x: &'a [u8],
+//     i: usize,
+// }
+
 // trait Dispatch {
 //     type Output;
 //     fn on_atoms(x: Atom, y: Atom) -> Self::Output;
@@ -576,13 +595,15 @@ impl Mem {
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
-            Print => { self.print_val(&x)?; x }
+            Print => { self.print_val(&x)?; println!(); x }
+            DebugPrint => { self.debug_print_val(&x)?; println!(); x }
             ReadFile => RcVal::new(read_file(x.as_val())?),
-            DebugPrint => { self.debug_print_val(&x)?; x }
             Hash => RcVal::new(Val::Int(x.len().unwrap_or(1) as i64)),
             Slash => RcVal::new(iota(&*x)),
             Pipe => reverse(&x),
             Comma => ravel(&x),
+            Caret => RcVal::new(Val::Vals(prim_prefixes(&x))),
+            Dollar => RcVal::new(Val::Vals(prim_suffixes(&x))),
             LessThan => RcVal::new(sort(&x, false)),
             GreaterThan => RcVal::new(sort(&x, true)),
             LessThanColon => RcVal::new(grade(&x, false)),
@@ -613,28 +634,53 @@ impl Mem {
             LessThanColon => todo!(),  // min_vals(&x, &y),
             GreaterThanColon => todo!(),  // max_vals(&x, &y),
             At => self.index_val(&x, &y),
+            Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), &y.as_val())))),
             Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
         }
     }
     
-    // TODO output formatting
+    // TODO output formatting (take indent as arg)
     fn print_val(&self, x: &Val) -> Result<(), String> {
         match x {
-            Val::Char(c) => println!("{}", char::from_u32(*c as u32).unwrap()),
-            Val::Int(i) => println!("{i}"),
-            Val::Float(f) => println!("{f}"),
-            Val::PrimFunc(prim) => println!("{prim}"),
+            Val::Char(c) => print!("{}", char::from_u32(*c as u32).unwrap()),
+            Val::Int(i) => print!("{i}"),
+            Val::Float(f) => print!("{f}"),
+            Val::PrimFunc(prim) => print!("{prim}"),
             Val::U8s(chars) => match std::str::from_utf8(chars) {  // TODO unicode
-                Ok(s) => println!("{s}"),
+                Ok(s) => print!("{s}"),
                 Err(err) => return Err(err.to_string()),
             },
-            Val::I64s(ints) => println!("{ints:?}"),
-            Val::F64s(floats) => println!("{floats:?}"),
+            Val::I64s(ints) => {
+                if ints.is_empty() {
+                    print!("[]")
+                } else {
+                    print!("{}", ints[0]);
+                    for int in &ints[1..] { print!(" {int}") }
+                }
+            }
+            Val::F64s(floats) => {
+                if floats.is_empty() {
+                    print!("[]")
+                } else {
+                    print!("{}", floats[0]);
+                    for float in &floats[1..] { print!(" {float}") }
+                }
+            }
             Val::Vals(vals) => {
-                println!("[");
-                for val in vals { self.print_val(&*val)? }
-                println!("]");
+                if vals.is_empty() {
+                    print!("[]")
+                } else {
+                    let nested_list = vals.iter().any(|val| val.len().is_some());
+                    print!("[");
+                    self.debug_print_val(&vals[0])?;
+                    for val in &vals[1..] {
+                        if nested_list { print!("\n ") }
+                        else { print!("; ") }
+                        self.debug_print_val(val)?;
+                    }
+                    print!("]");
+                }
             }
             Val::AdverbDerivedFunc { adverb, operand } => {
                 print!("{adverb}");
@@ -642,44 +688,24 @@ impl Mem {
             }
             Val::ExplicitFunc { .. } => {
                 // map code index -> tokens?
-                println!("(explicit func; TODO: implement printing)")
+                print!("(explicit func; TODO: implement printing)")
             }
         }
-        
         Ok(())
     }
 
     // TODO output formatting
     fn debug_print_val(&self, x: &Val) -> Result<(), String> {
         match x {
-            Val::Char(c) => println!("{:?}", char::from_u32(*c as u32).unwrap()),
-            Val::Int(i) => println!("{i}"),
-            Val::Float(f) => println!("{f}"),
-            Val::PrimFunc(prim) => println!("{prim}"),
+            Val::Char(c) => print!("{:?}", char::from_u32(*c as u32).unwrap()),
             Val::U8s(chars) => match std::str::from_utf8(chars) {  // TODO unicode
-                Ok(s) => println!("{s:?}"),
+                Ok(s) => print!("{s:?}"),
                 Err(err) => return Err(err.to_string()),
             },
-            Val::I64s(ints) => println!("{ints:?}"),
-            Val::F64s(floats) => println!("{floats:?}"),
-            Val::Vals(vals) => {
-                println!("[");
-                for val in vals { self.print_val(&*val)? }
-                println!("]");
-            }
-            Val::AdverbDerivedFunc { adverb, operand } => {
-                print!("{adverb}");
-                self.print_val(operand.as_val())?;
-            }
-            Val::ExplicitFunc { .. } => {
-                // map code index -> tokens?
-                println!("(explicit func; TODO: implement printing)")
-            }
+            _ => self.print_val(x)?,
         }
-        
         Ok(())
     }
-    
 
     fn fold_val(&mut self, f: RcVal, x: RcVal, maybe_y: Option<RcVal>) -> Result<RcVal, String> {
         let (mut seed, start) = match maybe_y {
@@ -814,6 +840,57 @@ fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
 }
 
 // Primitives
+
+fn prim_prefixes(x: &RcVal) -> Vec<RcVal> {
+    fn get_prefixes<A: Clone, F: Fn(Vec<A>) -> Val>(xs: &Vec<A>, f: F) -> Vec<RcVal> {
+        (1..=xs.len()).map(|i| RcVal::new(f(xs[..i].to_vec()))).collect()
+    }
+
+    match x.as_val() {
+        Val::Char(c) if true => vec![RcVal::new(Val::U8s(vec![*c]))],
+        Val::Int(i) if true => vec![RcVal::new(Val::I64s(vec![*i]))],
+        Val::Float(f) if true => vec![RcVal::new(Val::F64s(vec![*f]))],
+        atom!() => vec![x.clone()],
+        Val::U8s(xs) => get_prefixes(xs, |vec| Val::U8s(vec)),
+        Val::I64s(xs) => get_prefixes(xs, |vec| Val::I64s(vec)),
+        Val::F64s(xs) => get_prefixes(xs, |vec| Val::F64s(vec)),
+        Val::Vals(xs) => get_prefixes(xs, |vec| Val::Vals(vec)),
+    }
+}
+
+fn prim_suffixes(x: &RcVal) -> Vec<RcVal> {
+    fn get_suffixes<A: Clone, F: Fn(Vec<A>) -> Val>(xs: &Vec<A>, f: F) -> Vec<RcVal> {
+        (0..xs.len()).map(|i| RcVal::new(f(xs[i..].to_vec()))).collect()
+    }
+
+    match x.as_val() {
+        Val::Char(c) if true => vec![RcVal::new(Val::U8s(vec![*c]))],
+        Val::Int(i) if true => vec![RcVal::new(Val::I64s(vec![*i]))],
+        Val::Float(f) if true => vec![RcVal::new(Val::F64s(vec![*f]))],
+        atom!() => vec![x.clone()],
+        Val::U8s(xs) => get_suffixes(xs, |vec| Val::U8s(vec)),
+        Val::I64s(xs) => get_suffixes(xs, |vec| Val::I64s(vec)),
+        Val::F64s(xs) => get_suffixes(xs, |vec| Val::F64s(vec)),
+        Val::Vals(xs) => get_suffixes(xs, |vec| Val::Vals(vec)),
+    }
+}
+
+// Attempts to find the whole of y as an element of x.
+// TODO flip argument order?
+fn prim_find(x: &Val, y: &Val) -> i64 {
+    use Val::*;
+    match (x, y) {
+        (atom!(), _) => if x == y { 0 } else { 1 },
+        (U8s(xs), Char(c)) => index_of(xs, c),
+        (I64s(xs), Int(i)) => index_of(xs, i),
+        (I64s(xs), Float(f)) =>
+            float_as_int(*f).map(|i| index_of(xs, &i)).unwrap_or(xs.len() as i64),
+        (F64s(xs), Float(f)) => index_of(xs, f),
+        (F64s(xs), Int(i)) => index_of(xs, &(*i as f64)),
+        (Vals(xs), _) => index_of(xs.iter().map(|rc_val| rc_val.as_val()), y),
+        _ => x.len().unwrap_or(1) as i64,
+    }
+}
 
 fn read_file(x: &Val) -> Result<Val, String> {
     let mut byte: [u8; 1] = [0; 1];
@@ -1669,4 +1746,14 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
         List::F64s(floats) => Val::F64s(floats),
         List::Vals(vals) => Val::Vals(vals),
     })
+}
+
+fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A>>(x: I, y: &A) -> i64 {
+    let mut i = 0i64;
+    let mut iter = x.into_iter();
+    while let Some(next) = iter.next() {
+        if next == y { break }
+        i += 1
+    }
+    return i
 }

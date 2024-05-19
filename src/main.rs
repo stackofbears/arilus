@@ -26,6 +26,7 @@
 // lit:
 //  num | "{"("(" args ")")? block "}"
 
+//mod explore;
 mod bytecode;
 mod compile;
 mod lex;
