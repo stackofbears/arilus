@@ -604,6 +604,7 @@ impl Mem {
             Comma => ravel(&x),
             Caret => RcVal::new(Val::Vals(prim_prefixes(&x))),
             Dollar => RcVal::new(Val::Vals(prim_suffixes(&x))),
+            Question => RcVal::new(prim_where(x.as_val())?),
             LessThan => RcVal::new(sort(&x, false)),
             GreaterThan => RcVal::new(sort(&x, true)),
             LessThanColon => RcVal::new(grade(&x, false)),
@@ -889,6 +890,43 @@ fn prim_find(x: &Val, y: &Val) -> i64 {
         (F64s(xs), Int(i)) => index_of(xs, &(*i as f64)),
         (Vals(xs), _) => index_of(xs.iter().map(|rc_val| rc_val.as_val()), y),
         _ => x.len().unwrap_or(1) as i64,
+    }
+}
+
+// Attempts to find the whole of y as an element of x.
+// TODO flip argument order?
+fn prim_where(x: &Val) -> Result<Val, String> {
+    fn replicate(i: usize, n: i64) -> impl Iterator<Item=i64> {
+        std::iter::repeat(i as i64).take(n as usize)
+    }
+
+    fn replicate_with_float(i: usize, f: f64) -> Result<impl Iterator<Item=i64>, String> {
+        match float_as_int(f) {
+            Some(n) => Ok(replicate(i, n)),
+            _ => Err(format!("Error in `?': Expected integer, got float {f}")),
+        }
+    }
+
+    use Val::*;
+    match x {
+        Int(i) => Ok(Val::I64s(replicate(0, *i).collect())),
+        Float(f) => Ok(Val::I64s(replicate_with_float(0, *f)?.collect())),
+        I64s(xs) => {
+            let mut vec = vec![];
+            for (i, n) in xs.iter().enumerate() {
+                vec.extend(replicate(i, *n))
+            }
+            Ok(Val::I64s(vec))
+        }
+        F64s(xs) => {
+            let mut vec = vec![];
+            for (i, f) in xs.iter().enumerate() {
+                vec.extend(replicate_with_float(i, *f)?)
+            }
+            Ok(Val::I64s(vec))
+        }
+        Vals(xs) => Ok(Val::Vals(xs.iter().map(|val| prim_where(val).map(RcVal::new)).collect::<Result<_, _>>()?)),
+        _ => Err(format!("Error in `?': Expected integers, got {x:?}")),
     }
 }
 
