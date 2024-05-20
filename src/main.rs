@@ -59,19 +59,32 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn run_repl() -> Result<(), String> {
-    let mut line = String::new();
-    let mut tokens = Vec::new();
-    let mut compiler = compile::Compiler::new();
-    let mut mem = vm::Mem::new();
+struct ReplSession {
+    line: String,
+    tokens: Vec<lex::Token>,
+    compiler: compile::Compiler,
+    mem: vm::Mem,
+}
 
-    let print_and_pop_result = vec![
-        bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint },
-        bytecode::Instr::Pop,
-    ];
-    mem.code = print_and_pop_result;
-    loop {
-        let token_start = tokens.len();
+impl ReplSession {
+    fn new() -> Self {
+        let mut mem = vm::Mem::new();
+        let print_and_pop_result = vec![
+            bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint },
+            bytecode::Instr::Pop,
+        ];
+        mem.code = print_and_pop_result;
+
+        Self {
+            line: String::new(),
+            tokens: Vec::new(),
+            compiler: compile::Compiler::new(),
+            mem,
+        }
+    }
+
+    fn run_line(&mut self) -> Result<(), String> {
+        let token_start = self.tokens.len();
         let mut nesting: i32 = 0;
         // TODO multiline strings
         // 
@@ -86,26 +99,35 @@ fn run_repl() -> Result<(), String> {
         loop {
             print!("  ");
             if let Err(err) = io::stdout().flush() { return Err(err.to_string()) }
-            if let Err(err) = io::stdin().read_line(&mut line) { return Err(err.to_string()) }
-            let line_start = tokens.len();
+            if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
+            let line_start = self.tokens.len();
             // TODO use line length to guess token count
-            lex::tokenize(&line, &mut tokens)?;
-            line.clear();
+            lex::tokenize(&self.line, &mut self.tokens)?;
+            self.line.clear();
 
-            nesting += count_nesting(&tokens[line_start..]);
+            nesting += count_nesting(&self.tokens[line_start..]);
             if nesting <= 0 { break }  // < 0 will raise a parse error
         }
-        let exprs = parse::parse(&tokens[token_start..])?;
-        if exprs.is_empty() { continue }
+        let exprs = parse::parse(&self.tokens[token_start..])?;
+        if exprs.is_empty() { return Ok(()) }
 
-        let code_start = compiler.code.len();
-        compiler.compile_block(&exprs)?;
+        let code_start = self.compiler.code.len();
+        self.compiler.compile_block(&exprs)?;
 
-        mem::swap(&mut mem.code, &mut compiler.code);
-        mem.execute(code_start)?;
+        mem::swap(&mut self.mem.code, &mut self.compiler.code);
+        self.mem.execute(code_start)?;
 
-        mem::swap(&mut mem.code, &mut compiler.code);
-        mem.execute(0)?;
+        mem::swap(&mut self.mem.code, &mut self.compiler.code);
+        self.mem.execute(0)
+    }
+}
+
+fn run_repl() -> Result<(), String> {
+    let mut session = ReplSession::new();
+    loop {
+        if let Err(err) = session.run_line() {
+            eprintln!("{}", err)
+        }
     }
 }
 

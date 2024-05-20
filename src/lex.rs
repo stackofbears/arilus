@@ -145,6 +145,7 @@ pub enum PrimVerb {
     GreaterThanEquals,  // >=
     Percent,   // %
     Question,  // ?
+    QuestionColon,  // ?:
     Ampersand, // &
 
     Print,
@@ -344,6 +345,7 @@ impl Display for PrimVerb {
             GreaterThanEquals => ">=",
             Percent => "%",
             Question => "?",
+            QuestionColon => "?:",
             Ampersand => "&",
             Print => "Print",
             ReadFile => "ReadFile",
@@ -417,6 +419,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(Pipe),
         PrimVerb(Plus),
         PrimVerb(Question),
+        PrimVerb(QuestionColon),
         PrimVerb(Slash),
         PrimVerb(DoubleSlash),
 

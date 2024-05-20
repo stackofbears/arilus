@@ -226,6 +226,32 @@ impl PartialEq for Val {
     }
 }
 
+impl PartialEq<u8> for Val {
+    fn eq(&self, other: &u8) -> bool {
+        matches!(self, Val::Char(c) if c == other)
+    }
+}
+
+impl PartialEq<i64> for Val {
+    fn eq(&self, other: &i64) -> bool {
+        match self {
+            Val::Int(i) => i == other,
+            Val::Float(f) => float_as_int(*f) == Some(*other),
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<f64> for Val {
+    fn eq(&self, other: &f64) -> bool {
+        match self {
+            Val::Float(f) => f == other,
+            Val::Int(i) => *i as f64 == *other,
+            _ => false,
+        }
+    }
+}
+
 impl PartialOrd for Val {
     fn partial_cmp(&self, other: &Val) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -617,13 +643,14 @@ impl Mem {
     fn call_prim_dyad(&mut self, v: PrimVerb, x: RcVal, y: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         match v {
-            Plus => add_vals(&*x, &*y),  // TODO take x,y by ref above?
-            Minus => subtract_vals(&*x, &*y),
-            Asterisk => multiply_vals(&*x, &*y),
-            Slash => divide_vals(&*x, &*y),
-            DoubleSlash => integer_divide_vals(&*x, &*y),
-            Caret => exponentiate_vals(&*x, &*y),
-            Hash => take(x, &*y),
+            Plus => add_vals(x.as_val(), y.as_val()),  // TODO take x,y by ref above?
+            Minus => subtract_vals(x.as_val(), y.as_val()),
+            Asterisk => multiply_vals(x.as_val(), y.as_val()),
+            Slash => divide_vals(x.as_val(), y.as_val()),
+            DoubleSlash => integer_divmod_vals(DivModOp::Div, x.as_val(), y.as_val()),
+            Percent => integer_divmod_vals(DivModOp::Mod, x.as_val(), y.as_val()),
+            Caret => exponentiate_vals(x.as_val(), y.as_val()),
+            Hash => take(x, y.as_val()),
             Comma => append(x, y),
             DoubleEquals => match_vals(x.as_val(), y.as_val()),
             Equals => compare(&x, &y, |ord| ord == Ordering::Equal),
@@ -632,10 +659,11 @@ impl Mem {
             GreaterThanEquals => compare(&x, &y, |ord| ord >= Ordering::Equal),
             LessThan => compare(&x, &y, |ord| ord < Ordering::Equal),
             LessThanEquals => compare(&x, &y, |ord| ord <= Ordering::Equal),
-            LessThanColon => todo!(),  // min_vals(&x, &y),
-            GreaterThanColon => todo!(),  // max_vals(&x, &y),
+            LessThanColon => choose_atoms(&x, &y, Val::le),
+            GreaterThanColon => choose_atoms(&x, &y, Val::ge),
             At => self.index_val(&x, &y),
-            Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), &y.as_val())))),
+            Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), y.as_val())))),
+            QuestionColon => Ok(RcVal::new(Val::I64s(prim_subsequence_starts(x.as_val(), y.as_val())))),
             Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
         }
@@ -824,11 +852,16 @@ fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
     })
 }
 
-fn zip_exact<X: ExactSizeIterator, Y: ExactSizeIterator>(x: X, y: Y) -> Result<impl Iterator<Item=(X::Item, Y::Item)>, String> {
-    let xlen = x.len();
-    let ylen = y.len();
+fn zip_exact<X: IntoIterator, Y: IntoIterator>(x: X, y: Y) ->
+    Result<impl Iterator<Item=(X::Item, Y::Item)>, String>
+where X::IntoIter: ExactSizeIterator,
+      Y::IntoIter: ExactSizeIterator {
+    let x_iter = x.into_iter();
+    let y_iter = y.into_iter();
+    let xlen = x_iter.len();
+    let ylen = y_iter.len();
     if xlen == ylen {
-        Ok(x.zip(y))
+        Ok(x_iter.zip(y_iter))
     } else {
         Err(format!("Length mismatch: {xlen} vs {ylen}"))
     }
@@ -876,6 +909,15 @@ fn prim_suffixes(x: &RcVal) -> Vec<RcVal> {
     }
 }
 
+fn choose_atoms<F: Copy + Fn(&Val, &Val) -> bool>(x: &RcVal, y: &RcVal, f: F) -> Result<RcVal, String> {
+    Ok(match zip_vals(x, y) {
+        None => if f(x.as_val(), y.as_val()) { x.clone() } else { y.clone() },
+        Some(iter) => RcVal::new(
+            collect_list(iter?.map(|(x, y)| choose_atoms(&x, &y, f)))?
+        ),
+    })
+}
+
 // Attempts to find the whole of y as an element of x.
 // TODO flip argument order?
 fn prim_find(x: &Val, y: &Val) -> i64 {
@@ -896,17 +938,6 @@ fn prim_find(x: &Val, y: &Val) -> i64 {
 // Attempts to find the whole of y as an element of x.
 // TODO flip argument order?
 fn prim_where(x: &Val) -> Result<Val, String> {
-    fn replicate(i: usize, n: i64) -> impl Iterator<Item=i64> {
-        std::iter::repeat(i as i64).take(n as usize)
-    }
-
-    fn replicate_with_float(i: usize, f: f64) -> Result<impl Iterator<Item=i64>, String> {
-        match float_as_int(f) {
-            Some(n) => Ok(replicate(i, n)),
-            _ => Err(format!("Error in `?': Expected integer, got float {f}")),
-        }
-    }
-
     use Val::*;
     match x {
         Int(i) => Ok(Val::I64s(replicate(0, *i).collect())),
@@ -928,6 +959,64 @@ fn prim_where(x: &Val) -> Result<Val, String> {
         Vals(xs) => Ok(Val::Vals(xs.iter().map(|val| prim_where(val).map(RcVal::new)).collect::<Result<_, _>>()?)),
         _ => Err(format!("Error in `?': Expected integers, got {x:?}")),
     }
+}
+
+fn prim_subsequence_starts(x: &Val, y: &Val) -> Vec<i64> {
+    use Val::*;
+
+    // TODO linear time impl
+    fn subsequence_starts_by<A, B, F: Fn(&A, &B) -> bool>(
+        text: &[A], pat: &[B], pred: F
+    ) -> Vec<i64> {
+        if pat.is_empty() { return replicate(1, text.len() as i64).collect() }
+
+        let mut out = Vec::with_capacity(text.len());
+        for i in 0..=(text.len() - pat.len()) {
+            let matches = text[i..].iter().zip(pat).all(|(t, p)| pred(t, p));
+            out.push(matches as i64);
+        }
+        out.extend(replicate(0, (pat.len() - 1) as i64));
+        out
+    }
+
+    fn subsequence_starts<A: PartialEq<B>, B>(text: &[A], pat: &[B]) -> Vec<i64> {
+        subsequence_starts_by(text, pat, PartialEq::eq)
+    }
+
+    let starts = match (x, y) {
+        (atom!(), atom!()) => vec![(x == y) as i64],
+        (U8s(xs), Char(y)) => subsequence_starts(xs, &[*y]),
+        (U8s(xs), U8s(ys)) => subsequence_starts(xs, ys),
+        (U8s(xs), Vals(ys)) => subsequence_starts_by(xs, ys, |x, y| y.as_val() == x),
+        (U8s(xs), _) => replicate(0, xs.len() as i64).collect(),
+
+        (I64s(xs), Int(y)) => xs.iter().map(|x| (x == y) as i64).collect(),
+        (I64s(xs), I64s(ys)) => subsequence_starts(xs, ys),
+        (I64s(xs), Vals(ys)) => subsequence_starts_by(xs, ys, |x, y| y.as_val() == x),
+        (I64s(xs), _) => replicate(0, xs.len() as i64).collect(),
+
+        (F64s(xs), Float(y)) => xs.iter().map(|x| (x == y) as i64).collect(),
+        (F64s(xs), F64s(ys)) => subsequence_starts(xs, ys),
+        (F64s(xs), Vals(ys)) => subsequence_starts_by(xs, ys, |x, y| y.as_val() == x),
+        (F64s(xs), _) => replicate(0, xs.len() as i64).collect(),
+
+        (Vals(xs), atom!()) => xs.iter().map(|x| (x.as_val() == y) as i64).collect(),
+
+        (Vals(xs), U8s(ys)) => subsequence_starts_by(xs, ys, |x, y| x.as_val() == y),
+        (Vals(xs), I64s(ys)) => subsequence_starts_by(xs, ys, |x, y| x.as_val() == y),
+        (Vals(xs), F64s(ys)) => subsequence_starts_by(
+            xs, ys,
+            |x, y| match x.as_val() {
+                Float(f) => f == y,
+                Int(i) => *i as f64 == *y,
+                _ => false,
+            }
+        ),
+        (Vals(xs), Vals(ys)) => subsequence_starts(xs, ys),
+        _ => todo!(),
+    };
+
+    starts
 }
 
 fn read_file(x: &Val) -> Result<Val, String> {
@@ -983,13 +1072,13 @@ fn add_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             U8s(chars.iter().map(|c| add_char_int(*c, i)).collect())
         }
         (I64s(x_ints), I64s(y_ints)) => I64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| *i + *j).collect()
+            zip_exact(x_ints, y_ints)?.map(|(i, j)| *i + *j).collect()
         ),
         (I64s(ints), Float(f)) | (Float(f), I64s(ints)) => F64s(
             ints.iter().map(|i| *i as f64 + *f).collect()
         ),
         (I64s(ints), F64s(floats)) | (F64s(floats), I64s(ints)) => {
-            let zipped = zip_exact(ints.iter(), floats.iter())?;
+            let zipped = zip_exact(ints, floats)?;
             if floats.iter().all(|f| f.trunc() == *f) {
                 I64s(zipped.map(|(i, f)| i + *f as i64).collect())
             } else {
@@ -997,7 +1086,7 @@ fn add_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             }
         }
         (F64s(floats), U8s(chars)) | (U8s(chars), F64s(floats)) => U8s(
-            zip_exact(chars.iter(), floats.iter())?
+            zip_exact(chars, floats)?
                 .map(|(c, f)| add_char_float(*c, *f))
                 .collect::<Result<_, _>>()?
         ),
@@ -1005,36 +1094,36 @@ fn add_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             floats.iter().map(|f| f + *i as f64).collect()
         ),
         (F64s(x_floats), F64s(y_floats)) => F64s(
-            zip_exact(x_floats.iter(), y_floats.iter())?.map(|(f, g)| *f + *g).collect()
+            zip_exact(x_floats, y_floats)?.map(|(f, g)| *f + *g).collect()
         ),
         (U8s(chars), I64s(ints)) |
         (I64s(ints), U8s(chars)) => U8s(
-            zip_exact(chars.iter(), ints.iter())?.map(|(c, i)| add_char_int(*c, *i)).collect()
+            zip_exact(chars, ints)?.map(|(c, i)| add_char_int(*c, *i)).collect()
         ),
         (Vals(vals), Int(i)) | (Int(i), Vals(vals)) => Vals(
-            vals.iter().map(|rc_val| add_vals(&*rc_val, &Int(*i))).collect::<Result<_, _>>()?
+            vals.iter().map(|rc_val| add_vals(rc_val.as_val(), &Int(*i))).collect::<Result<_, _>>()?
         ),
         (Vals(vals), I64s(ints)) |
         (I64s(ints), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), ints.iter())?
-                .map(|(rc_val, int)| add_vals(&*rc_val, &Val::Int(*int)))
+            zip_exact(vals, ints)?
+                .map(|(rc_val, int)| add_vals(rc_val.as_val(), &Val::Int(*int)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), F64s(floats)) |
         (F64s(floats), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
-                .map(|(rc_val, float)| add_vals(&*rc_val, &Val::Float(*float)))
+            zip_exact(vals, floats)?
+                .map(|(rc_val, float)| add_vals(rc_val.as_val(), &Val::Float(*float)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), U8s(chars)) |
         (U8s(chars), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), chars.iter())?
-                .map(|(rc_val, ch)| add_vals(&*rc_val, &Val::Char(*ch)))
+            zip_exact(vals, chars)?
+                .map(|(rc_val, ch)| add_vals(rc_val.as_val(), &Val::Char(*ch)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(x_vals), Vals(y_vals)) => Vals(
-            zip_exact(x_vals.iter(), y_vals.iter())?
-                .map(|(x_rc_val, y_rc_val)| add_vals(&*x_rc_val, &*y_rc_val))
+            zip_exact(x_vals, y_vals)?
+                .map(|(x_rc_val, y_rc_val)| add_vals(x_rc_val.as_val(), y_rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         _ => return Err(format!("Error in `+': Can't add {x:?} and {y:?}")),
@@ -1107,18 +1196,18 @@ fn subtract_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             U8s(chars.iter().map(|c| sub_char_int(*c, i)).collect())
         }
         (I64s(x_ints), I64s(y_ints)) => I64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| *i - *j).collect()
+            zip_exact(x_ints, y_ints)?.map(|(i, j)| *i - *j).collect()
         ),
         (F64s(x_floats), F64s(y_floats)) => F64s(
-            zip_exact(x_floats.iter(), y_floats.iter())?.map(|(f, g)| *f - *g).collect()
+            zip_exact(x_floats, y_floats)?.map(|(f, g)| *f - *g).collect()
         ),
         (U8s(chars), I64s(ints)) => U8s(
-            zip_exact(chars.iter(), ints.iter())?
+            zip_exact(chars, ints)?
                 .map(|(c, i)| sub_char_int(*c, *i))
                 .collect()
         ),
         (U8s(chars), F64s(floats)) => U8s(
-            zip_exact(chars.iter(), floats.iter())?
+            zip_exact(chars, floats)?
                 .map(|(c, f)| sub_char_float(*c, *f))
                 .collect::<Result<_, _>>()?
         ),
@@ -1126,7 +1215,7 @@ fn subtract_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             chars.iter().map(|ch| *ch as i64 - *c as i64).collect()
         ),
         (U8s(x_chars), U8s(y_chars)) => I64s(
-            zip_exact(x_chars.iter(), y_chars.iter())?.map(|(x, y)| *x as i64 - *y as i64).collect()
+            zip_exact(x_chars, y_chars)?.map(|(x, y)| *x as i64 - *y as i64).collect()
         ),
         (Vals(vals), Int(i)) => Vals(
             vals.iter()
@@ -1149,37 +1238,37 @@ fn subtract_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), I64s(ints)) => Vals(
-            zip_exact(vals.iter(), ints.iter())?
+            zip_exact(vals, ints)?
                 .map(|(rc_val, int)| subtract_vals(rc_val.as_val(), &Val::Int(*int)))
                 .collect::<Result<_, _>>()?
         ),
         (I64s(ints), Vals(vals)) => Vals(
-            zip_exact(ints.iter(), vals.iter())?
+            zip_exact(ints, vals)?
                 .map(|(int, rc_val)| subtract_vals(&Val::Int(*int), rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), F64s(floats)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
+            zip_exact(vals, floats)?
                 .map(|(rc_val, float)| subtract_vals(rc_val.as_val(), &Val::Float(*float)))
                 .collect::<Result<_, _>>()?
         ),
         (F64s(floats), Vals(vals)) => Vals(
-            zip_exact(floats.iter(), vals.iter())?
+            zip_exact(floats, vals)?
                 .map(|(float, rc_val)| subtract_vals(&Val::Float(*float), rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), U8s(chars)) => Vals(
-            zip_exact(vals.iter(), chars.iter())?
+            zip_exact(vals, chars)?
                 .map(|(rc_val, ch)| subtract_vals(rc_val.as_val(), &Val::Char(*ch)))
                 .collect::<Result<_, _>>()?
         ),
         (U8s(chars), Vals(vals)) => Vals(
-            zip_exact(chars.iter(), vals.iter())?
+            zip_exact(chars, vals)?
                 .map(|(ch, rc_val)| subtract_vals(&Val::Char(*ch), rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(x_vals), Vals(y_vals)) => Vals(
-            zip_exact(x_vals.iter(), y_vals.iter())?
+            zip_exact(x_vals, y_vals)?
                 .map(|(x_rc_val, y_rc_val)| subtract_vals(x_rc_val.as_val(), y_rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
@@ -1208,26 +1297,26 @@ fn multiply_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             F64s(floats.iter().map(|float| *float * f).collect())
         }
         (I64s(x_ints), I64s(y_ints)) => I64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| *i * *j).collect()
+            zip_exact(x_ints, y_ints)?.map(|(i, j)| *i * *j).collect()
         ),
         (F64s(x_floats), F64s(y_floats)) => F64s(
-            zip_exact(x_floats.iter(), y_floats.iter())?.map(|(f, g)| *f * *g).collect()
+            zip_exact(x_floats, y_floats)?.map(|(f, g)| *f * *g).collect()
         ),
         (Vals(vals), I64s(ints)) |
         (I64s(ints), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), ints.iter())?
-                .map(|(rc_val, int)| multiply_vals(&*rc_val, &Val::Int(*int)))
+            zip_exact(vals, ints)?
+                .map(|(rc_val, int)| multiply_vals(rc_val.as_val(), &Val::Int(*int)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), F64s(floats)) |
         (F64s(floats), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
-                .map(|(rc_val, float)| multiply_vals(&*rc_val, &Val::Float(*float)))
+            zip_exact(vals, floats)?
+                .map(|(rc_val, float)| multiply_vals(rc_val.as_val(), &Val::Float(*float)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(x_vals), Vals(y_vals)) => Vals(
-            zip_exact(x_vals.iter(), y_vals.iter())?
-                .map(|(x_rc_val, y_rc_val)| multiply_vals(&*x_rc_val, &*y_rc_val))
+            zip_exact(x_vals, y_vals)?
+                .map(|(x_rc_val, y_rc_val)| multiply_vals(x_rc_val.as_val(), y_rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), v) | (v, Vals(vals)) => Vals(
@@ -1238,12 +1327,22 @@ fn multiply_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
     Ok(RcVal::new(result))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DivModOp { Div, Mod }
+
 // TODO division by 0
-fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
+fn integer_divmod_vals(op_choice: DivModOp, x: &Val, y: &Val) -> Result<RcVal, String> {
+    macro_rules! op {
+        ($a:expr, $b:expr) => {
+            match op_choice { DivModOp::Div => $a / $b,
+                              DivModOp::Mod => $a % $b } as i64
+        };
+    }
+
     use Val::*;
     let result = match (x, y) {
-        (Int(i), Int(j)) => Int(i / j),
-        (Float(f), Float(g)) => Int((f / g) as i64),
+        (Int(i), Int(j)) => Int(op!(*i, *j)),
+        (Float(f), Float(g)) => Int(op!(*f, *g)),
         (I64s(ints), Int(i)) => I64s(
             ints.iter().map(|int| *int / *i).collect()
         ),
@@ -1257,7 +1356,7 @@ fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
         (Int(i), F64s(floats)) => I64s(floats.iter().map(|f| *i / *f as i64).collect()),
         (F64s(floats), Int(i)) => I64s(floats.iter().map(|f| *f as i64 / *i).collect()),
         (F64s(xs), F64s(ys)) => I64s(
-            zip_exact(xs.iter(), ys.iter())?.map(|(x, y)| (x / y) as i64).collect()
+            zip_exact(xs, ys)?.map(|(x, y)| (x / y) as i64).collect()
         ),
         (F64s(floats), Float(g)) => I64s(
             floats.iter().map(|float| (float / g) as i64).collect()
@@ -1266,40 +1365,44 @@ fn integer_divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             floats.iter().map(|g| (f / g) as i64).collect()
         ),
         (I64s(x_ints), I64s(y_ints)) => I64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| *i / *j).collect()
+            zip_exact(x_ints, y_ints)?.map(|(i, j)| *i / *j).collect()
         ),
         (Vals(vals), I64s(ints)) => Vals(
-            zip_exact(vals.iter(), ints.iter())?
-                .map(|(rc_val, int)| integer_divide_vals(rc_val.as_val(), &Val::Int(*int)))
+            zip_exact(vals, ints)?
+                .map(|(rc_val, int)| integer_divmod_vals(op_choice, rc_val.as_val(), &Val::Int(*int)))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), F64s(floats)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
-                .map(|(rc_val, float)| integer_divide_vals(rc_val.as_val(), &Val::Float(*float)))
+            zip_exact(vals, floats)?
+                .map(|(rc_val, float)| integer_divmod_vals(op_choice, rc_val.as_val(), &Val::Float(*float)))
                 .collect::<Result<_, _>>()?
         ),
         (F64s(floats), Vals(vals)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
-                .map(|(rc_val, float)| integer_divide_vals(rc_val.as_val(), &Val::Float(*float)))
+            zip_exact(vals, floats)?
+                .map(|(rc_val, float)| integer_divmod_vals(op_choice, rc_val.as_val(), &Val::Float(*float)))
                 .collect::<Result<_, _>>()?
         ),
         (I64s(ints), Vals(vals)) => Vals(
-            zip_exact(ints.iter(), vals.iter())?
-                .map(|(int, rc_val)| integer_divide_vals(&Val::Int(*int), &*rc_val))
+            zip_exact(ints, vals)?
+                .map(|(int, rc_val)| integer_divmod_vals(op_choice, &Val::Int(*int), rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(x_vals), Vals(y_vals)) => Vals(
-            zip_exact(x_vals.iter(), y_vals.iter())?
-                .map(|(x_rc_val, y_rc_val)| integer_divide_vals(&*x_rc_val, &*y_rc_val))
+            zip_exact(x_vals, y_vals)?
+                .map(|(x_rc_val, y_rc_val)| integer_divmod_vals(op_choice, x_rc_val.as_val(), y_rc_val.as_val()))
                 .collect::<Result<_, _>>()?
         ),
         (Vals(vals), v@atom!()) => collect_list(
-            vals.iter().map(|rc_val| integer_divide_vals(rc_val.as_ref(), v))
+            vals.iter().map(|rc_val| integer_divmod_vals(op_choice, rc_val.as_ref(), v))
         )?,
         (v@atom!(), Vals(vals)) => collect_list(
-            vals.iter().map(|rc_val| integer_divide_vals(v, rc_val.as_ref()))
+            vals.iter().map(|rc_val| integer_divmod_vals(op_choice, v, rc_val.as_ref()))
         )?,
-        _ => return Err(format!("Error in `//': Can't divide {x:?} and {y:?}")),
+        _ => {
+            let op_str = match op_choice { DivModOp::Div => &"//",
+                                           DivModOp::Mod => &"%" };
+            return Err(format!("Error in `{op_str}': Can't divide {x:?} and {y:?}"))
+        }
     };
     Ok(RcVal::new(result))
 }
@@ -1330,24 +1433,24 @@ fn divide_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             F64s(floats.iter().map(|g| f / *g).collect())
         }
         (F64s(xs), F64s(ys)) => F64s(
-            zip_exact(xs.iter(), ys.iter())?.map(|(x, y)| x / y).collect()
+            zip_exact(xs, ys)?.map(|(x, y)| x / y).collect()
         ),
         (I64s(x_ints), I64s(y_ints)) => F64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?
+            zip_exact(x_ints, y_ints)?
                 .map(|(i, j)| *i as f64 / *j as f64)
                 .collect()
         ),
         (Vals(vals), I64s(ints)) => collect_list(
-            zip_exact(vals.iter(), ints.iter())?
-                .map(|(rc_val, int)| divide_vals(&*rc_val, &Val::Int(*int)))
+            zip_exact(vals, ints)?
+                .map(|(rc_val, int)| divide_vals(rc_val.as_val(), &Val::Int(*int)))
         )?,
         (I64s(ints), Vals(vals)) => collect_list(
-            zip_exact(ints.iter(), vals.iter())?
-                .map(|(int, rc_val)| divide_vals(&Val::Int(*int), &*rc_val))
+            zip_exact(ints, vals)?
+                .map(|(int, rc_val)| divide_vals(&Val::Int(*int), rc_val.as_val()))
         )?,
         (Vals(x_vals), Vals(y_vals)) => collect_list(
-            zip_exact(x_vals.iter(), y_vals.iter())?
-                .map(|(x_rc_val, y_rc_val)| divide_vals(&*x_rc_val, &*y_rc_val))
+            zip_exact(x_vals, y_vals)?
+                .map(|(x_rc_val, y_rc_val)| divide_vals(x_rc_val.as_val(), y_rc_val.as_val()))
         )?,
         (Vals(vals), v@atom!()) => collect_list(vals.iter().map(|rc_val| divide_vals(rc_val.as_val(), v)))?,
         (v@atom!(), Vals(vals)) => collect_list(vals.iter().map(|rc_val| divide_vals(v, rc_val.as_val())))?,
@@ -1395,49 +1498,49 @@ fn exponentiate_vals(x: &Val, y: &Val) -> Result<RcVal, String> {
             ints.iter().map(|int| (*int as f64).powf(*pow)).collect()
         ),
         (I64s(ints), F64s(pows)) => F64s(
-            zip_exact(ints.iter(), pows.iter())?
+            zip_exact(ints, pows)?
                 .map(|(base, pow)| (*base as f64).powf(*pow))
                 .collect()
         ),
         (F64s(floats), I64s(pows)) => F64s(
-            zip_exact(floats.iter(), pows.iter())?
+            zip_exact(floats, pows)?
                 .map(|(base, pow)| base.powi(*pow as i32))
                 .collect()
         ),
         (F64s(floats), F64s(pows)) => F64s(
-            zip_exact(floats.iter(), pows.iter())?
+            zip_exact(floats, pows)?
                 .map(|(base, pow)| base.powf(*pow))
                 .collect()
         ),
         (I64s(x_ints), I64s(y_ints)) => I64s(
-            zip_exact(x_ints.iter(), y_ints.iter())?.map(|(i, j)| i.pow(*j as u32)).collect()
+            zip_exact(x_ints, y_ints)?.map(|(i, j)| i.pow(*j as u32)).collect()
         ),
-        (Vals(vals), I64s(ints)) => Vals(
-            zip_exact(vals.iter(), ints.iter())?
-                .map(|(rc_val, int)| exponentiate_vals(rc_val.as_val(), &Val::Int(*int)))
+        (Vals(xs), I64s(ys)) => Vals(
+            zip_exact(xs, ys)?
+                .map(|(x, y)| exponentiate_vals(x.as_val(), &Val::Int(*y)))
                 .collect::<Result<_, _>>()?
         ),
-        (I64s(ints), Vals(vals)) => Vals(
-            zip_exact(ints.iter(), vals.iter())?
-                .map(|(int, rc_val)| exponentiate_vals(&Val::Int(*int), rc_val.as_val()))
-                .collect::<Result<_, _>>()?
-        ),
-
-        (Vals(vals), F64s(floats)) => Vals(
-            zip_exact(vals.iter(), floats.iter())?
-                .map(|(rc_val, float)| exponentiate_vals(rc_val.as_val(), &Val::Float(*float)))
+        (I64s(xs), Vals(ys)) => Vals(
+            zip_exact(xs, ys)?
+                .map(|(x, y)| exponentiate_vals(&Val::Int(*x), y.as_val()))
                 .collect::<Result<_, _>>()?
         ),
 
-        (F64s(floats), Vals(vals)) => Vals(
-            zip_exact(floats.iter(), vals.iter())?
-                .map(|(float, rc_val)| exponentiate_vals(&Val::Float(*float), rc_val.as_val()))
+        (Vals(xs), F64s(ys)) => Vals(
+            zip_exact(xs, ys)?
+                .map(|(x, y)| exponentiate_vals(x.as_val(), &Val::Float(*y)))
                 .collect::<Result<_, _>>()?
         ),
 
-        (Vals(x_vals), Vals(y_vals)) => Vals(
-            zip_exact(x_vals.iter(), y_vals.iter())?
-                .map(|(x_rc_val, y_rc_val)| exponentiate_vals(x_rc_val.as_val(), y_rc_val.as_val()))
+        (F64s(xs), Vals(ys)) => Vals(
+            zip_exact(xs, ys)?
+                .map(|(x, y)| exponentiate_vals(&Val::Float(*x), y.as_val()))
+                .collect::<Result<_, _>>()?
+        ),
+
+        (Vals(xs), Vals(ys)) => Vals(
+            zip_exact(xs, ys)?
+                .map(|(x, y)| exponentiate_vals(x.as_val(), y.as_val()))
                 .collect::<Result<_, _>>()?
         ),
 
@@ -1764,7 +1867,7 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
                     list = List::Vals(vals);
                 }
             },
-            List::U8s(chars) => match &*val {
+            List::U8s(chars) => match val.as_val() {
                 Val::Char(c) => chars.push(*c),
                 _ => {
                     let mut vals: Vec<RcVal> =
@@ -1795,3 +1898,15 @@ fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A>>(x: I, y: &A) -> 
     }
     return i
 }
+
+fn replicate(i: usize, n: i64) -> impl Iterator<Item=i64> {
+    std::iter::repeat(i as i64).take(n as usize)
+}
+
+fn replicate_with_float(i: usize, f: f64) -> Result<impl Iterator<Item=i64>, String> {
+    match float_as_int(f) {
+        Some(n) => Ok(replicate(i, n)),
+        _ => Err(format!("Error in `?': Expected integer, got float {f}")),
+    }
+}
+
