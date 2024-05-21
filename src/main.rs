@@ -1,4 +1,4 @@
-// next: unpacking assignment; refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; arg syntax
+// next: unpacking assignment; refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; arg syntax; idiom recognition; train syntax
 //
 // possible match conjunction (also usable as monad/dyad) (after arg syntax)
 // {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
@@ -35,9 +35,9 @@ mod util;
 mod vm;
 
 use std::{
-    fs,
     io::{self, Write},
-    mem,
+    fs,
+    mem::swap,
 };
 
 fn main() -> io::Result<()> {
@@ -113,12 +113,17 @@ impl ReplSession {
 
         let code_start = self.compiler.code.len();
         self.compiler.compile_block(&exprs)?;
+        self.compiler.code.push(bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint });
+        self.compiler.code.push(bytecode::Instr::Pop);
 
-        mem::swap(&mut self.mem.code, &mut self.compiler.code);
-        self.mem.execute(code_start)?;
+        swap(&mut self.mem.code, &mut self.compiler.code);
+        let result = self.mem.execute(code_start);
+        swap(&mut self.mem.code, &mut self.compiler.code);
 
-        mem::swap(&mut self.mem.code, &mut self.compiler.code);
-        self.mem.execute(0)
+        self.compiler.code.pop();
+        self.compiler.code.pop();
+
+        result
     }
 }
 
