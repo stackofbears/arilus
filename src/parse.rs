@@ -27,7 +27,7 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub enum Noun {
-    LowerAssign(String, Box<Noun>),
+    LowerAssign(Pattern, Box<Noun>),
     SmallNoun(SmallNoun),
     Sentence(SmallNoun, Vec<Predicate>),
 }
@@ -160,6 +160,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_noun(&mut self) -> Parsed<Noun> {
+        let before_small_noun = self.token_index;
         let small_noun = match self.parse_small_noun()? {
             Some(small_noun) => small_noun,
             None => return Ok(None),
@@ -167,13 +168,15 @@ impl<'a> Parser<'a> {
 
         let noun = match self.peek() {
             Some(Token::Colon) => {
-                self.skip();
-                match small_noun {
-                    LowerName(name) => match self.parse_noun()? {
-                        Some(rhs) => LowerAssign(name, Box::new(rhs)),
-                        None => return Err(self.expected(&"RHS of noun assignment")),
-                    }
-                    _ => return Err(format!("Invalid noun assignment target: {small_noun:?}")),
+                self.token_index = before_small_noun;
+                let pattern = match self.parse_pattern()? {
+                    Some(pattern) => pattern,
+                    None => return Err(self.expected(&"pattern")),
+                };
+                assert!(self.consume(Token::Colon));
+                match self.parse_noun()? {
+                    Some(rhs) => LowerAssign(pattern, Box::new(rhs)),
+                    None => return Err(self.expected(&"RHS of noun assignment")),
                 }
             }
             None => SmallNoun(small_noun),

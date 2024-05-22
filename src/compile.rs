@@ -175,10 +175,9 @@ impl Compiler {
     fn compile_noun(&mut self, noun: &Noun) -> Result<(), String> {
         match noun {
             Noun::SmallNoun(small_noun) => self.compile_small_noun(small_noun)?,
-            Noun::LowerAssign(name, rhs) => {
+            Noun::LowerAssign(pat, rhs) => {
                 self.compile_noun(rhs)?;
-                let dst = self.fetch_var_in_current_scope(name);
-                self.code.push(Instr::StoreTo { dst });
+                self.compile_unpacking_assignment(pat, true);
             }
             Noun::Sentence(small_noun, predicates) => {
                 self.compile_small_noun(small_noun)?;

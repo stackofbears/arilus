@@ -442,14 +442,19 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
         Token::PrimNoun(PrimNoun::Exit),
         Token::PrimVerb(PrimVerb::Exit),
+
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),
+
         Token::PrimNoun(PrimNoun::ReadFile),
         Token::PrimVerb(PrimVerb::ReadFile),
+
         Token::PrimNoun(PrimNoun::Rand),
         Token::PrimVerb(PrimVerb::Rand),
+
         Token::PrimNoun(PrimNoun::Rec),
         Token::PrimVerb(PrimVerb::Rec),
+
         Token::PrimNoun(PrimNoun::C0),
         Token::PrimVerb(PrimVerb::C0),
     ].iter().map(|t| (t.to_string(), t.clone())).collect()
