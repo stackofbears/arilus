@@ -1,5 +1,8 @@
 // next: unpacking assignment; refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; arg syntax; idiom recognition; train syntax
 //
+// Possible primitive symbol changes:
+//   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
+//
 // possible match conjunction (also usable as monad/dyad) (after arg syntax)
 // {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
 //
@@ -115,7 +118,6 @@ impl ReplSession {
         self.compiler.compile_block(&exprs)?;
         self.compiler.code.push(bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint });
         self.compiler.code.push(bytecode::Instr::Pop);
-
         swap(&mut self.mem.code, &mut self.compiler.code);
         let result = self.mem.execute(code_start);
         swap(&mut self.mem.code, &mut self.compiler.code);

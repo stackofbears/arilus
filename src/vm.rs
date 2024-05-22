@@ -371,6 +371,7 @@ impl Mem {
             ip += 1;
             match self.code[ip - 1] {
                 Nop => {}
+                Dup => self.push(self.stack.last().unwrap().clone()),
                 Halt { exit_status } => std::process::exit(exit_status),
                 MakeClosure { num_closure_vars } => {
                     let num_instructions = match &self.code[ip] {
@@ -455,6 +456,36 @@ impl Mem {
                 }
                 Pop => { self.pop(); }
                 StoreTo { dst } => self.store(dst, self.stack.last().unwrap().clone()),
+                Splat { count } => {
+                    // TODO repetition
+                    match self.pop().as_val() {
+                        a@atom!() => return Err(format!("Array unpack failed; expected {count} elements, got atom {:?}", a)),
+                        Val::U8s(cs) => {
+                            if cs.len() != count {
+                                return Err(format!("Array unpack failed; expected {count} elements, got {}", cs.len()))
+                            }
+                            self.stack.extend(cs.iter().rev().map(|c| RcVal::new(Val::Char(*c))))
+                        }
+                        Val::I64s(is) => {
+                            if is.len() != count {
+                                return Err(format!("Array unpack failed; expected {count} elements, got {}", is.len()))
+                            }
+                            self.stack.extend(is.iter().rev().map(|i| RcVal::new(Val::Int(*i))))
+                        }
+                        Val::F64s(fs) =>  {
+                            if fs.len() != count {
+                                return Err(format!("Array unpack failed; expected {count} elements, got {}", fs.len()))
+                            }
+                            self.stack.extend(fs.iter().rev().map(|f| RcVal::new(Val::Float(*f))))
+                        }
+                        Val::Vals(vs) => {
+                            if vs.len() != count {
+                                return Err(format!("Array unpack failed; expected {count} elements, got {}", vs.len()))
+                            }
+                            self.stack.extend(vs.iter().rev().map(|v| v.clone()))
+                        }
+                    }
+                }
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
                     self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
@@ -557,6 +588,14 @@ impl Mem {
                 };
                 self.stack_frames.push(frame);
                 self.locals_stack.push(x);
+
+                // TODO functions can access this y when they shouldn't be able to
+                // 
+                //     F:{y}
+                //     []F
+                //   0
+                //
+                // functions that mention y should always be called dyadically?
                 self.locals_stack.push(y.unwrap_or(self.zero.clone()));
                 self.execute(code_index)?;
                 self.pop()
@@ -1582,7 +1621,7 @@ fn iota(x: &Val) -> Val {
     use Val::*;
     match x {
         &Int(i) => Val::I64s(if i >= 0 { 0..i } else { i..0 }.collect()),
-        _ => todo!("Implement / on non-ints"),
+        _ => todo!("Implement x/ on non-ints"),
     }
 }
 

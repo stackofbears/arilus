@@ -66,6 +66,27 @@ impl Compiler {
         Ok(())
     }
 
+    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep_top: bool) {
+        match pat {
+            Pattern::Name(name) => {
+                let dst = self.fetch_var_in_current_scope(name);
+                self.code.push(Instr::StoreTo { dst });
+                if !keep_top { self.code.push(Instr::Pop) }
+            }
+            Pattern::As(pat, as_pat) => {
+                self.compile_unpacking_assignment(&*pat, true);
+                self.compile_unpacking_assignment(&*as_pat, keep_top);
+            }
+            Pattern::Array(pats) => {
+                if keep_top { self.code.push(Instr::Dup) }
+                self.code.push(Instr::Splat { count: pats.len() });
+                for pat in pats {
+                    self.compile_unpacking_assignment(pat, false);
+                }
+            }
+        }
+    }
+
     fn compile_small_verb(&mut self, small_verb: &SmallVerb) -> Result<(), String> {
         match small_verb {
             SmallVerb::UpperName(name) => {
@@ -74,15 +95,29 @@ impl Compiler {
             }
             SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
             &SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim }),
-            SmallVerb::Lambda(exprs) => {
+            SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_closure_index = self.push(Instr::Nop);
                 let make_func_index = self.push(Instr::Nop);
                 let alloc_locals_index = self.push(Instr::Nop);
 
                 let mut scope = HashMap::new();
-                scope.insert("x".to_string(), local_var(0));
-                scope.insert("y".to_string(), local_var(1));  // Might not be used!
+                if let None = explicit_args {
+                    scope.insert("x".to_string(), local_var(0));
+                    scope.insert("y".to_string(), local_var(1));  // Might not be used!
+                }
                 self.scopes.push(scope);
+
+                if let Some(ExplicitArgs { x, y }) = explicit_args {
+                    if y.is_some() {
+                        self.code.push(Instr::PushVar { src: local_var(1) });
+                    }
+                    self.code.push(Instr::PushVar { src: local_var(0) });
+                    self.compile_unpacking_assignment(x, false);
+
+                    if let Some(y_pat) = y {
+                        self.compile_unpacking_assignment(y_pat, false);
+                    }
+                }
 
                 self.compile_block(exprs)?;
                 self.code.push(Instr::Return);
@@ -91,9 +126,13 @@ impl Compiler {
                 self.code[make_func_index] = Instr::MakeFunc { num_instructions };
 
                 let final_scope = self.scopes.pop().unwrap();
-                self.code[alloc_locals_index] =
+                let num_locals = {
+                    let including_args = get_num_local_vars(&final_scope);
                     // Remove 2 for automatically-allocated arguments.
-                    Instr::AllocLocals { num_locals: get_num_local_vars(&final_scope) - 2 };
+                    if including_args <= 2 { 0 } else { including_args - 2 }
+                };
+
+                self.code[alloc_locals_index] = Instr::AllocLocals { num_locals };
 
                 // Tell the outer scope how to populate the closure environment.
                 let mut closure_vars: Vec<(&String, &Var)> =
@@ -161,10 +200,8 @@ impl Compiler {
                                     else { Instr::Call1 }
                             });
                         }
-                        Predicate::ForwardAssignment(name) => {
-                            let dst = self.fetch_var_in_current_scope(name);
-                            self.code.push(Instr::StoreTo { dst });
-                        }
+                        Predicate::ForwardAssignment(pat) =>
+                            self.compile_unpacking_assignment(pat, true),
                     }
                 }
             }

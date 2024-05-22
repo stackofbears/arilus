@@ -1,3 +1,5 @@
+// TODO display newline as \n / "newline" in error messages instead of printing literal line feed
+
 use crate::lex;
 use crate::lex::*;
 
@@ -35,7 +37,7 @@ pub enum Noun {
 #[derive(Debug, Clone)]
 pub enum Predicate {
     VerbCall(Verb, Option<SmallNoun>),
-    ForwardAssignment(String),
+    ForwardAssignment(Pattern),
 }
 
 // TODO verb forward assignment?
@@ -61,9 +63,21 @@ pub enum SmallNoun {
 pub enum SmallVerb {
     UpperName(String),
     PrimVerb(lex::PrimVerb),
-    // TODO explicit args
-    Lambda(Vec<Expr>),
+    Lambda(Option<ExplicitArgs>, Vec<Expr>),
     Adverb(PrimAdverb, Box<SmallExpr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplicitArgs {
+    pub x: Pattern,
+    pub y: Option<Pattern>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Name(String),
+    Array(Vec<Pattern>),
+    As(Box<Pattern>, Box<Pattern>),
 }
 
 #[derive(Debug, Clone)]
@@ -90,24 +104,49 @@ impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&Token> { self.tokens.get(self.token_index) }
     fn skip(&mut self) { self.token_index += 1; }
 
-    fn skip_newlines(&mut self) {
+    fn expected(&self, expected: &str) -> String {
+        match self.peek() {
+            Some(bad) => format!("Unexpected `{bad}'; expected {expected}"),
+            None => format!("Unexpected end of input; expected {expected}"),
+        }
+    }
+
+    // True if any newlines were skipped.
+    fn skip_newlines(&mut self) -> bool {
+        let before = self.token_index;
         while let Some(Token::Newline) = self.peek() { self.skip() }
+        self.token_index > before
     }
 
     fn parse_exprs(&mut self) -> Many<Expr> {
+        self.parse_sequenced(Self::parse_expr)
+    }
+
+    fn parse_pattern_list(&mut self) -> Many<Pattern> {
+        self.parse_sequenced(Self::parse_pattern)
+    }
+
+    fn consume(&mut self, tok: Token) -> bool {
+        if self.peek() == Some(&tok) { self.skip(); true }
+        else { false }
+    }
+
+    fn parse_sequenced<A, F: Fn(&mut Self) -> Parsed<A>>(&mut self, parse: F) -> Many<A> {
         self.skip_newlines();
-        let mut exprs = vec![];  // TODO reserve
-        while let Some(expr) = self.parse_expr()? {
-            exprs.push(expr);
-            let separator = {
-                let before = self.token_index;
-                if let Some(Token::Semicolon) = self.peek() { self.skip(); }
-                self.skip_newlines();
-                self.token_index > before
-            };
-            if !separator { break; }
+        let mut ret = vec![];  // TODO reserve
+        let mut next_required = false;
+        loop {
+            match parse(self)? {
+                Some(parsed) => ret.push(parsed),
+                None if next_required => return Err(self.expected(&"expression")),
+                _ => break,
+            }
+
+            next_required = self.consume(Token::Semicolon);
+            let next_allowed = next_required | self.skip_newlines();
+            if !next_allowed { break }
         }
-        Ok(exprs)
+        Ok(ret)
     }
 
     fn parse_expr(&mut self) -> Parsed<Expr> {
@@ -133,10 +172,7 @@ impl<'a> Parser<'a> {
                 match small_noun {
                     LowerName(name) => match self.parse_noun()? {
                         Some(rhs) => LowerAssign(name, Box::new(rhs)),
-                        None => return match self.peek() {
-                            Some(bad) => Err(format!("Unexpected `{bad}'; expected RHS of noun assignment")),
-                            None => Err(format!("Unexpected end of input; expected RHS of noun assignment")),
-                        },
+                        None => return Err(self.expected(&"RHS of noun assignment")),
                     }
                     _ => return Err(format!("Invalid noun assignment target: {small_noun:?}")),
                 }
@@ -198,25 +234,19 @@ impl<'a> Parser<'a> {
             Some(Token::LParen) => {
                 self.skip();
                 let exprs = self.parse_exprs()?;
-                match self.peek() {
-                    Some(Token::RParen) => {
-                        self.skip();
-                        Block(exprs)
-                    }
-                    Some(bad) => return Err(format!("Unexpected `{bad}'; expected `)'")),
-                    None => return Err(format!("Unexpected end of input; expected `)'")),
+                if self.consume(Token::RParen) {
+                    Block(exprs)
+                } else {
+                    return Err(self.expected(&"`)'"))
                 }
             }
             Some(Token::LBracket) => {
                 self.skip();
                 let elems = self.parse_exprs()?;
-                match self.peek() {
-                    Some(Token::RBracket) => {
-                        self.skip();
-                        ArrayLiteral(elems)
-                    }
-                    Some(bad) => return Err(format!("Unexpected `{bad}'; expected `]'")),
-                    None => return Err(format!("Unexpected end of input; expected `]'")),
+                if self.consume(Token::RBracket) {
+                    ArrayLiteral(elems)
+                } else {
+                    return Err(self.expected(&"`]'"))
                 }
             }
             _ => return Ok(None),
@@ -227,20 +257,15 @@ impl<'a> Parser<'a> {
     fn parse_predicate(&mut self) -> Many<Predicate> {
         let mut predicates = vec![];
         loop {
-            if let Some(Token::RightArrow) = self.peek() {
-                self.skip();
-                match self.peek() {
-                    Some(Token::LowerName(name)) => {
-                        predicates.push(Predicate::ForwardAssignment(name.clone()));
-                        self.skip();
-                    }
-                    Some(bad) => return Err(format!("Unexpected `{bad}'; expected a name after `->'")),
-                    None => return Err(format!("Unexpected end of input; expected a name after `->'")),
+            if self.consume(Token::RightArrow) {
+                match self.parse_pattern()? {
+                    Some(pat) => predicates.push(Predicate::ForwardAssignment(pat)),
+                    None => return Err(self.expected(&"pattern after `->'")),
                 }
             } else if let Some(verb) = self.parse_verb()? {
-                predicates.push(Predicate::VerbCall(verb, self.parse_small_noun()?));
+                predicates.push(Predicate::VerbCall(verb, self.parse_small_noun()?))
             } else {
-                break;
+                break
             }
         }
         Ok(predicates)
@@ -252,24 +277,112 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let verb = match self.peek() {
-            Some(Token::Colon) => {
-                self.skip();
-                match small_verb {
-                    UpperName(name) => match self.parse_verb()? {
-                        Some(rhs) => UpperAssign(name, Box::new(rhs)),
-                        None => return match self.peek() {
-                            Some(bad) => Err(format!("Unexpected `{bad}'; expected RHS of verb assignment")),
-                            None => Err(format!("Unexpected end of input; expected RHS of verb assignment")),
-                        },
-                    }
-                    _ => return Err(format!("Invalid verb assignment target: {small_verb:?}")),
+        let verb = if self.consume(Token::Colon) {
+            match small_verb {
+                UpperName(name) => match self.parse_verb()? {
+                    Some(rhs) => UpperAssign(name, Box::new(rhs)),
+                    None => return Err(self.expected(&"RHS of verb assignment")),
                 }
+                _ => return Err(format!("Invalid verb assignment target: {small_verb:?}")),
             }
-            _ => SmallVerb(small_verb),
+        } else {
+            SmallVerb(small_verb)
         };
 
         Ok(Some(verb))
+    }
+
+    fn parse_small_pattern(&mut self) -> Parsed<Pattern> {
+        // TODO UpperName?
+        match self.peek() {
+            Some(Token::LowerName(name)) => {
+                let pat = Pattern::Name(name.clone());
+                self.skip();
+                Ok(Some(pat))
+            }
+            Some(Token::LBracket) => {
+                self.skip();
+                let names = self.parse_pattern_list()?;
+                if self.consume(Token::RBracket) {
+                    Ok(Some(Pattern::Array(names)))
+                } else {
+                    return Err(self.expected(&"`]' to end pattern"))
+                }
+            }
+            Some(Token::LParen) => {
+                self.skip();
+                let inner = match self.parse_pattern()? {
+                    Some(pat) => pat,
+                    None => return Err(self.expected(&"pattern")),
+                };
+
+                if self.consume(Token::RParen) {
+                    Ok(Some(inner))
+                } else {
+                    return Err(self.expected(&"`)'"))
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Parsed<Pattern> {
+        let mut pat = match self.parse_small_pattern()? {
+            None => return Ok(None),
+            Some(small_pat) => small_pat,
+        };
+
+        if let Some(next_small_pat) = self.parse_small_pattern()? {
+            let mut stranded_pats = vec![pat, next_small_pat];
+            while let Some(next_small_pat) = self.parse_small_pattern()? {
+                stranded_pats.push(next_small_pat)
+            }
+            pat = Pattern::Array(stranded_pats)
+        }
+
+        while self.consume(Token::RightArrow) {
+            match self.parse_pattern()? {
+                Some(next_pat) => pat = Pattern::As(Box::new(pat), Box::new(next_pat)),
+                None => return Err(self.expected(&"pattern after `->'")),
+            }
+        }
+
+        Ok(Some(pat))
+    }
+
+    fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
+        self.skip_newlines();
+        if !self.consume(Token::PrimVerb(lex::PrimVerb::Pipe)) {
+            return Ok(None)
+        }
+
+        self.skip_newlines();
+        let x = match self.parse_pattern()? {
+            Some(pat) => pat,
+            None => return Err(self.expected(&"pattern for explicit left argument")),
+        };
+
+        let y = {
+            let y_required = self.consume(Token::Semicolon);
+            let y_allowed = y_required | self.skip_newlines();
+
+            if y_allowed {
+                match self.parse_pattern()? {
+                    Some(pat) => Some(pat),
+                    None if y_required => return Err(self.expected(&"pattern for explicit right argument")),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        };
+
+        self.skip_newlines();
+        if !self.consume(Token::PrimVerb(lex::PrimVerb::Pipe)) {
+            return Err(self.expected(&"`|' to end explicit argument list"))
+        }
+
+        Ok(Some(ExplicitArgs { x, y }))
     }
 
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {
@@ -281,16 +394,15 @@ impl<'a> Parser<'a> {
             }
             Some(Token::LBrace) => {
                 self.skip();
-                // TODO explicit args
+                let explicit_args = self.parse_explicit_args()?;
                 let exprs = self.parse_exprs()?;
-                match self.peek() {
-                    Some(Token::RBrace) => {
-                        let lambda = Lambda(exprs);
-                        self.skip();
-                        lambda
-                    }
-                    Some(bad) => return Err(format!("Unexpected `{bad}'; expected `}}'")),
-                    None => return Err(format!("Unexpected end of input; expected `}}'")),
+                if exprs.is_empty() {  // TODO remove to enable () parse
+                    return Err(self.expected(&"expression"))
+                }
+                if self.consume(Token::RBrace) {
+                    Lambda(explicit_args, exprs)
+                } else {
+                    return Err(self.expected("`;', newline, or `}}'"))
                 }
             }
             Some(Token::PrimVerb(prim_verb)) => {
@@ -302,10 +414,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 match self.parse_small_expr()? {
                     Some(adverb_operand) => Adverb(prim_adverb, Box::new(adverb_operand)),
-                    None => return match self.peek() {
-                        Some(bad) => Err(format!("Unexpected `{bad}'; expected operand for adverb `{prim_adverb}'")),
-                        None => Err(format!("Unexpected end of input; expected operand for adverb `{prim_adverb}'")),
-                    }
+                    None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
                 }
             }
             _ => return Ok(None),

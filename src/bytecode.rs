@@ -12,6 +12,7 @@ use crate::lex::*;
 #[derive(Debug, Clone, Copy)]
 pub enum Instr {
     Nop,
+    Dup,  // Duplicates the top stack element.
     Halt { exit_status: i32 },  // Terminate the virtual machine and return `exit_status` to the OS.
     MakeClosure { num_closure_vars: usize },  // Immediately followed by MakeFunc and the function's body, then `num_closure_vars` PushVar instructions which form the closure environment.  Leaves the function object in subject1. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions).
@@ -33,6 +34,15 @@ pub enum Instr {
 
     // Pops the top `num_elems` stack elements and collects them into an array, which is then pushed.
     CollectToArray { num_elems: usize },
+
+    // Signals an error if the top element isn't an array of exactly `count`
+    // elements. Otherwise, pushes that array's elements in reverse order (so
+    // that the array's first element ends up on the top).
+    //
+    // TODO maybe pops the top of the stack? Popping is good for argument
+    // lists/nested patterns, but for forward assignment we want to keep the
+    // topmost val there.
+    Splat { count: usize },
 }
                
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
