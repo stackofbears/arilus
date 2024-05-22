@@ -116,14 +116,27 @@ impl ReplSession {
 
         let code_start = self.compiler.code.len();
         self.compiler.compile_block(&exprs)?;
-        self.compiler.code.push(bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint });
+
+        let is_assignment = matches!(exprs.last(),
+                                     Some(
+                                         parse::Expr::Noun(parse::Noun::LowerAssign(_, _)) |
+                                         parse::Expr::Verb(parse::Verb::UpperAssign(_, _))
+                                     ));
+        if !is_assignment {
+            self.compiler.code.push(bytecode::Instr::CallPrimVerb1 {
+                prim: lex::PrimVerb::DebugPrint
+            });
+        }
         self.compiler.code.push(bytecode::Instr::Pop);
+
         swap(&mut self.mem.code, &mut self.compiler.code);
         let result = self.mem.execute(code_start);
         swap(&mut self.mem.code, &mut self.compiler.code);
 
         self.compiler.code.pop();
-        self.compiler.code.pop();
+        if !is_assignment {
+            self.compiler.code.pop();
+        }
 
         result
     }
