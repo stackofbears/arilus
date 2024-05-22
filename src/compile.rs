@@ -244,6 +244,7 @@ impl Compiler {
         match small_noun {
             PrimNoun(prim) => {
                 let verb = match prim {
+                    lex::PrimNoun::Exit => PrimVerb::Exit,
                     lex::PrimNoun::Print => PrimVerb::Print,
                     lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,

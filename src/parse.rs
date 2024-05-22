@@ -1,5 +1,3 @@
-// TODO display newline as \n / "newline" in error messages instead of printing literal line feed
-
 use crate::lex;
 use crate::lex::*;
 
@@ -106,6 +104,7 @@ impl<'a> Parser<'a> {
 
     fn expected(&self, expected: &str) -> String {
         match self.peek() {
+            Some(Token::Newline) => format!("Unexpected newline; expected {expected}"),
             Some(bad) => format!("Unexpected `{bad}'; expected {expected}"),
             None => format!("Unexpected end of input; expected {expected}"),
         }

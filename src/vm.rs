@@ -372,7 +372,6 @@ impl Mem {
             match self.code[ip - 1] {
                 Nop => {}
                 Dup => self.push(self.stack.last().unwrap().clone()),
-                Halt { exit_status } => std::process::exit(exit_status),
                 MakeClosure { num_closure_vars } => {
                     let num_instructions = match &self.code[ip] {
                         MakeFunc { num_instructions } => { ip += 1; num_instructions }
@@ -459,28 +458,28 @@ impl Mem {
                 Splat { count } => {
                     // TODO repetition
                     match self.pop().as_val() {
-                        a@atom!() => return Err(format!("Array unpack failed; expected {count} elements, got atom {:?}", a)),
+                        a@atom!() => return Err(format!("Array unpacking failed; expected {count} elements, got atom {:?}", a)),
                         Val::U8s(cs) => {
                             if cs.len() != count {
-                                return Err(format!("Array unpack failed; expected {count} elements, got {}", cs.len()))
+                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", cs.len()))
                             }
                             self.stack.extend(cs.iter().rev().map(|c| RcVal::new(Val::Char(*c))))
                         }
                         Val::I64s(is) => {
                             if is.len() != count {
-                                return Err(format!("Array unpack failed; expected {count} elements, got {}", is.len()))
+                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", is.len()))
                             }
                             self.stack.extend(is.iter().rev().map(|i| RcVal::new(Val::Int(*i))))
                         }
                         Val::F64s(fs) =>  {
                             if fs.len() != count {
-                                return Err(format!("Array unpack failed; expected {count} elements, got {}", fs.len()))
+                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", fs.len()))
                             }
                             self.stack.extend(fs.iter().rev().map(|f| RcVal::new(Val::Float(*f))))
                         }
                         Val::Vals(vs) => {
                             if vs.len() != count {
-                                return Err(format!("Array unpack failed; expected {count} elements, got {}", vs.len()))
+                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", vs.len()))
                             }
                             self.stack.extend(vs.iter().rev().map(|v| v.clone()))
                         }
@@ -675,6 +674,7 @@ impl Mem {
             GreaterThan => RcVal::new(prim_sort(&x, true)),
             LessThanColon => RcVal::new(prim_grade(&x, false)),
             GreaterThanColon => RcVal::new(prim_grade(&x, true)),
+            Exit => prim_exit(&x)?,
             _ => todo!("{x:?} {v:?}")
         };
         Ok(result)
@@ -704,7 +704,6 @@ impl Mem {
             At => self.prim_index(&x, &y),
             Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), y.as_val())))),
             QuestionColon => Ok(RcVal::new(Val::I64s(prim_subsequence_starts(x.as_val(), y.as_val())))),
-            Snoc => todo!(),
             _ => todo!("{x:?} {v:?} {y:?}"),
         };
         result.map_err(|err| format!("Error in `{v}': {err}"))
@@ -829,6 +828,16 @@ impl Mem {
 }
 
 // Primitives
+
+fn prim_exit(x: &RcVal) -> Result<RcVal, String> {
+    use std::process::exit;
+
+    match x.as_val() {
+        Val::Int(i) => exit(*i as i32),
+        Val::Float(f) if *f == f.trunc() => exit(*f as i32),
+        bad => return Err(format!("domain\nExpected integer exit code, got {bad:?}")),
+    }
+}
 
 fn prim_prefixes(x: &RcVal) -> Vec<RcVal> {
     fn get_prefixes<A: Clone, F: Fn(Vec<A>) -> Val>(xs: &Vec<A>, f: F) -> Vec<RcVal> {

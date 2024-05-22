@@ -110,6 +110,7 @@ pub enum Token {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimNoun {
+    Exit,
     Print,
     ReadFile,
     Rand,
@@ -148,6 +149,7 @@ pub enum PrimVerb {
     QuestionColon,  // ?:
     Ampersand, // &
 
+    Exit,
     Print,
     ReadFile,
     Rand,
@@ -156,7 +158,6 @@ pub enum PrimVerb {
 
     // Hidden primitives below; these have no string representation and
     // shouldn't be in the token enum. TODO move these to compilation.
-    Snoc,
 
     // Currently used only for repl display, but this could be exposed once
     // prints in valid syntax (instead of Rust Debug).
@@ -306,6 +307,7 @@ impl Display for PrimNoun {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         let s: &str = match self {
             PrimNoun::ReadFile => "readFile",
+            PrimNoun::Exit => "exit",
             PrimNoun::Print => "print",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
@@ -347,14 +349,13 @@ impl Display for PrimVerb {
             Question => "?",
             QuestionColon => "?:",
             Ampersand => "&",
+            Exit => "Exit",
             Print => "Print",
             ReadFile => "ReadFile",
             DebugPrint => "DebugPrint",
             Rand => "Rand",
             Rec => "Rec",
             C0 => "C0",
-            // The verbs below are technically hidden from the user.
-            Snoc => "Snoc",
         };
 
         f.write_str(s)
@@ -439,6 +440,8 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
 // These are primitives that would otherwise lex as identifiers.
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
+        Token::PrimNoun(PrimNoun::Exit),
+        Token::PrimVerb(PrimVerb::Exit),
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),
         Token::PrimNoun(PrimNoun::ReadFile),
