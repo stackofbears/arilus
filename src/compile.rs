@@ -255,6 +255,7 @@ impl Compiler {
                     lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
                     lex::PrimNoun::Rec => PrimVerb::Rec,
+                    lex::PrimNoun::Type => PrimVerb::Type,
                     lex::PrimNoun::C0 => {
                         self.code.push(Instr::LiteralBytes { bytes: [0; 8] });
                         return Ok(())

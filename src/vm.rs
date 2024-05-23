@@ -673,6 +673,7 @@ impl Mem {
             GreaterThan => RcVal::new(prim_sort(&x, true)),
             LessThanColon => RcVal::new(prim_grade(&x, false)),
             GreaterThanColon => RcVal::new(prim_grade(&x, true)),
+            Type => RcVal::new(Val::U8s(prim_type(x.as_val()))),
             Exit => prim_exit(&x)?,
             _ => todo!("{x:?} {v:?}")
         };
@@ -828,6 +829,22 @@ impl Mem {
 }
 
 // Primitives
+
+fn prim_type(x: &Val) -> Vec<u8> {
+    let s = match x {
+        Val::Char(_) => &"char",
+        Val::Int(_) => &"int",
+        Val::Float(_) => &"float",
+        Val::PrimFunc(_) |
+        Val::AdverbDerivedFunc{..} |
+        Val::ExplicitFunc{..} => &"function",
+        Val::U8s(_) => &"string",
+        Val::I64s(_) => &"int list",
+        Val::F64s(_) => &"float list",
+        Val::Vals(_) => &"val list",
+    };
+    s.as_bytes().to_vec()
+}
 
 fn prim_show(x: &Val) -> Result<Val, String> {
     fn as_bytes<A: ToString>(a: A) -> Val {

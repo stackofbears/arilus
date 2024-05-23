@@ -236,6 +236,7 @@ pub enum PrimNoun {
     ReadFile,
     Rand,
     Rec,
+    Type,
     C0,  // The null character
 }
 
@@ -277,6 +278,7 @@ pub enum PrimVerb {
     ReadFile,
     Rand,
     Rec,
+    Type,
     C0,
 
     // Hidden primitives below; these have no string representation and
@@ -337,6 +339,7 @@ impl Display for PrimNoun {
             PrimNoun::ReadFile => "readFile",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
+            PrimNoun::Type => "Type",
             PrimNoun::C0 => "c0",
         };
 
@@ -382,6 +385,7 @@ impl Display for PrimVerb {
             ReadFile => "ReadFile",
             Rand => "Rand",
             Rec => "Rec",
+            Type => "Type",
             C0 => "C0",
             DebugPrint => "DebugPrint",
         };
@@ -482,6 +486,9 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
 
         Token::PrimNoun(PrimNoun::Rec),
         Token::PrimVerb(PrimVerb::Rec),
+
+        Token::PrimNoun(PrimNoun::Type),
+        Token::PrimVerb(PrimVerb::Type),
 
         Token::PrimNoun(PrimNoun::C0),
         Token::PrimVerb(PrimVerb::C0),
