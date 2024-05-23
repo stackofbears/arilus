@@ -3,6 +3,126 @@ use std::{
     fmt::{Display, Formatter, Error},
 };
 
+use crate::util::*;
+
+pub struct Lexer {
+    // Tokens that are never a prefix of another token, other than tokens also
+    // in this list. Longer-length tokens appear first so e.g. "->" lexes as
+    // "->" and not "-" then ">".
+    literal_symbol_tokens: Vec<(String, Token)>,
+
+    // Primitives that would otherwise lex as identifiers.
+    literal_identifier_tokens: HashMap<String, Token>,
+}
+
+impl Lexer {
+    pub fn new() -> Self {
+        Self {
+            literal_symbol_tokens: literal_symbol_tokens(),
+            literal_identifier_tokens: literal_identifier_tokens(),
+        }
+    }
+
+    pub fn tokenize_to_vec(&self, text: &str) -> Result<Vec<Token>, String> {
+        let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
+        self.tokenize(text, &mut tokens)?;
+        Ok(tokens)
+    }
+
+    // TODO better error than String
+    pub fn tokenize(&self, mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
+        use Token::*;
+        'next_token: loop {
+            text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
+            if text.is_empty() { break }
+
+            // Comments
+            if text.starts_with(&"\\ ") {
+                match text.find('\n') {
+                    None => break,
+                    Some(i) => { text = &text[i..]; continue }
+                }
+            }
+
+            // Literal tokens/keywords
+            for (expected, token) in &self.literal_symbol_tokens {
+                if let Some(rest) = text.strip_prefix(expected) {
+                    text = rest;
+                    tokens.push(token.clone());
+                    continue 'next_token;
+                }
+            }
+
+            if let Some((number_token, after_number)) = lex_number(text)? {
+                tokens.push(number_token);
+                text = after_number;
+                continue 'next_token;
+            }
+
+            let is_identifier_char = |c: char| c.is_alphabetic() || c.is_digit(10) || c == '_';
+
+            // Identifiers
+            if let Some((name, after_name)) = prefix(text, is_identifier_char) {
+                let first_char = name.chars().next().unwrap();
+                let token = if let Some(keyword) = self.literal_identifier_tokens.get(name) {
+                    keyword.clone()
+                } else if first_char.is_ascii_uppercase() {
+                    let mut name = name.to_string();
+                    // SAFETY: We know that index 0 is ASCII.
+                    unsafe { name.as_bytes_mut()[0] = first_char.to_ascii_lowercase() as u8; }
+                    UpperName(name)
+                } else if first_char.is_ascii_lowercase() {
+                    LowerName(name.to_string())
+                } else {
+                    return err!("Unexpected: {name:?}; identifiers must begin with an ASCII alphabetic character.");
+                };
+                tokens.push(token);
+                text = after_name;
+                continue 'next_token;
+            }
+            
+            // String literals
+            if let Some(after_quote) = text.strip_prefix("\"") {
+                let mut chars = after_quote.chars();
+                let mut literal = String::new();
+                while let Some(mut c) = chars.next() {
+                    if c == '"' {
+                        tokens.push(StrLit(literal));
+                        text = chars.as_str();
+                        continue 'next_token;
+                    }
+                    if c == '\\' {
+                        match chars.next() {
+                            None => break,
+                            // TODO more escapes, numeric escapes
+                            Some(c2) => c = match c2 {
+                                '"' => '"',
+                                '\\' => '\\',
+                                'n' => '\n',
+                                't' => '\t',
+                                'r' => '\r',
+                                '0' => '\0',
+                                'x' => match chars.next().and_then(hex_digit_to_value).zip(chars.next().and_then(hex_digit_to_value)) {
+                                    Some((hex1, hex2)) => char::from(hex1 * 16 + hex2),
+                                    None => return err!("Expected two hex digits after `\\x' escape in string literal"),
+                                },
+                                _ => c2,  // Just ignore the escape.
+                            },
+                        }
+                    }
+                    literal.push(c);
+                }
+                return err!("Unterminated string literal");
+            }
+
+            return err!("Invalid syntax: {}...", &text[0..10.min(text.len())]);
+        }
+        Ok(())
+    }
+}
+
+
+
 fn lex_number(mut text: &str) -> Result<Option<(Token, &str)>, String> {
     use std::str::FromStr;
     // TODO hex/arbitrary base
@@ -49,8 +169,8 @@ fn lex_number(mut text: &str) -> Result<Option<(Token, &str)>, String> {
                 let exponent = parse::<i32>(suffix)?;
                 if negative_exponent { -exponent } else { exponent }
             }
-            None => return Err(format!("Invalid float literal: expected digits after `{}'",
-                                       &start[..(start.len() - text.len())])),
+            None => return err!("Invalid float literal: expected digits after `{}'",
+                                       &start[..(start.len() - text.len())]),
         }
     } else {
         0
@@ -65,14 +185,14 @@ fn lex_number(mut text: &str) -> Result<Option<(Token, &str)>, String> {
         }
         // Float
         None => {
-            let mut int = parse::<f64>(integer_part)?;
-            if negative { int = -int }
-            Token::FloatLit(int * 10f64.powi(exponent))
+            let mut coefficient = parse::<f64>(integer_part)?;
+            if negative { coefficient = -coefficient }
+            Token::FloatLit(coefficient * 10f64.powi(exponent))
         }
         Some(decimal_part) => {
-            let mut int = parse::<f64>(integer_part)?;
-            if negative { int = -int }
-            Token::FloatLit((int + decimal_part) * 10f64.powi(exponent))
+            let mut coefficient = parse::<f64>(integer_part)? + decimal_part;
+            if negative { coefficient = -coefficient }
+            Token::FloatLit(coefficient * 10f64.powi(exponent))
         }
     };
 
@@ -111,6 +231,7 @@ pub enum Token {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimNoun {
     Exit,
+    Show,
     Print,
     ReadFile,
     Rand,
@@ -131,6 +252,7 @@ pub enum PrimVerb {
     Minus,  // -
     Asterisk,  // *
     Hash,   // #
+    HashColon,  // #:
     Slash,  // /
     DoubleSlash,  // //
     Caret,  // ^
@@ -150,6 +272,7 @@ pub enum PrimVerb {
     Ampersand, // &
 
     Exit,
+    Show,
     Print,
     ReadFile,
     Rand,
@@ -172,104 +295,6 @@ pub enum PrimAdverb {
     Tilde,  // ~
     Backslash, // \
     // TODO converge/do-times/do-while
-}
-
-pub fn tokenize_to_vec(text: &str) -> Result<Vec<Token>, String> {
-    let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
-    tokenize(text, &mut tokens)?;
-    Ok(tokens)
-}
-
-// TODO better error than String
-// TODO comments
-pub fn tokenize(mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
-    use Token::*;
-    let literal_symbols = literal_symbol_tokens();
-    let literal_identifiers = literal_identifier_tokens();
-    'next_token: loop {
-        text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
-        if text.is_empty() { break }
-
-        // Comments
-        if text.starts_with(&"\\ ") {
-            match text.find('\n') {
-                None => break,
-                Some(i) => { text = &text[i..]; continue }
-            }
-        }
-
-        // Literal tokens/keywords
-        for (expected, token) in &literal_symbols {
-            if let Some(rest) = text.strip_prefix(expected) {
-                text = rest;
-                tokens.push(token.clone());
-                continue 'next_token;
-            }
-        }
-
-        if let Some((number_token, after_number)) = lex_number(text)? {
-            tokens.push(number_token);
-            text = after_number;
-            continue 'next_token;
-        }
-
-        // Identifiers
-        if let Some((name, after_name)) = prefix(text, |c: char| c.is_alphabetic() || c.is_digit(10) || c == '_') {
-            let first_char = name.chars().next().unwrap();
-            let token = if let Some(keyword) = literal_identifiers.get(name) {
-                keyword.clone()
-            } else if first_char.is_ascii_uppercase() {
-                let mut name = name.to_string();
-                // SAFETY: We know that index 0 is ASCII.
-                unsafe { name.as_bytes_mut()[0] = first_char.to_ascii_lowercase() as u8; }
-                UpperName(name)
-            } else if first_char.is_ascii_lowercase() {
-                LowerName(name.to_string())
-            } else {
-                return Err(format!("Unexpected: {name:?}; identifiers must begin with an ASCII alphabetic character."));
-            };
-            tokens.push(token);
-            text = after_name;
-            continue 'next_token;
-        }
-        
-        // String literals
-        if let Some(after_quote) = text.strip_prefix("\"") {
-            let mut chars = after_quote.chars();
-            let mut literal = String::new();
-            while let Some(mut c) = chars.next() {
-                if c == '"' {
-                    tokens.push(StrLit(literal));
-                    text = chars.as_str();
-                    continue 'next_token;
-                }
-                if c == '\\' {
-                    match chars.next() {
-                        None => break,
-                        // TODO more escapes, numeric escapes
-                        Some(c2) => c = match c2 {
-                            '"' => '"',
-                            '\\' => '\\',
-                            'n' => '\n',
-                            't' => '\t',
-                            'r' => '\r',
-                            '0' => '\0',
-                            'x' => match chars.next().and_then(hex_digit_to_value).zip(chars.next().and_then(hex_digit_to_value)) {
-                                Some((hex1, hex2)) => char::from(hex1 * 16 + hex2),
-                                None => return Err(format!("Expected two hex digits after `\\x' escape in string literal")),
-                            },
-                            _ => c2,  // Just ignore the escape.
-                        },
-                    }
-                }
-                literal.push(c);
-            }
-            return Err(format!("Unterminated string literal"));
-        }
-
-        return Err(format!("Invalid syntax: {}...", &text[0..10.min(text.len())]));
-    }
-    Ok(())
 }
 
 impl Display for Token {
@@ -306,9 +331,10 @@ impl Display for Token {
 impl Display for PrimNoun {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         let s: &str = match self {
-            PrimNoun::ReadFile => "readFile",
             PrimNoun::Exit => "exit",
+            PrimNoun::Show => "show",
             PrimNoun::Print => "print",
+            PrimNoun::ReadFile => "readFile",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
             PrimNoun::C0 => "c0",
@@ -334,6 +360,7 @@ impl Display for PrimVerb {
             Minus => "-",
             Asterisk => "*",
             Hash => "#",
+            HashColon => "#:",
             Slash => "/",
             DoubleSlash => "//",
             Caret => "^",
@@ -350,12 +377,13 @@ impl Display for PrimVerb {
             QuestionColon => "?:",
             Ampersand => "&",
             Exit => "Exit",
+            Show => "Show",
             Print => "Print",
             ReadFile => "ReadFile",
-            DebugPrint => "DebugPrint",
             Rand => "Rand",
             Rec => "Rec",
             C0 => "C0",
+            DebugPrint => "DebugPrint",
         };
 
         f.write_str(s)
@@ -377,9 +405,6 @@ impl Display for PrimAdverb {
     }
 }
 
-// These tokens are never a prefix of another token, except for tokens that are
-// also in this list. Longer-length tokens appear first so e.g. "->" lexes as
-// "->" and not "-" then ">".
 fn literal_symbol_tokens() -> Vec<(String, Token)> {
     use Token::*;
     use crate::lex::PrimVerb::*;
@@ -409,6 +434,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(EqualBang),
         PrimVerb(Equals),
         PrimVerb(Hash),
+        PrimVerb(HashColon),
         PrimVerb(LessThan),
         PrimVerb(LessThanEquals),
         PrimVerb(LessThanColon),
@@ -437,11 +463,13 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
     ret
 }
 
-// These are primitives that would otherwise lex as identifiers.
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
         Token::PrimNoun(PrimNoun::Exit),
         Token::PrimVerb(PrimVerb::Exit),
+
+        Token::PrimNoun(PrimNoun::Show),
+        Token::PrimVerb(PrimVerb::Show),
 
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),

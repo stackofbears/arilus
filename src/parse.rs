@@ -1,5 +1,5 @@
-use crate::lex;
-use crate::lex::*;
+use crate::lex::{self, *};
+use crate::util::*;
 
 // TODO better error type than string
 
@@ -13,8 +13,8 @@ pub fn parse(tokens: &[Token]) -> Many<Expr> {
     let mut parser = Parser::new(tokens);
     let parsed = parser.parse_exprs()?;
     if parser.token_index < parser.tokens.len() - 1 {
-        return Err(format!("Unexpected token `{}'; expected `;', newline, or end of input",
-                           parser.tokens[parser.token_index]));
+        return err!("Unexpected token `{}'; expected `;', newline, or end of input",
+                    parser.tokens[parser.token_index]);
     }
     Ok(parsed)
 }
@@ -285,7 +285,7 @@ impl<'a> Parser<'a> {
                     Some(rhs) => UpperAssign(name, Box::new(rhs)),
                     None => return Err(self.expected(&"RHS of verb assignment")),
                 }
-                _ => return Err(format!("Invalid verb assignment target: {small_verb:?}")),
+                _ => return err!("Invalid verb assignment target: {small_verb:?}"),
             }
         } else {
             SmallVerb(small_verb)

@@ -1,7 +1,10 @@
-// next: unpacking assignment; refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; arg syntax; idiom recognition; train syntax
+// next: refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax
 //
 // Possible primitive symbol changes:
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
+//   =: for match, >: for gt, <: for lt, !: for not/not-equal (what about `!'? abs?), |: for or (short-circuit), &: for and (short-circuit) (how do these work?), /: for integer-divide
+//
+// Still need: cut, copy (filter), each-atom, each-list, amend
 //
 // possible match conjunction (also usable as monad/dyad) (after arg syntax)
 // {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
@@ -65,6 +68,7 @@ fn main() -> io::Result<()> {
 struct ReplSession {
     line: String,
     tokens: Vec<lex::Token>,
+    lexer: lex::Lexer,
     compiler: compile::Compiler,
     mem: vm::Mem,
 }
@@ -81,6 +85,7 @@ impl ReplSession {
         Self {
             line: String::new(),
             tokens: Vec::new(),
+            lexer: lex::Lexer::new(),
             compiler: compile::Compiler::new(),
             mem,
         }
@@ -105,7 +110,7 @@ impl ReplSession {
             if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
             let line_start = self.tokens.len();
             // TODO use line length to guess token count
-            lex::tokenize(&self.line, &mut self.tokens)?;
+            self.lexer.tokenize(&self.line, &mut self.tokens)?;
             self.line.clear();
 
             nesting += count_nesting(&self.tokens[line_start..]);
@@ -115,7 +120,7 @@ impl ReplSession {
         if exprs.is_empty() { return Ok(()) }
 
         let code_start = self.compiler.code.len();
-        self.compiler.compile_block(&exprs)?;
+        self.compiler.compile(&exprs)?;
 
         let is_assignment = matches!(exprs.last(),
                                      Some(
@@ -130,7 +135,7 @@ impl ReplSession {
         self.compiler.code.push(bytecode::Instr::Pop);
 
         swap(&mut self.mem.code, &mut self.compiler.code);
-        let result = self.mem.execute(code_start);
+        let result = self.mem.execute_from_toplevel(code_start);
         swap(&mut self.mem.code, &mut self.compiler.code);
 
         self.compiler.code.pop();
@@ -165,7 +170,7 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
 }
 
 fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
-    let tokens = lex::tokenize_to_vec(text)?;
+    let tokens = lex::Lexer::new().tokenize_to_vec(text)?;
     dbg!(&tokens);
     let exprs = parse::parse(&tokens)?;
     dbg!(&exprs);
@@ -178,6 +183,6 @@ fn go(text: &str) -> Result<(), String> {
     let code = compile_string(text)?;
     let mut mem = vm::Mem::new();
     mem.code = code;
-    mem.execute(0)?;
+    mem.execute_from_toplevel(0)?;
     Ok(())
 }

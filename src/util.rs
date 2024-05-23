@@ -4,3 +4,10 @@ macro_rules! irrefutable {
     };
 }
 pub(crate) use irrefutable;
+
+macro_rules! err {
+    ($($arg:tt)*) => {
+        Err(format!($($arg)*))
+    };
+}
+pub(crate) use err;

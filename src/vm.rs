@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     ops::{Div, Mul, Sub},
     rc::Rc,
@@ -94,8 +95,7 @@ pub enum Val {
         // code[func.code_index-1]
         code_index: usize,
 
-        // Always points to Val::Vals.
-        closure_env: RcVal,
+        closure_env: Rc<RefCell<Vec<RcVal>>>,
     },
 
     U8s(Vec<u8>),
@@ -328,7 +328,7 @@ struct StackFrame {
     code_index: usize,
 
     // Always points to Val::Vals.
-    closure_env: RcVal,
+    closure_env: Rc<RefCell<Vec<RcVal>>>,
 
     // Index into locals_stack. Local slots are offsets from this index.
     locals_start: usize,
@@ -356,7 +356,7 @@ impl Mem {
             stack: vec![],
             locals_stack: vec![],  // TODO stdlib?
             stack_frames: vec![StackFrame {
-                closure_env: Rc::new(Val::Vals(vec![])),
+                closure_env: Rc::new(RefCell::new(vec![])),
                 locals_start: 0,
                 code_index: usize::MAX,
             }],
@@ -365,7 +365,19 @@ impl Mem {
         }
     }
 
-    pub fn execute(&mut self, mut ip: usize) -> Result<(), String> {
+    pub fn execute_from_toplevel(&mut self, ip: usize) -> Result<(), String> {
+        let result = self.execute(ip);
+        if result.is_err() {
+            self.stack.clear();
+            let mut leftover_frames = self.stack_frames.drain(1..);
+            if let Some(second_frame) = leftover_frames.next() {
+                self.locals_stack.truncate(second_frame.locals_start)
+            }            
+        }
+        result
+    }
+
+    fn execute(&mut self, mut ip: usize) -> Result<(), String> {
         use Instr::*;
         while ip < self.code.len() {
             ip += 1;
@@ -386,18 +398,18 @@ impl Mem {
                         if let PushVar { src } = self.code[ip] {
                             ip += 1;
                             // TODO use e.g. List::I64s if closure vals are all ints
-                            closure_data.push(self.load(src).clone());
+                            closure_data.push(self.load(src));
                         } else {
                             panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}", self.code[ip]);
                         }
                     }
-                    let closure_env = RcVal::new(Val::Vals(closure_data));
+                    let closure_env = Rc::new(RefCell::new(closure_data));
                     self.push(RcVal::new(Val::ExplicitFunc { closure_env, code_index }));
                 }
                 MakeFunc { num_instructions } => {
                     self.push(RcVal::new(
                         Val::ExplicitFunc {
-                            closure_env: RcVal::new(Val::Vals(vec![])),
+                            closure_env: Rc::new(RefCell::new(vec![])),
                             code_index: ip + 1,
                         }
                     ));
@@ -415,7 +427,7 @@ impl Mem {
                 PushLiteralInteger(value) => self.push(RcVal::new(Val::Int(value))),
                 PushLiteralFloat(value) => self.push(RcVal::new(Val::Float(value))),
                 PushVar { src } => {
-                    let val = self.load(src).clone();
+                    let val = self.load(src);
                     self.push(val);
                 }
                 PushPrimVerb { prim: PrimVerb::Rec } => {
@@ -458,28 +470,28 @@ impl Mem {
                 Splat { count } => {
                     // TODO repetition
                     match self.pop().as_val() {
-                        a@atom!() => return Err(format!("Array unpacking failed; expected {count} elements, got atom {:?}", a)),
+                        a@atom!() => return err!("Array unpacking failed; expected {count} elements, got atom {:?}", a),
                         Val::U8s(cs) => {
                             if cs.len() != count {
-                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", cs.len()))
+                                return err!("Array unpacking failed; expected {count} elements, got {}", cs.len())
                             }
                             self.stack.extend(cs.iter().rev().map(|c| RcVal::new(Val::Char(*c))))
                         }
                         Val::I64s(is) => {
                             if is.len() != count {
-                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", is.len()))
+                                return err!("Array unpacking failed; expected {count} elements, got {}", is.len())
                             }
                             self.stack.extend(is.iter().rev().map(|i| RcVal::new(Val::Int(*i))))
                         }
                         Val::F64s(fs) =>  {
                             if fs.len() != count {
-                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", fs.len()))
+                                return err!("Array unpacking failed; expected {count} elements, got {}", fs.len())
                             }
                             self.stack.extend(fs.iter().rev().map(|f| RcVal::new(Val::Float(*f))))
                         }
                         Val::Vals(vs) => {
                             if vs.len() != count {
-                                return Err(format!("Array unpacking failed; expected {count} elements, got {}", vs.len()))
+                                return err!("Array unpacking failed; expected {count} elements, got {}", vs.len())
                             }
                             self.stack.extend(vs.iter().rev().map(|v| v.clone()))
                         }
@@ -540,15 +552,12 @@ impl Mem {
         self.stack_frames.last().unwrap()
     }
 
-    fn load(&mut self, var: Var) -> &RcVal {
+    fn load(&mut self, var: Var) -> RcVal {
         // TODO do all local/closure vars point to non-lists (instead to slices)?
         let frame = self.current_frame();
         match var.place {
-            Place::Local => &self.locals_stack[frame.locals_start + var.slot],
-            Place::ClosureEnv => match &*frame.closure_env {
-                Val::Vals(vs) => &vs[var.slot],
-                _ => unreachable!(),
-            }
+            Place::Local => self.locals_stack[frame.locals_start + var.slot].clone(),
+            Place::ClosureEnv => frame.closure_env.borrow()[var.slot].clone(),
         }
     }
 
@@ -562,18 +571,7 @@ impl Mem {
                 }
                 self.locals_stack[absolute_slot] = val;
             }
-            Place::ClosureEnv => match &*frame.closure_env {
-                // SAFETY this seems bad, but we want closures to share an
-                // environment. We'll restructure how closures work in a way
-                // that Rust likes (hold them in a member vec & access by
-                // index), but this "works" for now.
-                Val::Vals(vs) => unsafe { (vs.as_ptr() as *mut RcVal).add(dst.slot).replace(val); }
-                // TODO if a closure env consists of one value, it's fine not to
-                // use a whole list.
-                // TODO consolidate closure envs of all-matching types to
-                // e.g. Int64s instead of Vals.
-                _ => unreachable!(),  
-            }
+            Place::ClosureEnv => frame.closure_env.borrow_mut()[dst.slot] = val,
         }
     }
 
@@ -660,6 +658,7 @@ impl Mem {
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
+            Show => RcVal::new(prim_show(x.as_val())?),
             Print => { self.prim_print(&x)?; println!(); x }
             DebugPrint => { self.debug_print_val(&x)?; println!(); x }
             ReadFile => RcVal::new(prim_read_file(x.as_val())?),
@@ -691,6 +690,7 @@ impl Mem {
             Percent => prim_divmod(DivModOp::Mod, x.as_val(), y.as_val()),
             Caret => prim_pow(x.as_val(), y.as_val()),
             Hash => prim_take(x, y.as_val()),
+            HashColon => prim_copy(&x, &y),
             Comma => prim_append(x, y),
             DoubleEquals => prim_match(x.as_val(), y.as_val()),
             Equals => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
@@ -781,7 +781,7 @@ impl Mem {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
                 Some(first) => (first, 1),
-                None => return Err(format!("Error: fold with no input")),
+                None => return err!("Error: fold with no input"),
             }
         };
 
@@ -829,13 +829,31 @@ impl Mem {
 
 // Primitives
 
+fn prim_show(x: &Val) -> Result<Val, String> {
+    fn as_bytes<A: ToString>(a: A) -> Val {
+        Val::U8s(a.to_string().into_bytes())
+    }
+
+    let ret = match x {
+        Val::Char(c) => as_bytes(char::from_u32(*c as u32).unwrap()),
+        Val::Int(i) => as_bytes(i),
+        Val::Float(f) => as_bytes(f),
+        Val::U8s(cs) => Val::Vals(map(cs, |c| RcVal::new(as_bytes(char::from_u32(*c as u32).unwrap())))),
+        Val::I64s(is) => Val::Vals(map(is, |i| RcVal::new(as_bytes(i)))),
+        Val::F64s(fs) => Val::Vals(map(fs, |f| RcVal::new(as_bytes(f)))),
+        Val::Vals(vs) => Val::Vals(traverse(vs, |v| prim_show(v.as_val()).map(RcVal::new))?),
+        _ => return err!("domain\nUnable to show {x:?}"), //TODO actually we can!
+    };
+    Ok(ret)
+}
+
 fn prim_exit(x: &RcVal) -> Result<RcVal, String> {
     use std::process::exit;
 
     match x.as_val() {
         Val::Int(i) => exit(*i as i32),
         Val::Float(f) if *f == f.trunc() => exit(*f as i32),
-        bad => return Err(format!("domain\nExpected integer exit code, got {bad:?}")),
+        bad => return err!("domain\nExpected integer exit code, got {bad:?}"),
     }
 }
 
@@ -922,7 +940,7 @@ fn prim_where(x: &Val) -> Result<Val, String> {
         Vals(xs) => Val::Vals(
             traverse(xs, |val| prim_where(val).map(RcVal::new))?
         ),
-        _ => return Err(format!("Expected integers, got {x:?}")),
+        _ => return err!("domain\nExpected integers, got {x:?}"),
     };
     Ok(val)
 }
@@ -991,7 +1009,7 @@ fn prim_read_file(x: &Val) -> Result<Val, String> {
         match x {
             Val::Char(c) => { byte[0] = *c; &byte }
             Val::U8s(cs) => cs,
-            _ => return Err(format!("expected string filepath, got {x:?}")),
+            _ => return err!("expected string filepath, got {x:?}"),
         }
     ).map_err(|err| err.to_string())?;
     match std::fs::read_to_string(path) {
@@ -1100,7 +1118,7 @@ fn prim_add(x: &Val, y: &Val) -> Result<RcVal, String> {
             let zipped = zip_exact(xs, ys)?;
             traverse(zipped, |(x, y)| prim_add(x.as_val(), y.as_val()))?
         }),
-        _ => return Err(format!("domain\nCan't add {x:?} and {y:?}")),
+        _ => return err!("domain\nCan't add {x:?} and {y:?}"),
     };
     Ok(RcVal::new(val))
 }
@@ -1187,7 +1205,7 @@ fn prim_subtract(x: &Val, y: &Val) -> Result<RcVal, String> {
         (Vals(xs), Vals(ys)) => Vals(
             zip_traverse(xs, ys, |x, y| prim_subtract(x.as_val(), y.as_val()))?
         ),
-        _ => return Err(format!("domain\nCan't subtract {x:?} and {y:?}")),
+        _ => return err!("domain\nCan't subtract {x:?} and {y:?}"),
     };
     Ok(RcVal::new(result))
 }
@@ -1234,7 +1252,7 @@ fn prim_multiply(x: &Val, y: &Val) -> Result<RcVal, String> {
         (Vals(vs), val) | (val, Vals(vs)) => Vals(
             traverse(vs, |rc| prim_multiply(rc.as_val(), val))?
         ),
-        _ => return Err(format!("domain\nCan't add {x:?} and {y:?}")),
+        _ => return err!("domain\nCan't add {x:?} and {y:?}"),
     };
     Ok(RcVal::new(result))
 }
@@ -1254,22 +1272,24 @@ fn prim_divmod(op: DivModOp, x: &Val, y: &Val) -> Result<RcVal, String> {
     use Val::*;
     let result = match (x, y) {
         (Int(i), Int(j)) => Int(op!(*i, *j)),
+        (Int(i), Float(f)) => Int(op!(*i, *f as i64)),
+        (Float(f), Int(i)) => Int(op!(*f as i64, *i)),
         (Float(f), Float(g)) => Int(op!(*f, *g)),
         (I64s(ints), Int(i)) => I64s(
-            ints.iter().map(|int| *int / *i).collect()
+            ints.iter().map(|int| op!(*int, *i)).collect()
         ),
         (Int(i), I64s(ints)) => I64s(
-            ints.iter().map(|int| *i / *int).collect()
+            ints.iter().map(|int| op!(*i, *int)).collect()
         ),
         (I64s(ints), Float(f)) => {
             let i = *f as i64;
-            I64s(ints.iter().map(|int| *int / i).collect())
+            I64s(ints.iter().map(|int| op!(*int, i)).collect())
         }
-        (Int(i), F64s(fs)) => I64s(fs.iter().map(|f| *i / *f as i64).collect()),
-        (F64s(fs), Int(i)) => I64s(fs.iter().map(|f| *f as i64 / *i).collect()),
-        (F64s(xs), F64s(ys)) => I64s(zip_map(xs, ys, |x, y| (x / y) as i64)?),
-        (F64s(fs), Float(float)) => I64s(map(fs, |f| (f / float) as i64)),
-        (Float(float), F64s(fs)) => I64s(map(fs, |f| (float / f) as i64)),
+        (Int(i), F64s(fs)) => I64s(fs.iter().map(|f| op!(*i, *f as i64)).collect()),
+        (F64s(fs), Int(i)) => I64s(fs.iter().map(|f| op!(*f as i64, *i)).collect()),
+        (F64s(xs), F64s(ys)) => I64s(zip_map(xs, ys, |x, y| op!(x, y) as i64)?),
+        (F64s(fs), Float(float)) => I64s(map(fs, |f| op!(f, float) as i64)),
+        (Float(float), F64s(fs)) => I64s(map(fs, |f| op!(float, f) as i64)),
         (I64s(xs), I64s(ys)) => I64s(zip_map(xs, ys, <&i64>::div)?),
 
         (Vals(vs), I64s(is)) => Vals(
@@ -1300,7 +1320,7 @@ fn prim_divmod(op: DivModOp, x: &Val, y: &Val) -> Result<RcVal, String> {
         _ => {
             let op_str = match op { DivModOp::Div => &"divide",
                                     DivModOp::Mod => &"mod" };
-            return Err(format!("domain\nCan't {op_str} {x:?} by {y:?}"))
+            return err!("domain\nCan't {op_str} {x:?} by {y:?}")
         }
     };
     Ok(RcVal::new(result))
@@ -1353,7 +1373,7 @@ fn prim_divide(x: &Val, y: &Val) -> Result<RcVal, String> {
 
         (val@atom!(), Vals(vs)) => collect_list(vs.iter().map(|v| prim_divide(val, v.as_val())))?,
 
-        _ => return Err(format!("domain\nCan't divide {x:?} by {y:?}")),
+        _ => return err!("domain\nCan't divide {x:?} by {y:?}"),
     };
     Ok(RcVal::new(result))
 }
@@ -1421,7 +1441,7 @@ fn prim_pow(x: &Val, y: &Val) -> Result<RcVal, String> {
         (val@atom!(), Vals(vs)) => collect_list(
             vs.iter().map(|v| prim_pow(val, v.as_val()))
         )?,
-        _ => return Err(format!("domain\nCan't raise {x:?} to power {y:?}")),
+        _ => return err!("domain\nCan't raise {x:?} to power {y:?}"),
     };
     Ok(RcVal::new(result))
 }
@@ -1445,7 +1465,7 @@ fn prim_reverse(x: &RcVal) -> RcVal {
 fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
     let count = match y {
         &Val::Int(i) => i,
-        _ => return Err(format!("Invalid right argument {y:?}")),
+        _ => return err!("Invalid right argument {y:?}"),
     };
     
     fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Vec<A> {
@@ -1485,6 +1505,103 @@ fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
         }
     };
     Ok(RcVal::new(result))
+}
+
+fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+    use Val::*;
+    fn unexpected_y(y: &Val) -> String {
+        format!("domain\nExpected non-negative integer, got {y:?}")
+    }
+
+    fn replicate_all<A: Clone>(xs: &[A], y: usize) -> Vec<A> {
+        let mut vec = Vec::with_capacity(xs.len() * y);
+        for x in xs {
+            vec.extend(replicate(x, y).cloned())
+        }
+        vec
+    }
+
+    fn replicate_each<A: Clone, Y: ExactSizeIterator<Item=usize>>(
+        xs: &[A], ys: Y, count: usize
+    ) -> Result<Vec<A>, String> {
+        match_length(xs.len(), ys.len())?;
+        let mut vec = Vec::with_capacity(count);
+        for (x, y) in xs.iter().zip(ys) {
+            vec.extend(replicate(x.clone(), y))
+        }
+        Ok(vec)
+    }
+
+    fn run_one(x: &RcVal, y: usize) -> Val {
+        match x.as_val() {
+             Char(x) if true =>  U8s(replicate(*x, y).collect()),
+              Int(x) if true => I64s(replicate(*x, y).collect()),
+            Float(x) if true => F64s(replicate(*x, y).collect()),
+             atom!() => Vals(replicate(x.clone(), y).collect()),
+             U8s(xs) =>  U8s(replicate_all(xs, y)),
+            I64s(xs) => I64s(replicate_all(xs, y)),
+            F64s(xs) => F64s(replicate_all(xs, y)),
+            Vals(xs) => Vals(replicate_all(xs, y)),
+        }
+    }
+
+    fn run_many<Y>(x: &RcVal, y: Y) -> Result<Val, String>
+    where Y: Clone + ExactSizeIterator<Item=usize> {
+        let count = y.clone().sum();
+        let val = match x.as_val() {
+             Char(x) if true =>  U8s(replicate(*x, count).collect()),
+              Int(x) if true => I64s(replicate(*x, count).collect()),
+            Float(x) if true => F64s(replicate(*x, count).collect()),
+             atom!() => Vals(replicate(x.clone(), count).collect()),
+            U8s(xs) => U8s(replicate_each(xs, y, count)?),
+            I64s(xs) => I64s(replicate_each(xs, y, count)?),
+            F64s(xs) => F64s(replicate_each(xs, y, count)?),
+            Vals(xs) => Vals(replicate_each(xs, y, count)?),
+        };
+        Ok(val)
+    }
+
+    fn int_as_usize(i: i64) -> Result<usize, String> {
+        i.try_into().map_err(|_| unexpected_y(&Val::Int(i)))
+    }
+
+    fn float_as_usize(f: f64) -> Result<usize, String> {
+        if f >= 0.0 && f.trunc() == f {
+            Ok(f as usize)
+        } else {
+            Err(unexpected_y(&Val::Float(f)))
+        }
+    }
+
+    let val = match y.as_val() {
+        Int(i) => run_one(x, int_as_usize(*i)?),
+        Float(f) => run_one(x, float_as_usize(*f)?),
+        I64s(is) => {
+            for i in is {
+                if *i < 0 {
+                    return Err(unexpected_y(&Val::Int(*i)))
+                }
+            }
+            run_many(x, is.iter().map(|i| *i as usize))?
+        }
+        F64s(fs) => {
+            for f in fs {
+                if *f < 0.0 || *f != f.trunc() {
+                    return Err(unexpected_y(&Val::Float(*f)))
+                }
+            }
+            run_many(x, fs.iter().map(|f| *f as usize))?
+        }
+        // TODO y may still have depth 1 if e.g. int, float
+        Vals(_) => todo!("#: for Vals y"),
+        // zip_vals(x, y).unwrap()?.map(
+        //     |x, y| 
+        //     None => unreachable!(),
+        //     Some(iter) => 
+        _ => return Err(unexpected_y(y)),
+    };
+
+    Ok(RcVal::new(val))
 }
 
 fn cmp<A: Ord>(down: bool, a: &A, b: &A) -> Ordering {
@@ -1635,28 +1752,7 @@ fn iota(x: &Val) -> Val {
 }
 
 fn prim_match(x: &Val, y: &Val) -> Result<RcVal, String> {
-    fn match_bool(x: &Val, y: &Val) -> bool {
-        use Val::*;
-        match (x, y) {
-            (Int(i), Int(j)) => *i == *j,
-            (Char(c), Char(d)) => *c == *d,
-            (PrimFunc(p), PrimFunc(q)) => *p == *q,
-            (ExplicitFunc { closure_env: x_env, code_index: x_code },
-             ExplicitFunc { closure_env: y_env, code_index: y_code }) =>
-                *x_code == *y_code && match_bool(x_env.as_val(), y_env.as_val()),
-            (AdverbDerivedFunc { adverb: x_adverb, operand: x_operand },
-             AdverbDerivedFunc { adverb: y_adverb, operand: y_operand }) =>
-                *x_adverb == *y_adverb && match_bool(x_operand.as_val(), y_operand.as_val()),
-            (I64s(xs), I64s(ys)) => xs == ys,
-            (U8s(xs), U8s(ys)) => xs == ys,
-            (Vals(xs), Vals(ys)) =>
-                xs.len() == ys.len() &&
-                xs.iter().zip(ys).all(|(x, y)| match_bool(x.as_val(), y.as_val())),
-            _ => false,
-        }
-    }
-
-    Ok(RcVal::new(Val::Int(match_bool(x, y) as i64)))
+    Ok(RcVal::new(Val::Int((x == y) as i64)))
 }
 
 fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val, E> {
@@ -1780,7 +1876,7 @@ fn replicate<A: Clone>(a: A, n: usize) -> impl Iterator<Item=A> {
 fn replicate_with_float<A: Clone>(a: A, f: f64) -> Result<impl Iterator<Item=A>, String> {
     match float_as_int(f) {
         Some(n) => replicate_with_i64(a, n),
-        _ => Err(format!("Expected integer, got float {f}")),
+        _ => err!("domain\nExpected non-negative integer, got {f}"),
     }
 }
 
@@ -1788,7 +1884,7 @@ fn replicate_with_i64<A: Clone>(a: A, n: i64) -> Result<impl Iterator<Item=A>, S
     if n >= 0 {
         Ok(replicate(a, n as usize))
     } else {
-        Err(format!("Expected non-negative integer, got {n}"))
+        err!("domain\nExpected non-negative integer, got {n}")
     }
 }
 
@@ -1890,13 +1986,13 @@ where X::IntoIter: ExactSizeIterator,
     if xlen == ylen {
         Ok(x_iter.zip(y_iter))
     } else {
-        Err(format!("length mismatch: {xlen} vs {ylen}"))
+        err!("length mismatch: {xlen} vs {ylen}")
     }
 }
 
 fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
     if xlen == ylen { return Ok(()); }
     // TODO include name/position of verb
-    Err(format!("length mismatch: {xlen} vs {ylen}"))
+    err!("length mismatch: {xlen} vs {ylen}")
 }
 

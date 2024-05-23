@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::bytecode::*;
 use crate::lex::{self, *};
 use crate::parse::*;
+use crate::util::*;
 
 // TODO better error than string
 pub fn compile(exprs: &[Expr]) -> Result<Vec<Instr>, String> {
@@ -30,15 +31,20 @@ impl Compiler {
                scopes: vec![globals] }
     }
 
-    pub fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
+    pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        let result = self.compile_block(exprs);
+        self.scopes.truncate(1);  // Move back to global scope
+        result
+    }
+
+    fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
         if exprs.is_empty() { todo!("Compile ()"); }
 
-        for expr in &exprs[0..exprs.len()-1] {
-            self.compile_expr(expr)?;
+        self.compile_expr(&exprs[0])?;
+        for expr in &exprs[1..] {
             self.code.push(Instr::Pop);
+            self.compile_expr(expr)?;
         }
-        let last_expr = &exprs[exprs.len()-1];
-        self.compile_expr(last_expr)?;
         Ok(())
     }
 
@@ -233,7 +239,7 @@ impl Compiler {
         if let Some(var) = self.get_local_scope().get(name) {
             return Ok(*var);
         }
-        Err(format!("Undefined name: `{name}'"))
+        err!("Undefined name: `{name}'")
     }
 
     fn compile_small_noun(&mut self, small_noun: &SmallNoun) -> Result<(), String> {
@@ -244,6 +250,7 @@ impl Compiler {
             PrimNoun(prim) => {
                 let verb = match prim {
                     lex::PrimNoun::Exit => PrimVerb::Exit,
+                    lex::PrimNoun::Show => PrimVerb::Show,
                     lex::PrimNoun::Print => PrimVerb::Print,
                     lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
