@@ -80,7 +80,7 @@ impl Lexer {
                 text = after_name;
                 continue 'next_token;
             }
-            
+
             // String literals
             if let Some(after_quote) = text.strip_prefix("\"") {
                 let mut chars = after_quote.chars();

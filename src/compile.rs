@@ -172,7 +172,7 @@ impl Compiler {
     fn get_local_scope_mut(&mut self) -> &mut HashMap<String, Var> {
         self.scopes.last_mut().unwrap()
     }
-    
+
     fn get_local_scope(&self) -> &HashMap<String, Var> {
         self.scopes.last().unwrap()
     }
@@ -197,7 +197,7 @@ impl Compiler {
                                 self.compile_small_noun(y)?;
                             }
                             self.code.push(match verb {
-                                &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) => 
+                                &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) =>
                                     if maybe_y_arg.is_some() { Instr::CallPrimVerb2 { prim } }
                                 else { Instr::CallPrimVerb1 { prim } },
                                 _ =>
@@ -324,7 +324,6 @@ fn add_closure_var(name: &str, scope: &mut HashMap<String, Var>) {
 
 fn get_stdlib_names() -> &'static [&'static str] {
     &[
-        
+
     ]
 }
-

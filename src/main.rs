@@ -95,7 +95,7 @@ impl ReplSession {
         let token_start = self.tokens.len();
         let mut nesting: i32 = 0;
         // TODO multiline strings
-        // 
+        //
         // TODO do we want to run code if we enter nesting level 0 and then nest
         // again on the same line? e.g. in
         //  1  (

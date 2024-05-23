@@ -47,7 +47,7 @@ c:ref a
 
 a:points to array
 b:slice of a
-c: 
+c:
 
 
 question:
@@ -338,7 +338,7 @@ pub struct Mem {
     pub code: Vec<Instr>,
 
     pub stack: Vec<RcVal>,
-    
+
     // Stack of local scopes
     locals_stack: Vec<RcVal>,
 
@@ -372,7 +372,7 @@ impl Mem {
             let mut leftover_frames = self.stack_frames.drain(1..);
             if let Some(second_frame) = leftover_frames.next() {
                 self.locals_stack.truncate(second_frame.locals_start)
-            }            
+            }
         }
         result
     }
@@ -587,7 +587,7 @@ impl Mem {
                 self.locals_stack.push(x);
 
                 // TODO functions can access this y when they shouldn't be able to
-                // 
+                //
                 //     F:{y}
                 //     []F
                 //   0
@@ -708,7 +708,7 @@ impl Mem {
         };
         result.map_err(|err| format!("Error in `{v}': {err}"))
     }
-    
+
     // TODO output formatting (take indent as arg)
     fn prim_print(&self, x: &Val) -> Result<(), String> {
         match x {
@@ -1094,7 +1094,7 @@ fn prim_add(x: &Val, y: &Val) -> Result<RcVal, String> {
         (I64s(is), U8s(cs)) => U8s(
             zip_map(cs, is, |c, i| add_char_int(*c, *i))?
         ),
-        
+
         (Vals(vs), Int(i)) | (Int(i), Vals(vs)) => Vals(
             traverse(vs, |rc| prim_add(rc.as_val(), &Int(*i)))?
         ),
@@ -1383,7 +1383,7 @@ fn prim_pow(x: &Val, y: &Val) -> Result<RcVal, String> {
     let result = match (x, y) {
         (Int(i), Int(j)) => if *j < 0 {
             Float((*i as f64).powi(*j as i32))
-        } else { 
+        } else {
             Int(i.pow(*j as u32))
         },
         (Int(i), Float(f)) => Float((*i as f64).powf(*f)),
@@ -1451,7 +1451,7 @@ fn prim_reverse(x: &RcVal) -> RcVal {
     fn reverse_iter<A: Clone>(xs: &[A]) -> Vec<A> {
         xs.iter().cloned().rev().collect()
     }
-    
+
     match x.as_val() {
         atom!() => x.clone(),
         U8s(xs) => RcVal::new(U8s(reverse_iter(xs))),
@@ -1467,7 +1467,7 @@ fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
         &Val::Int(i) => i,
         _ => return err!("Invalid right argument {y:?}"),
     };
-    
+
     fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Vec<A> {
         let (start, count) = if count < 0 {
             let abs_count = (-count) as usize;
@@ -1595,9 +1595,9 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
         // TODO y may still have depth 1 if e.g. int, float
         Vals(_) => todo!("#: for Vals y"),
         // zip_vals(x, y).unwrap()?.map(
-        //     |x, y| 
+        //     |x, y|
         //     None => unreachable!(),
-        //     Some(iter) => 
+        //     Some(iter) =>
         _ => return Err(unexpected_y(y)),
     };
 
@@ -1621,7 +1621,7 @@ fn cmp_floats(down: bool, a: &f64, b: &f64) -> Ordering {
 //             Ordering::Less => y.clone(),
 //             _ => x.clone(),
 //         }
-        
+
 //         Some(iter) => iter.map(
 //         (Val::U8s(cs), Val::Char(c)) => Val::I64s(
 //             cs.iter().
@@ -1679,7 +1679,7 @@ fn prim_sort(x: &RcVal, down: bool) -> Val {
             sorted.sort_by(|a, b| cmp(down, a, b));
             Val::Vals(sorted)
         }
-        
+
     }
 }
 
@@ -1995,4 +1995,3 @@ fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
     // TODO include name/position of verb
     err!("length mismatch: {xlen} vs {ylen}")
 }
-
