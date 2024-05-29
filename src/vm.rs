@@ -84,6 +84,14 @@ pub enum Val {
         operand: RcVal,
     },
 
+    // First element is the monadic case, second is the dyadic case
+    AmbivalentFunc(RcVal, RcVal),
+
+    // TODO this can probably just be a closure
+    AtopFunc { f_func: RcVal, g_func: RcVal },
+    BoundFunc { func: RcVal, y: RcVal },
+    ForkFunc { f_func: RcVal, h_func: RcVal, g_func: RcVal },
+
     // TODO decide if closures should refer to a shared environment or be value
     // types (copying copies environment. Currently, we hold a reference to the env.
     //   a:1; F:{a:a+1}; G:F
@@ -106,7 +114,7 @@ pub enum Val {
 
 macro_rules! atom {
     () => {
-        Val::Char(_) | Val::Int(_) | Val::Float(_) | Val::PrimFunc(_) | Val::ExplicitFunc{..} | Val::AdverbDerivedFunc{..}
+        Val::Char(_) | Val::Int(_) | Val::Float(_) | Val::PrimFunc(_) | Val::AdverbDerivedFunc{..} | Val::AmbivalentFunc(_, _) | Val::AtopFunc{..} | Val::BoundFunc{..} | Val::ForkFunc{..} | Val::ExplicitFunc{..}
     }
 }
 
@@ -272,11 +280,15 @@ impl Ord for Val {
                 Float(_) => 2,
                 PrimFunc(_) => 3,
                 AdverbDerivedFunc {..} => 4,
-                ExplicitFunc {..} => 5,
-                U8s(_) => 6,
-                I64s(_) => 7,
-                F64s(_) => 8,
-                Vals(_) => 9,
+                AmbivalentFunc {..} => 5,
+                AtopFunc{..} => 6,
+                BoundFunc{..} => 7,
+                ForkFunc{..} => 8,
+                ExplicitFunc {..} => 9,
+                U8s(_) => 10,
+                I64s(_) => 11,
+                F64s(_) => 12,
+                Vals(_) => 13,
             }
         }
 
@@ -310,6 +322,21 @@ impl Ord for Val {
             // between explicit and primitive functions
             (ExplicitFunc{code_index: x, ..}, ExplicitFunc{code_index: y, ..}) => x.cmp(y),
             (AdverbDerivedFunc{operand: x, ..}, AdverbDerivedFunc{operand: y, ..}) => x.cmp(y),
+
+            (AmbivalentFunc(x_monad, x_dyad), AmbivalentFunc(y_monad, y_dyad)) =>
+                x_monad.cmp(y_monad).then_with(|| x_dyad.cmp(y_dyad)),
+
+            (AtopFunc { f_func: x_f_func, g_func: x_g_func },
+             AtopFunc { f_func: y_f_func, g_func: y_g_func }) =>
+                x_f_func.cmp(y_f_func).then_with(|| x_g_func.cmp(y_g_func)),
+
+            (BoundFunc{func: x_func, y: x_y}, BoundFunc{func: y_func, y: y_y}) =>
+                x_func.cmp(y_func).then_with(|| x_y.cmp(y_y)),
+
+            (ForkFunc{f_func: x_f_func, h_func: x_h_func, g_func: x_g_func},
+             ForkFunc{f_func: y_f_func, h_func: y_h_func, g_func: y_g_func}) =>
+                x_f_func.cmp(y_f_func).then_with(|| x_h_func.cmp(y_h_func)).then_with(|| x_g_func.cmp(y_g_func)),
+
             (U8s(x), U8s(y)) => x.cmp(y),
             (I64s(x), I64s(y)) => x.cmp(y),
 
@@ -379,6 +406,7 @@ impl Mem {
 
     fn execute(&mut self, mut ip: usize) -> Result<(), String> {
         use Instr::*;
+        
         while ip < self.code.len() {
             ip += 1;
             match self.code[ip - 1] {
@@ -410,10 +438,10 @@ impl Mem {
                     self.push(RcVal::new(
                         Val::ExplicitFunc {
                             closure_env: Rc::new(RefCell::new(vec![])),
-                            code_index: ip + 1,
+                            code_index: ip,
                         }
                     ));
-                    ip += num_instructions - 1;
+                    ip += num_instructions;
                 }
                 AllocLocals { num_locals } => {
                     // TODO is 0 the right thing to fill with here?
@@ -501,6 +529,27 @@ impl Mem {
                     let operand = self.pop();
                     self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
                 }
+                CollectVerbAlternatives => {
+                    let dyad = self.pop();
+                    let monad = self.pop();
+                    self.push(RcVal::new(Val::AmbivalentFunc(monad, dyad)));
+                }
+                MakeAtopFunc => {
+                    let g_func = self.pop();
+                    let f_func = self.pop();
+                    self.push(RcVal::new(Val::AtopFunc { f_func, g_func }));
+                }
+                MakeBoundFunc => {
+                    let y = self.pop();
+                    let func = self.pop();
+                    self.push(RcVal::new(Val::BoundFunc { func, y }));
+                }
+                MakeForkFunc => {
+                    let g_func = self.pop();
+                    let h_func = self.pop();
+                    let f_func = self.pop();
+                    self.push(RcVal::new(Val::ForkFunc { f_func, h_func, g_func }));
+                }
                 MakeString { num_bytes } => {
                     let mut s = Vec::with_capacity(num_bytes);
                     for i in (0..num_bytes).step_by(8) {
@@ -575,6 +624,9 @@ impl Mem {
         }
     }
 
+    // Calls `val` with arguments `x` and, if present, `y`. If `val` is a
+    // function, run the function; otherwise, `val` is treated as a constant
+    // function and this call results in `val`.
     fn call_val(&mut self, val: RcVal, x: RcVal, y: Option<RcVal>) -> Result<RcVal, String> {
         let result = match val.as_val() {
             &Val::ExplicitFunc { ref closure_env, code_index } => {
@@ -599,6 +651,18 @@ impl Mem {
             }
             Val::AdverbDerivedFunc { adverb, operand } =>
                 self.call_prim_adverb(*adverb, operand.clone(), x, y)?,
+            Val::AmbivalentFunc(monad, dyad) =>
+                self.call_val(if y.is_some() { dyad } else { monad }.clone(), x, y)?,
+            Val::AtopFunc { f_func, g_func } => {
+                let f_result = self.call_val(f_func.clone(), x, y)?;
+                self.call_val(g_func.clone(), f_result, None)?
+            }
+            Val::BoundFunc { func, y } => self.call_val(func.clone(), x, Some(y.clone()))?,
+            Val::ForkFunc { f_func, h_func, g_func } => {
+                let f_result = self.call_val(f_func.clone(), x.clone(), y.clone())?;
+                let g_result = self.call_val(g_func.clone(), x, y)?;
+                self.call_val(h_func.clone(), f_result, Some(g_result))?
+            }
             &Val::PrimFunc(prim) => if let Some(y) = y {
                 self.call_prim_dyad(prim, x, y)?
             } else {
@@ -756,6 +820,38 @@ impl Mem {
                 print!("{adverb}");
                 self.prim_print(operand.as_val())?;
             }
+            Val::AtopFunc { f_func, g_func } => {
+                print!(".(");
+                self.prim_print(f_func)?;
+                print!(") ");
+                if let Val::BoundFunc { func, y } = g_func.as_val() {
+                    self.prim_print(func)?;
+                    print!("(");
+                    self.prim_print(y)?;
+                    print!(")");
+                }
+            }
+            Val::BoundFunc { func, y } => {
+                print!(".(");
+                self.prim_print(func)?;
+                print!(") (");
+                self.prim_print(y)?;
+                print!(")");
+            }
+            Val::ForkFunc { f_func, h_func, g_func } => {
+                print!(".(");
+                self.prim_print(f_func)?;
+                print!(") .(");
+                self.prim_print(h_func)?;
+                print!(") .(");
+                self.prim_print(g_func)?;
+                print!(")");
+            }
+            Val::AmbivalentFunc(monad, dyad) => {
+                self.prim_print(monad.as_val())?;
+                print!(" : ");
+                self.prim_print(dyad.as_val())?;
+            }
             Val::ExplicitFunc { .. } => {
                 // map code index -> tokens?
                 print!("(explicit func; TODO: implement printing)")
@@ -835,13 +931,18 @@ fn prim_type(x: &Val) -> Vec<u8> {
         Val::Char(_) => &"char",
         Val::Int(_) => &"int",
         Val::Float(_) => &"float",
-        Val::PrimFunc(_) |
-        Val::AdverbDerivedFunc{..} |
-        Val::ExplicitFunc{..} => &"function",
         Val::U8s(_) => &"string",
         Val::I64s(_) => &"int list",
         Val::F64s(_) => &"float list",
         Val::Vals(_) => &"val list",
+
+        Val::PrimFunc(_) |
+        Val::AdverbDerivedFunc{..} |
+        Val::AmbivalentFunc(_, _) |
+        Val::AtopFunc{..} |
+        Val::BoundFunc{..} |
+        Val::ForkFunc{..} |
+        Val::ExplicitFunc{..} => &"function",
     };
     s.as_bytes().to_vec()
 }

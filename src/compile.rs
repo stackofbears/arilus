@@ -5,6 +5,9 @@ use crate::lex::{self, *};
 use crate::parse::*;
 use crate::util::*;
 
+#[derive(Clone, Copy)]
+enum Arity { One, Two }
+
 // TODO better error than string
 pub fn compile(exprs: &[Expr]) -> Result<Vec<Instr>, String> {
     let mut compiler = Compiler::new();
@@ -56,18 +59,43 @@ impl Compiler {
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match expr {
             Expr::Noun(noun) => self.compile_noun(noun),
-            Expr::Verb(verb) => self.compile_verb(verb),
+            Expr::Verb(verb) => self.compile_verb(verb, None),
         }
     }
 
-    fn compile_verb(&mut self, verb: &Verb) -> Result<(), String> {
+    fn compile_verb(&mut self, verb: &Verb, arity: Option<Arity>) -> Result<(), String> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
-                self.compile_verb(rhs)?;
+                self.compile_verb(rhs, None)?;
                 let dst = self.fetch_var_in_current_scope(name);
                 self.code.push(Instr::StoreTo { dst });
             }
             Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb)?,
+            Verb::AmbivalentCases(monadic, dyadic) => match arity {
+                Some(Arity::One) => self.compile_verb(&*monadic, arity)?,
+                Some(Arity::Two) => self.compile_verb(&*monadic, arity)?,
+                None => {
+                    self.compile_verb(monadic, Some(Arity::One))?;
+                    self.compile_small_verb(dyadic)?;
+                    self.code.push(Instr::CollectVerbAlternatives);
+                }
+            },
+            Verb::Atop(f, g) => {
+                self.compile_verb(f.as_ref(), arity)?;
+                self.compile_verb(g.as_ref(), Some(Arity::One))?;
+                self.code.push(Instr::MakeAtopFunc);
+            }
+            Verb::Bind(f, y) => {
+                self.compile_verb(f.as_ref(), Some(Arity::Two))?;
+                self.compile_small_noun(y.as_ref())?;
+                self.code.push(Instr::MakeBoundFunc);
+            }
+            Verb::Fork(f, h, g) => {
+                self.compile_verb(f.as_ref(), arity)?;
+                self.compile_small_verb(h.as_ref())?;
+                self.compile_small_verb(g.as_ref())?;
+                self.code.push(Instr::MakeForkFunc);
+            }
         }
         Ok(())
     }
@@ -93,6 +121,7 @@ impl Compiler {
         }
     }
 
+    // TODO compile_small_verb should expect an arity (may be decided by a particular adverb)
     fn compile_small_verb(&mut self, small_verb: &SmallVerb) -> Result<(), String> {
         match small_verb {
             SmallVerb::UpperName(name) => {
@@ -188,28 +217,36 @@ impl Compiler {
             Noun::Sentence(small_noun, predicates) => {
                 self.compile_small_noun(small_noun)?;
                 for predicate in predicates {
-                    match predicate {
-                        Predicate::VerbCall(verb, maybe_y_arg) => {
-                            if !matches!(verb, Verb::SmallVerb(SmallVerb::PrimVerb(_))) {
-                                self.compile_verb(verb)?;
-                            }
-                            if let Some(y) = maybe_y_arg {
-                                self.compile_small_noun(y)?;
-                            }
-                            self.code.push(match verb {
-                                &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) =>
-                                    if maybe_y_arg.is_some() { Instr::CallPrimVerb2 { prim } }
-                                else { Instr::CallPrimVerb1 { prim } },
-                                _ =>
-                                    if maybe_y_arg.is_some() { Instr::Call2 }
-                                    else { Instr::Call1 }
-                            });
-                        }
-                        Predicate::ForwardAssignment(pat) =>
-                            self.compile_unpacking_assignment(pat, true),
-                    }
+                    self.compile_predicate(predicate)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    // Before calling, add the code to put the x argument on the stack
+    fn compile_predicate(&mut self, predicate: &Predicate) -> Result<(), String> {
+        match predicate {
+            Predicate::VerbCall(verb, maybe_y_arg) => {
+                if !matches!(verb, Verb::SmallVerb(SmallVerb::PrimVerb(_))) {
+                    self.compile_verb(verb,
+                                      Some(if maybe_y_arg.is_some() { Arity::Two }
+                                           else { Arity::One }))?;
+                }
+                if let Some(y) = maybe_y_arg {
+                    self.compile_small_noun(y)?;
+                }
+                self.code.push(match verb {
+                    &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) =>
+                        if maybe_y_arg.is_some() { Instr::CallPrimVerb2 { prim } }
+                    else { Instr::CallPrimVerb1 { prim } },
+                    _ =>
+                        if maybe_y_arg.is_some() { Instr::Call2 }
+                    else { Instr::Call1 }
+                });
+            }
+            Predicate::ForwardAssignment(pat) =>
+                self.compile_unpacking_assignment(pat, true),
         }
         Ok(())
     }

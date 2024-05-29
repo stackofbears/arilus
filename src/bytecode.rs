@@ -42,6 +42,24 @@ pub enum Instr {
     // lists/nested patterns, but for forward assignment we want to keep the
     // topmost val there.
     Splat { count: usize },
+
+    // Pops the top two elements of the stack (D on top, M second), which must
+    // be functions, and pushes a new verb where the monadic case is M and the
+    // dyadic case is D.
+    CollectVerbAlternatives,
+
+    // Pops the top two elements of the stack (G on top, F second), both functions,
+    // and pushes a new function equivalent to {x F G} : {x F y G}.
+    MakeAtopFunc,
+
+    // Pops the top two elements of the stack (n on top, F second), where F is a
+    // function and n is a noun, and pushes a new function equivalent to {x F n}.
+    MakeBoundFunc,
+
+    // Pops the top three elements of the stack (G on top, H second, F third),
+    // which must be functions, and pushes a new function equivalent to 
+    // {x F H (x G)} : {x F y H (x G y)}
+    MakeForkFunc,
 }
                
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

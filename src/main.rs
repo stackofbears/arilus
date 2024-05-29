@@ -1,5 +1,14 @@
-// next: refactor closures to avoid unsafe code; mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax
+// mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
 //
+// trains:
+//   - add p and q adverbs
+//     - actually, maybe p and q are identity function nouns, p: and q: are adverbs (better for user funcs)
+//   - P is ident-left and Q is ident-right
+//   - noun assignment  n: F  results in function that runs F on argument and stores result in n; reuse computation in train
+//   - what happens if you give a dyad to p or q?
+//
+// ,: for couple, (,: \f)
+// 
 // Possible primitive symbol changes:
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
 //   =: for match, >: for gt, <: for lt, !: for not/not-equal (what about `!'? abs?), |: for or (short-circuit), &: for and (short-circuit) (how do these work?), /: for integer-divide
@@ -117,10 +126,12 @@ impl ReplSession {
             if nesting <= 0 { break }  // < 0 will raise a parse error
         }
         let exprs = parse::parse(&self.tokens[token_start..])?;
+        //dbg!(&exprs);
         if exprs.is_empty() { return Ok(()) }
 
         let code_start = self.compiler.code.len();
         self.compiler.compile(&exprs)?;
+        //dbg!(&self.compiler.code);
 
         let is_assignment = matches!(exprs.last(),
                                      Some(

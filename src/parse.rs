@@ -43,6 +43,19 @@ pub enum Predicate {
 pub enum Verb {
     UpperAssign(String, Box<Verb>),
     SmallVerb(SmallVerb),
+
+    // A B
+    // RHS is only Verb to allow (F G n) to be Atop(F, Hook(G, n))
+    Atop(Box<Verb>, Box<Verb>),
+
+    // A b (note this includes (A (B C)))
+    Bind(Box<Verb>, Box<SmallNoun>),
+
+    // A B C
+    Fork(Box<Verb>, Box<SmallVerb>, Box<SmallVerb>),
+
+    // A : B
+    AmbivalentCases(Box<Verb>, Box<SmallVerb>),
 }
 
 #[derive(Debug, Clone)]
@@ -264,8 +277,8 @@ impl<'a> Parser<'a> {
                     Some(pat) => predicates.push(Predicate::ForwardAssignment(pat)),
                     None => return Err(self.expected(&"pattern after `->'")),
                 }
-            } else if let Some(verb) = self.parse_verb()? {
-                predicates.push(Predicate::VerbCall(verb, self.parse_small_noun()?))
+            } else if let Some(verb) = self.parse_small_verb()? {
+                predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
             } else {
                 break
             }
@@ -279,7 +292,7 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let verb = if self.consume(Token::Colon) {
+        let mut verb = if self.consume(Token::Colon) {
             match small_verb {
                 UpperName(name) => match self.parse_verb()? {
                     Some(rhs) => UpperAssign(name, Box::new(rhs)),
@@ -290,6 +303,28 @@ impl<'a> Parser<'a> {
         } else {
             SmallVerb(small_verb)
         };
+
+        loop {
+            if self.consume(Token::ColonAfterWhitespace) {
+                let dyadic_case = match self.parse_small_verb()? {
+                    Some(dyadic) => dyadic,
+                    None => return Err(self.expected(&"verb for dyadic case of ambivalent function")),
+                };
+                verb = Verb::AmbivalentCases(Box::new(verb), Box::new(dyadic_case));
+            } else if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {  // (+ a b)
+                verb = match next_expr {
+                    SmallExpr::Verb(small_verb) => match self.parse_small_expr(/*stranding_allowed=*/true)? {
+                        Some(SmallExpr::Verb(fork_y)) => Verb::Fork(Box::new(verb), Box::new(small_verb), Box::new(fork_y)),
+                        Some(SmallExpr::Noun(fork_y)) => Verb::Atop(Box::new(verb),
+                                                                    Box::new(Verb::Bind(Box::new(Verb::SmallVerb(small_verb)), Box::new(fork_y)))),
+                        None => Verb::Atop(Box::new(verb), Box::new(Verb::SmallVerb(small_verb))),
+                    },
+                    SmallExpr::Noun(small_noun) => Verb::Bind(Box::new(verb), Box::new(small_noun)),
+                }
+            } else {
+                break
+            }
+        }
 
         Ok(Some(verb))
     }
@@ -353,6 +388,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
+        // TODO predicate syntax  {|x?(pred)| ...},  {|x;y?(pred)|},  {|?(pred)| ...} if useful
         self.skip_newlines();
         if !self.consume(Token::PrimVerb(lex::PrimVerb::Pipe)) {
             return Ok(None)
@@ -396,13 +432,13 @@ impl<'a> Parser<'a> {
             }
             Some(Token::LBrace) => {
                 self.skip();
-                let explicit_args = self.parse_explicit_args()?;
+                let maybe_explicit_args = self.parse_explicit_args()?;
                 let exprs = self.parse_exprs()?;
                 if exprs.is_empty() {  // TODO remove to enable () parse
                     return Err(self.expected(&"expression"))
                 }
                 if self.consume(Token::RBrace) {
-                    Lambda(explicit_args, exprs)
+                    Lambda(maybe_explicit_args, exprs)
                 } else {
                     return Err(self.expected("`;', newline, or `}}'"))
                 }
@@ -414,7 +450,10 @@ impl<'a> Parser<'a> {
             }
             Some(&Token::PrimAdverb(prim_adverb)) => {
                 self.skip();
-                match self.parse_small_expr()? {
+                // TODO: we have a problem; x .(func...) y parses as x
+                // .((func...) y), a monadic invocation of a .-derived verb
+                // whose operand is a stranded array of two elements
+                match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(adverb_operand) => Adverb(prim_adverb, Box::new(adverb_operand)),
                     None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
                 }
@@ -425,8 +464,14 @@ impl<'a> Parser<'a> {
         Ok(Some(small_verb))
     }
 
-    fn parse_small_expr(&mut self) -> Parsed<SmallExpr> {
-        let small_expr = if let Some(small_noun) = self.parse_small_noun()? {
+    fn parse_small_expr(&mut self, stranding_allowed: bool) -> Parsed<SmallExpr> {
+        let small_noun = if stranding_allowed {
+            self.parse_small_noun()
+        } else {
+            self.parse_small_noun_no_stranding()
+        }?;
+
+        let small_expr = if let Some(small_noun) = small_noun {
             SmallExpr::Noun(small_noun)
         } else if let Some(small_verb) = self.parse_small_verb()? {
             SmallExpr::Verb(small_verb)

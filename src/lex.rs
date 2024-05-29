@@ -33,7 +33,11 @@ impl Lexer {
     pub fn tokenize(&self, mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
         use Token::*;
         'next_token: loop {
-            text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
+            let is_after_whitespace = {
+                let len = text.len();
+                text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
+                len != text.len() || tokens.last().is_some_and(|t| matches!(t, Newline))
+            };
             if text.is_empty() { break }
 
             // Comments
@@ -48,7 +52,11 @@ impl Lexer {
             for (expected, token) in &self.literal_symbol_tokens {
                 if let Some(rest) = text.strip_prefix(expected) {
                     text = rest;
-                    tokens.push(token.clone());
+                    if matches!(token, Colon) && is_after_whitespace {
+                        tokens.push(ColonAfterWhitespace)
+                    } else {
+                        tokens.push(token.clone());
+                    }
                     continue 'next_token;
                 }
             }
@@ -213,7 +221,8 @@ pub enum Token {
     RBracket,  // ]
     LBrace,  // {
     RBrace,  // }
-    Colon,  // :
+    Colon,  // : not preceded by whitespace
+    ColonAfterWhitespace, // : preceded by whitespace
     Semicolon, // ;
     Newline,  // \n
 
@@ -284,7 +293,7 @@ pub enum PrimVerb {
     // Hidden primitives below; these have no string representation and
     // shouldn't be in the token enum. TODO move these to compilation.
 
-    // Currently used only for repl display, but this could be exposed once
+    // Currently used only for repl display, but this could be exposed once it
     // prints in valid syntax (instead of Rust Debug).
     DebugPrint,
 }
@@ -311,6 +320,7 @@ impl Display for Token {
             LBrace => f.write_str("{"),
             RBrace => f.write_str("}"),
             Colon => f.write_str(":"),
+            ColonAfterWhitespace => f.write_str(" : "),
             Semicolon => f.write_str(";"),
             Newline => f.write_str("\n"),
             UpperName(name) => {
