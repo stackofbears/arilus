@@ -131,7 +131,6 @@ impl Compiler {
             SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
             &SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim }),
             SmallVerb::Lambda(explicit_args, exprs) => {
-                let make_closure_index = self.push(Instr::Nop);
                 let make_func_index = self.push(Instr::Nop);
                 let alloc_locals_index = self.push(Instr::Nop);
 
@@ -172,13 +171,15 @@ impl Compiler {
                 // Tell the outer scope how to populate the closure environment.
                 let mut closure_vars: Vec<(&String, &Var)> =
                     final_scope.iter().filter(|(_, v)| v.place == Place::ClosureEnv).collect();
-                closure_vars.sort_unstable_by_key(|(_, var)| var.slot);
-                for (name, _) in &closure_vars {
-                    let src = self.fetch_var(name)?;
-                    self.code.push(Instr::PushVar { src });
-                }
 
-                self.code[make_closure_index] = Instr::MakeClosure { num_closure_vars: closure_vars.len() };
+                if closure_vars.len() > 0 {
+                    self.code.push(Instr::MakeClosure { num_closure_vars: closure_vars.len() });
+                    closure_vars.sort_unstable_by_key(|(_, var)| var.slot);
+                    for (name, _) in &closure_vars {
+                        let src = self.fetch_var(name)?;
+                        self.code.push(Instr::PushVar { src });
+                    }
+                }
             }
             SmallVerb::Adverb(prim, small_expr_box) => {
                 match small_expr_box.as_ref() {

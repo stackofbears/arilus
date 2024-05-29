@@ -412,36 +412,33 @@ impl Mem {
             match self.code[ip - 1] {
                 Nop => {}
                 Dup => self.push(self.stack.last().unwrap().clone()),
-                MakeClosure { num_closure_vars } => {
-                    let num_instructions = match &self.code[ip] {
-                        MakeFunc { num_instructions } => { ip += 1; num_instructions }
-                        bad => panic!("Malformed code at ip {ip}: expected MakeFunc after MakeClosure, but found {bad:?}"),
+                MakeClosure{..} => panic!("Malformed code at ip {}: reached MakeClosure not immediately following a MakeFunc's Return.", ip - 1),
+                MakeFunc { num_instructions } => {
+                    let code_index = ip;
+                    ip += num_instructions;
+                    
+                    let closure_data = match self.code.get(ip) {
+                        Some(MakeClosure { num_closure_vars }) => {
+                            ip += 1;
+                            let mut closure_data = Vec::with_capacity(*num_closure_vars);
+                            for _ in 0..*num_closure_vars {
+                                if let PushVar { src } = self.code[ip] {
+                                    ip += 1;
+                                    // TODO use e.g. List::I64s if closure vals are all ints
+                                    closure_data.push(self.load(src));
+                                } else {
+                                    panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}", self.code[ip]);
+                                }
+                            }
+                            closure_data
+                        }
+                        c => {dbg!(c); vec![]}
                     };
 
-                    let code_index = ip;  // First instruction of function body
-
-                    ip += num_instructions;
-                    let mut closure_data = Vec::with_capacity(num_closure_vars);
-                    for _ in 0..num_closure_vars {
-                        if let PushVar { src } = self.code[ip] {
-                            ip += 1;
-                            // TODO use e.g. List::I64s if closure vals are all ints
-                            closure_data.push(self.load(src));
-                        } else {
-                            panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}", self.code[ip]);
-                        }
-                    }
-                    let closure_env = Rc::new(RefCell::new(closure_data));
-                    self.push(RcVal::new(Val::ExplicitFunc { closure_env, code_index }));
-                }
-                MakeFunc { num_instructions } => {
-                    self.push(RcVal::new(
-                        Val::ExplicitFunc {
-                            closure_env: Rc::new(RefCell::new(vec![])),
-                            code_index: ip,
-                        }
-                    ));
-                    ip += num_instructions;
+                    self.push(RcVal::new(Val::ExplicitFunc {
+                        code_index,
+                        closure_env: Rc::new(RefCell::new(closure_data)),
+                    }));
                 }
                 AllocLocals { num_locals } => {
                     // TODO is 0 the right thing to fill with here?
