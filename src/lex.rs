@@ -290,6 +290,9 @@ pub enum PrimVerb {
     Type,
     C0,
 
+    P,  // P
+    Q,  // Q
+
     // Hidden primitives below; these have no string representation and
     // shouldn't be in the token enum. TODO move these to compilation.
 
@@ -305,6 +308,8 @@ pub enum PrimAdverb {
     Backtick,  // `
     Tilde,  // ~
     Backslash, // \
+    P,  // p
+    Q,  // q
     // TODO converge/do-times/do-while
 }
 
@@ -397,6 +402,8 @@ impl Display for PrimVerb {
             Rec => "Rec",
             Type => "Type",
             C0 => "C0",
+            P => "P",
+            Q => "Q",
             DebugPrint => "DebugPrint",
         };
 
@@ -413,6 +420,8 @@ impl Display for PrimAdverb {
             Dot => ".",
             Tilde => "~",
             Backslash => "\\",
+            P => "p",
+            Q => "q",
         };
 
         f.write_str(s)
@@ -479,6 +488,12 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
 
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
+        Token::PrimVerb(PrimVerb::P),
+        Token::PrimAdverb(PrimAdverb::P),
+
+        Token::PrimVerb(PrimVerb::Q),
+        Token::PrimAdverb(PrimAdverb::Q),
+
         Token::PrimNoun(PrimNoun::Exit),
         Token::PrimVerb(PrimVerb::Exit),
 

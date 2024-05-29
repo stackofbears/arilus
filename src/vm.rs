@@ -527,7 +527,10 @@ impl Mem {
                 }
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
-                    self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand }));
+                    match operand.as_val() {
+                        Val::AmbivalentFunc(monad, _) if matches!(adverb, PrimAdverb::P) => self.push(monad.clone()),
+                        _ => self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand })),
+                    }
                 }
                 CollectVerbAlternatives => {
                     let dyad = self.pop();
@@ -682,6 +685,11 @@ impl Mem {
         use PrimAdverb::*;
         let result = match adverb {
             Dot => self.call_val(operand, x, maybe_y)?,
+            P => self.call_val(operand, x, None)?,
+            Q => match maybe_y {
+                Some(y) => self.call_val(operand, y, None)?,
+                None => self.call_val(operand, x, None)?,
+            },
             SingleQuote => match maybe_y {
                 None => match iter_val(&x) {
                     None => self.call_val(operand, x, None)?,
@@ -747,6 +755,8 @@ impl Mem {
     fn call_prim_dyad(&mut self, v: PrimVerb, x: RcVal, y: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
+            P => Ok(x),
+            Q => Ok(y),
             Plus => prim_add(x.as_val(), y.as_val()),
             Minus => prim_subtract(x.as_val(), y.as_val()),
             Asterisk => prim_multiply(x.as_val(), y.as_val()),

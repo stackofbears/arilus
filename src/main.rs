@@ -1,4 +1,4 @@
-// mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
+// mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); modules
 //
 // trains:
 //   - add p and q adverbs

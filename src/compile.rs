@@ -362,6 +362,6 @@ fn add_closure_var(name: &str, scope: &mut HashMap<String, Var>) {
 
 fn get_stdlib_names() -> &'static [&'static str] {
     &[
-
+        
     ]
 }
