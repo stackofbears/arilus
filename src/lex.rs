@@ -307,6 +307,7 @@ pub enum PrimAdverb {
     Dot,  // .
     SingleQuote,  // '
     Backtick,  // `
+    BacktickColon,  // `:
     Tilde,  // ~
     Backslash, // \
     P,  // p
@@ -420,6 +421,7 @@ impl Display for PrimAdverb {
         let s: &str = match self {
             SingleQuote => "'",
             Backtick => "`",
+            BacktickColon => "`:",
             Dot => ".",
             Tilde => "~",
             Backslash => "\\",
@@ -477,6 +479,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(DoubleSlash),
 
         PrimAdverb(Backtick),
+        PrimAdverb(BacktickColon),
         PrimAdverb(Backslash),
         PrimAdverb(Dot),
         PrimAdverb(SingleQuote),

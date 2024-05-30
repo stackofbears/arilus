@@ -723,6 +723,20 @@ impl Mem {
                         iter.map(|val| self.call_val(operand.clone(), val, None))
                     )?),
                 }
+                Some(y) => match iter_val(&x) {
+                    None => self.call_val(operand.clone(), x, Some(y))?,
+                    Some(iter) => RcVal::new(collect_list(
+                        iter.map(|x_val| self.call_val(operand.clone(), x_val, Some(y.clone())))
+                    )?),
+                }
+            }
+            BacktickColon => match maybe_y {
+                None => match iter_val(&x) {
+                    None => self.call_val(operand, x, None)?,
+                    Some(iter) => RcVal::new(collect_list(
+                        iter.map(|val| self.call_val(operand.clone(), val, None))
+                    )?),
+                }
                 Some(y) => match iter_val(&y) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
                     Some(iter) => RcVal::new(collect_list(
@@ -742,6 +756,8 @@ impl Mem {
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
+            P => x,
+            Q => x,
             Show => RcVal::new(prim_show(x.as_val())?),
             Print => { self.prim_print(&x)?; println!(); x }
             DebugPrint => { self.debug_print_val(&x)?; println!(); x }
@@ -1891,6 +1907,7 @@ fn iota(x: &Val) -> Val {
     }
 }
 
+// TODO should [] == "" be 1?
 fn prim_match(x: &Val, y: &Val) -> Result<RcVal, String> {
     Ok(RcVal::new(Val::Int((x == y) as i64)))
 }

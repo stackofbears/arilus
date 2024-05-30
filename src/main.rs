@@ -116,8 +116,13 @@ impl ReplSession {
             if let Err(err) = io::stdout().flush() { return Err(err.to_string()) }
             if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
             let line_start = self.tokens.len();
+
             // TODO use line length to guess token count
-            self.compiler.lexer.tokenize(&self.line, &mut self.tokens)?;
+            if let err@Err(_) = self.compiler.lexer.tokenize(&self.line, &mut self.tokens) {
+                self.tokens.truncate(token_start);
+                self.line.clear();
+                return err
+            }
             self.line.clear();
 
             nesting += count_nesting(&self.tokens[line_start..]);
