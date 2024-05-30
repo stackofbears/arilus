@@ -77,7 +77,6 @@ fn main() -> io::Result<()> {
 struct ReplSession {
     line: String,
     tokens: Vec<lex::Token>,
-    lexer: lex::Lexer,
     compiler: compile::Compiler,
     mem: vm::Mem,
 }
@@ -94,8 +93,7 @@ impl ReplSession {
         Self {
             line: String::new(),
             tokens: Vec::new(),
-            lexer: lex::Lexer::new(),
-            compiler: compile::Compiler::new(),
+            compiler: compile::Compiler::new(lex::Lexer::new()),
             mem,
         }
     }
@@ -119,19 +117,17 @@ impl ReplSession {
             if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
             let line_start = self.tokens.len();
             // TODO use line length to guess token count
-            self.lexer.tokenize(&self.line, &mut self.tokens)?;
+            self.compiler.lexer.tokenize(&self.line, &mut self.tokens)?;
             self.line.clear();
 
             nesting += count_nesting(&self.tokens[line_start..]);
             if nesting <= 0 { break }  // < 0 will raise a parse error
         }
         let exprs = parse::parse(&self.tokens[token_start..])?;
-        //dbg!(&exprs);
         if exprs.is_empty() { return Ok(()) }
 
         let code_start = self.compiler.code.len();
         self.compiler.compile(&exprs)?;
-        //dbg!(&self.compiler.code);
 
         let is_assignment = matches!(exprs.last(),
                                      Some(
@@ -181,12 +177,10 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
 }
 
 fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
-    let tokens = lex::Lexer::new().tokenize_to_vec(text)?;
-    dbg!(&tokens);
+    let lexer = lex::Lexer::new();
+    let tokens = lexer.tokenize_to_vec(text)?;
     let exprs = parse::parse(&tokens)?;
-    dbg!(&exprs);
-    let code = compile::compile(&exprs)?;
-    dbg!(&code);
+    let code = compile::compile(lexer, &exprs)?;
     Ok(code)
 }
 

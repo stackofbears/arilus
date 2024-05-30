@@ -214,6 +214,7 @@ pub enum Token {
     // TODO floats, DoubleQuestion (??), BangEqual (!=)
 
     RightArrow,  // ->
+    Load,  // load
 
     LParen,  // (
     RParen,  // )
@@ -318,6 +319,7 @@ impl Display for Token {
         use Token::*;
         match self {
             RightArrow => f.write_str("->"),
+            Load => f.write_str("load"),
             LParen => f.write_str("("),
             RParen => f.write_str(")"),
             LBracket => f.write_str("["),
@@ -394,6 +396,7 @@ impl Display for PrimVerb {
             Question => "?",
             QuestionColon => "?:",
             Ampersand => "&",
+
             Exit => "Exit",
             Show => "Show",
             Print => "Print",
@@ -488,6 +491,8 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
 
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
+        Token::Load,
+
         Token::PrimVerb(PrimVerb::P),
         Token::PrimAdverb(PrimAdverb::P),
 

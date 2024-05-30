@@ -12,10 +12,12 @@ use crate::lex::*;
 #[derive(Debug, Clone, Copy)]
 pub enum Instr {
     Nop,
+    LoadModule { code_index: usize },  // code_index points right after module_start
+    ModuleStart { num_instructions: usize },  // Followed by the module's instructions (num_instructions instructions, including ModuleEnd).
+    ModuleEnd,
     Dup,  // Duplicates the top stack element.
     MakeClosure { num_closure_vars: usize },  // Immediately follows the Return instruction of a MakeFunc. Followed by `num_closure_vars` PushVar instructions which form the closure environment. Pops the top value of the stack, which must be an explicit function, and pushes a function with the closure environment formed by those PushVar instructions. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
-    MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions).
-    AllocLocals { num_locals: usize },  // Allocates space for `num_locals` locals on the current stack frame.
+    MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions, including Return).
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
     PushLiteralInteger(i64),
     PushLiteralFloat(f64),

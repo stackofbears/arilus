@@ -369,7 +369,8 @@ pub struct Mem {
     // Stack of local scopes
     locals_stack: Vec<RcVal>,
 
-    // Details about the explicit function (or global scope) we're currently in.
+    // Details about the explicit function (or global scope) we're currently
+    // in. Never empty!
     stack_frames: Vec<StackFrame>,
 
     // TODO intern small ints (actually not necessary if we do Small | Rc<Big>)
@@ -411,6 +412,18 @@ impl Mem {
             ip += 1;
             match self.code[ip - 1] {
                 Nop => {}
+                LoadModule { code_index } => {
+                    let top_of_locals = self.locals_stack.len();
+                    let frame = self.current_frame_mut();
+                    let old_locals_start = frame.locals_start;
+                    frame.locals_start = top_of_locals;
+                    self.execute(code_index)?;
+                    self.current_frame_mut().locals_start = old_locals_start;
+                }
+                ModuleStart { num_instructions } => {
+                    ip += num_instructions;
+                }
+                ModuleEnd => return Ok(()),
                 Dup => self.push(self.stack.last().unwrap().clone()),
                 MakeClosure{..} => panic!("Malformed code at ip {}: reached MakeClosure not immediately following a MakeFunc's Return.", ip - 1),
                 MakeFunc { num_instructions } => {
@@ -432,17 +445,13 @@ impl Mem {
                             }
                             closure_data
                         }
-                        c => {dbg!(c); vec![]}
+                        _ => vec![],
                     };
 
                     self.push(RcVal::new(Val::ExplicitFunc {
                         code_index,
                         closure_env: Rc::new(RefCell::new(closure_data)),
                     }));
-                }
-                AllocLocals { num_locals } => {
-                    // TODO is 0 the right thing to fill with here?
-                    self.locals_stack.resize(self.locals_stack.len() + num_locals, self.zero.clone());
                 }
                 Return => {
                     let frame = self.stack_frames.pop().unwrap();
@@ -600,6 +609,12 @@ impl Mem {
     fn current_frame(&self) -> &StackFrame {
         self.stack_frames.last().unwrap()
     }
+
+    #[inline]
+    fn current_frame_mut(&mut self) -> &mut StackFrame {
+        self.stack_frames.last_mut().unwrap()
+    }
+
 
     fn load(&mut self, var: Var) -> RcVal {
         // TODO do all local/closure vars point to non-lists (instead to slices)?

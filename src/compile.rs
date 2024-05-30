@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fs,
+};
 
 use crate::bytecode::*;
 use crate::lex::{self, *};
@@ -9,8 +12,8 @@ use crate::util::*;
 enum Arity { One, Two }
 
 // TODO better error than string
-pub fn compile(exprs: &[Expr]) -> Result<Vec<Instr>, String> {
-    let mut compiler = Compiler::new();
+pub fn compile(lexer: Lexer, exprs: &[Expr]) -> Result<Vec<Instr>, String> {
+    let mut compiler = Compiler::new(lexer);
     compiler.compile_block(exprs)?;
     Ok(compiler.code)
 }
@@ -18,26 +21,48 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<Instr>, String> {
 // Invariants: `scopes` non-empty after `new`.
 pub struct Compiler {
     pub code: Vec<Instr>,
+    pub lexer: Lexer,
+
     scopes: Vec<HashMap<String, Var>>,
+    
+    // (code index right after LoadModule, module vars)
+    module_cache: HashMap<String, (usize, HashMap<String, Var>)>,
 }
 
 // TODO be able to compile globals for repl
 // TODO adverb nounification (') (for ultimate adverb verbification)
 impl Compiler {
-    pub fn new() -> Self {
+    pub fn new(lexer: Lexer) -> Self {
         let mut globals = HashMap::new();
         for (i, name) in get_stdlib_names().iter().enumerate() {
             globals.insert(name.to_string(), Var { place: Place::Local, slot: i });
         }
 
         Self { code: vec![],
-               scopes: vec![globals] }
+               lexer,
+               scopes: vec![globals],
+               module_cache: HashMap::new() }
     }
 
     pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
         let result = self.compile_block(exprs);
         self.scopes.truncate(1);  // Move back to global scope
         result
+    }
+
+    fn parse_file(&self, filepath: &str) -> Result<Vec<Expr>, String> {
+        let file_contents = fs::read_to_string(filepath).map_err(|err| err.to_string())?;
+        let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
+        parse(&tokens)
+    }
+    
+    fn compile_with_fresh_scopes(&mut self, exprs: &[Expr]) -> Result<HashMap<String, Var>, String> {
+        let mut saved_scopes = vec![HashMap::new()];
+        std::mem::swap(&mut self.scopes, &mut saved_scopes);
+        self.compile(&exprs)?;
+        std::mem::swap(&mut self.scopes, &mut saved_scopes);
+        assert!(saved_scopes.len() == 1);
+        Ok(saved_scopes.into_iter().next().unwrap())
     }
 
     fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
@@ -56,10 +81,50 @@ impl Compiler {
         self.code.len() - 1
     }
 
+    fn ensure_module_loaded<'a>(&'a mut self, mod_name: &str) -> Result<(usize, &'a HashMap<String, Var>), String> {
+        // This double-lookup is a workaround for problem case 3 in the NLL RFC:
+        // https://github.com/rust-lang/rfcs/blob/master/text/2094-nll.md#problem-case-3-conditional-control-flow-across-functions. We
+        // could use the entry API, but that would mean a clone of `mod_name`
+        // even when it's already in the cache.
+        let (code_index, scope) = if self.module_cache.contains_key(mod_name) {
+            self.module_cache.get(mod_name).unwrap()
+        } else {
+            let mod_start_index = self.push(Instr::Nop);
+            let mod_exprs = self.parse_file(mod_name)?;
+            let mod_scope = self.compile_with_fresh_scopes(&mod_exprs)?;
+            let mod_end_index = self.push(Instr::ModuleEnd);
+            self.code[mod_start_index] = Instr::ModuleStart {
+                num_instructions: mod_end_index - mod_start_index
+            };
+            self.module_cache.entry(mod_name.to_string())
+                // The code index, used in LoadModule, points right after
+                // ModuleStart.
+                .or_insert((mod_start_index + 1, mod_scope))
+        };
+        Ok((*code_index, scope))
+    }
+
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match expr {
             Expr::Noun(noun) => self.compile_noun(noun),
             Expr::Verb(verb) => self.compile_verb(verb, None),
+            Expr::PragmaLoad(mod_name) => {
+                let load_module_index = self.push(Instr::Nop);
+                let mut local_scope = self.scopes.pop().unwrap();
+                let mod_locals_base_slot = next_local_slot(&local_scope);
+                let (code_index, mod_scope) = self.ensure_module_loaded(mod_name)?;
+                for (name, mut var) in mod_scope.iter().map(|(name, var)| (name.clone(), *var)) {
+                    var.slot += mod_locals_base_slot;
+                    match var.place {
+                        Place::Local => local_scope.insert(name, var),
+                        Place::ClosureEnv => panic!("Error: closure env var {name} in toplevel of module {mod_name}"),
+                    };
+                }
+                self.scopes.push(local_scope);
+                self.code[load_module_index] = Instr::LoadModule { code_index };
+                self.code.push(Instr::PushLiteralInteger(0));  // TODO return module/unit/something
+                Ok(())
+            }
         }
     }
 
@@ -132,7 +197,7 @@ impl Compiler {
             &SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim }),
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
-                let alloc_locals_index = self.push(Instr::Nop);
+                // TODO alloc locals?
 
                 let mut scope = HashMap::new();
                 if let None = explicit_args {
@@ -156,17 +221,10 @@ impl Compiler {
                 self.compile_block(exprs)?;
                 self.code.push(Instr::Return);
 
-                let num_instructions = self.code.len() - alloc_locals_index;
+                let num_instructions = self.code.len() - (make_func_index + 1);
                 self.code[make_func_index] = Instr::MakeFunc { num_instructions };
 
                 let final_scope = self.scopes.pop().unwrap();
-                let num_locals = {
-                    let including_args = get_num_local_vars(&final_scope);
-                    // Remove 2 for automatically-allocated arguments.
-                    if including_args <= 2 { 0 } else { including_args - 2 }
-                };
-
-                self.code[alloc_locals_index] = Instr::AllocLocals { num_locals };
 
                 // Tell the outer scope how to populate the closure environment.
                 let mut closure_vars: Vec<(&String, &Var)> =
@@ -230,9 +288,8 @@ impl Compiler {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
                 if !matches!(verb, Verb::SmallVerb(SmallVerb::PrimVerb(_))) {
-                    self.compile_verb(verb,
-                                      Some(if maybe_y_arg.is_some() { Arity::Two }
-                                           else { Arity::One }))?;
+                    self.compile_verb(verb, Some(if maybe_y_arg.is_some() { Arity::Two }
+                                                 else { Arity::One }))?;
                 }
                 if let Some(y) = maybe_y_arg {
                     self.compile_small_noun(y)?;
@@ -257,7 +314,7 @@ impl Compiler {
         if let Some(var) = local_scope.get(name) {
             return *var;
         }
-        let var = next_local_var(local_scope);
+        let var = local_var(next_local_slot(local_scope));
         local_scope.insert(name.to_string(), var);
         var
     }
@@ -342,13 +399,31 @@ fn closure_var(slot: usize) -> Var {
     Var { place: Place::ClosureEnv, slot }
 }
 
-fn get_num_local_vars(scope: &HashMap<String, Var>) -> usize {
-    scope.values().filter(|v| v.place == Place::Local).count()
-}
-
-fn next_local_var(scope: &HashMap<String, Var>) -> Var {
-    let slot = get_num_local_vars(scope);
-    local_var(slot)
+// Note that the next local slot isn't always the same as the number of local
+// slots in the scope; loading a module can add a var to the scope that has the
+// same name but a different slot number, shadowing the current local.
+//
+// For example:
+//
+//   \ module mod
+//   a: 10
+//
+//   \ main program
+//   a: 5
+//   load mod
+//   a Print
+//
+// After `a: 5` executes, the scope is {"a": Local(0)}. Then `mod` is loaded;
+// inside, `a` is local slot 0, but when it's imported to the program, it's
+// offset by 1 to put it after the current locals. The scope is
+// {"a": Local(1)}. The next local slot would be 2, even though there's only one
+// local in scope.
+fn next_local_slot(scope: &HashMap<String, Var>) -> usize {
+    scope.values()
+        .filter_map(|v| if v.place == Place::Local { Some(v.slot) } else { None })
+        .max()
+        .map(|slot| slot + 1)
+        .unwrap_or(0)
 }
 
 fn get_num_closure_vars(scope: &mut HashMap<String, Var>) -> usize {

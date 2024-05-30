@@ -23,6 +23,8 @@ pub fn parse(tokens: &[Token]) -> Many<Expr> {
 pub enum Expr {
     Noun(Noun),
     Verb(Verb),
+
+    PragmaLoad(String),
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +168,15 @@ impl<'a> Parser<'a> {
             Expr::Noun(noun)
         } else if let Some(verb) = self.parse_verb()? {
             Expr::Verb(verb)
+        } else if self.consume(Token::Load) {
+            match self.peek() {
+                Some(Token::StrLit(mod_name)) => {
+                    let mod_name = mod_name.clone();
+                    self.skip();
+                    Expr::PragmaLoad(mod_name)
+                }
+                _ => return Err(self.expected("string literal after `load'")),
+            }
         } else {
             return Ok(None)
         };
