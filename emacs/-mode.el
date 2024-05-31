@@ -1,3 +1,7 @@
+;; TODO doc, come up with a name for the language so we can name all this properly
+
+;;; Code:
+
 (defgroup -faces nil "Faces for -mode")
 
 (defface -keyword-face
@@ -52,8 +56,13 @@
       `(;; Need OVERRIDE=t or else comments containing string literals won't
         ;; highlight properly.
         (,-keywords . '-punctuation-face)
-        ("\\\\ .*" . (0 'font-lock-comment-face t))  
-        ;;("\\<[A-Za-z][A-Za-z_0-9]*:" . '-assigned-identifier-face)
+        ("\\\\ .*" . (0 'font-lock-comment-face t))
+
+        ;; It would be nice to highlight colon assignments in a different color,
+        ;; but we can't parse the LHS with a regex because it's an
+        ;; arbitrarily-nested pattern.
+        ;; ("\\<[A-Za-z][A-Za-z_0-9]*:" . '-assigned-identifier-face)
+
         ("\\(\\<[A-Z][A-Za-z_0-9]*\\)\\(\\'\\|[^A-Za-z_0-9:]\\)" . (1 '-identifier-verb-face))
         ("->\\|;" . '-punctuation-face)
         (,-symbol-verbs . '-symbol-verb-face)
