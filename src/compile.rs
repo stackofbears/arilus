@@ -194,7 +194,12 @@ impl Compiler {
                 self.code.push(Instr::PushVar { src });
             }
             SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
-            &SmallVerb::PrimVerb(prim) => self.code.push(Instr::PushPrimVerb { prim }),
+            &SmallVerb::PrimVerb(prim) => {
+                if prim == PrimVerb::Rec && self.scopes.len() < 2 {
+                    return err!("Can't use `Rec` outside of an explicit definition")
+                }
+                self.code.push(Instr::PushPrimVerb { prim })
+            }
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
                 // TODO alloc locals?
@@ -344,12 +349,17 @@ impl Compiler {
         match small_noun {
             PrimNoun(prim) => {
                 let verb = match prim {
+                    lex::PrimNoun::Rec => {
+                        if self.scopes.len() < 2 {
+                            return err!("Can't use `rec` outside of an explicit definition")
+                        }
+                        PrimVerb::Rec
+                    }
                     lex::PrimNoun::Exit => PrimVerb::Exit,
                     lex::PrimNoun::Show => PrimVerb::Show,
                     lex::PrimNoun::Print => PrimVerb::Print,
                     lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
-                    lex::PrimNoun::Rec => PrimVerb::Rec,
                     lex::PrimNoun::Type => PrimVerb::Type,
                     lex::PrimNoun::C0 => {
                         self.code.push(Instr::LiteralBytes { bytes: [0; 8] });
