@@ -137,7 +137,8 @@ impl ReplSession {
         let is_assignment = matches!(exprs.last(),
                                      Some(
                                          parse::Expr::Noun(parse::Noun::LowerAssign(_, _)) |
-                                         parse::Expr::Verb(parse::Verb::UpperAssign(_, _))
+                                         parse::Expr::Verb(parse::Verb::UpperAssign(_, _)) |
+                                         parse::Expr::Noun(parse::Noun::ModifyingAssign(_, _))
                                      ));
         if !is_assignment {
             self.compiler.code.push(bytecode::Instr::CallPrimVerb1 {
