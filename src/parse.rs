@@ -30,6 +30,7 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub enum Noun {
     LowerAssign(Pattern, Box<Noun>),
+    ModifyingAssign(Pattern, Vec<Predicate>),
     SmallNoun(SmallNoun),
     Sentence(SmallNoun, Vec<Predicate>),
 }
@@ -194,6 +195,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_noun(&mut self) -> Parsed<Noun> {
+        if self.consume(&Token::RightArrow) {
+            let pattern = match self.parse_pattern()? {
+                Some(pat) => pat,
+                None => return Err(self.expected(&"pattern after `->'")),
+            };
+            let predicate = self.parse_predicate()?;
+            return Ok(Some(Noun::ModifyingAssign(pattern, predicate)));
+        }
+
         let before_small_noun = self.token_index;
         let small_noun = match self.parse_small_noun()? {
             Some(small_noun) => small_noun,
@@ -202,6 +212,7 @@ impl<'a> Parser<'a> {
 
         let noun = match self.peek() {
             Some(Token::Colon) => {
+                // Oh! `small_noun` wasn't a noun, it was a pattern.
                 self.token_index = before_small_noun;
                 let pattern = match self.parse_pattern()? {
                     Some(pattern) => pattern,

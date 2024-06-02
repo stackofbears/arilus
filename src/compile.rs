@@ -278,6 +278,13 @@ impl Compiler {
                 self.compile_noun(rhs)?;
                 self.compile_unpacking_assignment(pat, true);
             }
+            Noun::ModifyingAssign(pattern, predicates) => {
+                self.compile_small_noun(&pattern_to_small_noun(pattern))?;
+                for predicate in predicates {
+                    self.compile_predicate(predicate);
+                }
+                self.compile_unpacking_assignment(pattern, true);
+            }
             Noun::Sentence(small_noun, predicates) => {
                 self.compile_small_noun(small_noun)?;
                 for predicate in predicates {
@@ -456,4 +463,16 @@ fn get_stdlib_names() -> &'static [&'static str] {
     &[
         
     ]
+}
+
+fn pattern_to_small_noun(pat: &Pattern) -> SmallNoun {
+    match pat {
+        Pattern::As(pat1, _) => pattern_to_small_noun(pat1),
+        Pattern::Name(name) => SmallNoun::LowerName(name.clone()),
+        Pattern::Array(pats) => SmallNoun::ArrayLiteral(
+            pats.iter().map(
+                |elem| Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(elem)))
+            ).collect()
+        ),
+    }
 }
