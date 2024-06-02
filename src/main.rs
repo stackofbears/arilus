@@ -186,6 +186,7 @@ fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
     let tokens = lexer.tokenize_to_vec(text)?;
     let exprs = parse::parse(&tokens)?;
     let code = compile::compile(lexer, &exprs)?;
+
     Ok(code)
 }
 

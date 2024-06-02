@@ -241,11 +241,11 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let small_noun = match self.peek() {
-            Some(&Token::If) => {
+            Some(&Token::IfLower) => {
                 self.skip();
 
                 self.consume_or_fail(&Token::LParen)?;
-                let exprs = self.parse_exprs()?;
+                let mut exprs = self.parse_exprs()?;
                 if exprs.len() < 3 {
                     return err!("Not enough arguments to `if'; expected 3")
                 }
@@ -312,9 +312,9 @@ impl<'a> Parser<'a> {
                 }
             } else if let Some(verb) = self.parse_small_verb()? {
                 predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
-            } else if self.consume(&Token::If) {
+            } else if self.consume(&Token::IfUpper) {
                 self.consume_or_fail(&Token::LParen)?;
-                let exprs = self.parse_exprs()?;
+                let mut exprs = self.parse_exprs()?;
                 if exprs.len() < 2 {
                     return err!("Not enough arguments to `if'; expected 2")
                 }

@@ -19,6 +19,8 @@ pub enum Instr {
     MakeClosure { num_closure_vars: usize },  // Immediately follows the Return instruction of a MakeFunc. Followed by `num_closure_vars` PushVar instructions which form the closure environment. Pops the top value of the stack, which must be an explicit function, and pushes a function with the closure environment formed by those PushVar instructions. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions, including Return).
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
+    JumpRelative { offset: i64 },  // Add `offset` to ip.
+    JumpRelativeUnless { offset: i64 },  // Pops the top of the stack, then adds `offset` to `ip`, unless the popped value is falsy (its first atom is 0).
     PushLiteralInteger(i64),
     PushLiteralFloat(f64),
     PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
