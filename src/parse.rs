@@ -36,6 +36,7 @@ pub enum Noun {
 
 #[derive(Debug, Clone)]
 pub enum Predicate {
+    If2(Box<Expr>, Box<Expr>),
     VerbCall(Verb, Option<SmallNoun>),
     ForwardAssignment(Pattern),
 }
@@ -62,6 +63,7 @@ pub enum Verb {
 
 #[derive(Debug, Clone)]
 pub enum SmallNoun {
+    If3(Box<Expr>, Box<Expr>, Box<Expr>),
     PrimNoun(lex::PrimNoun),
     LowerName(String),
     Block(Vec<Expr>),  // parenthesized
@@ -140,9 +142,17 @@ impl<'a> Parser<'a> {
         self.parse_sequenced(Self::parse_pattern)
     }
 
-    fn consume(&mut self, tok: Token) -> bool {
-        if self.peek() == Some(&tok) { self.skip(); true }
+    fn consume(&mut self, tok: &Token) -> bool {
+        if self.peek() == Some(tok) { self.skip(); true }
         else { false }
+    }
+    
+    fn consume_or_fail(&mut self, tok: &Token) -> Result<(), String> {
+        if self.consume(tok) {
+            Ok(())
+        } else {
+            Err(self.expected(&format!("`{tok}'")))
+        }
     }
 
     fn parse_sequenced<A, F: Fn(&mut Self) -> Parsed<A>>(&mut self, parse: F) -> Many<A> {
@@ -156,7 +166,7 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
 
-            next_required = self.consume(Token::Semicolon);
+            next_required = self.consume(&Token::Semicolon);
             let next_allowed = next_required | self.skip_newlines();
             if !next_allowed { break }
         }
@@ -168,7 +178,7 @@ impl<'a> Parser<'a> {
             Expr::Noun(noun)
         } else if let Some(verb) = self.parse_verb()? {
             Expr::Verb(verb)
-        } else if self.consume(Token::Load) {
+        } else if self.consume(&Token::Load) {
             match self.peek() {
                 Some(Token::StrLit(mod_name)) => {
                     let mod_name = mod_name.clone();
@@ -197,7 +207,7 @@ impl<'a> Parser<'a> {
                     Some(pattern) => pattern,
                     None => return Err(self.expected(&"pattern")),
                 };
-                assert!(self.consume(Token::Colon));
+                assert!(self.consume(&Token::Colon));
                 match self.parse_noun()? {
                     Some(rhs) => LowerAssign(pattern, Box::new(rhs)),
                     None => return Err(self.expected(&"RHS of noun assignment")),
@@ -231,6 +241,24 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let small_noun = match self.peek() {
+            Some(&Token::If) => {
+                self.skip();
+
+                self.consume_or_fail(&Token::LParen)?;
+                let exprs = self.parse_exprs()?;
+                if exprs.len() < 3 {
+                    return err!("Not enough arguments to `if'; expected 3")
+                }
+                if exprs.len() > 3 {
+                    return err!("Too many arguments to `if'; expected 3")
+                }
+                self.consume_or_fail(&Token::RParen)?;
+                
+                let else_ = exprs.pop().unwrap();
+                let then = exprs.pop().unwrap();
+                let cond = exprs.pop().unwrap();
+                If3(Box::new(cond), Box::new(then), Box::new(else_))
+            }
             Some(&Token::PrimNoun(prim)) => {
                 self.skip();
                 PrimNoun(prim)
@@ -260,20 +288,14 @@ impl<'a> Parser<'a> {
             Some(Token::LParen) => {
                 self.skip();
                 let exprs = self.parse_exprs()?;
-                if self.consume(Token::RParen) {
-                    Block(exprs)
-                } else {
-                    return Err(self.expected(&"`)'"))
-                }
+                self.consume_or_fail(&Token::RParen)?;
+                Block(exprs)
             }
             Some(Token::LBracket) => {
                 self.skip();
                 let elems = self.parse_exprs()?;
-                if self.consume(Token::RBracket) {
-                    ArrayLiteral(elems)
-                } else {
-                    return Err(self.expected(&"`]'"))
-                }
+                self.consume_or_fail(&Token::RBracket)?;
+                ArrayLiteral(elems)
             }
             _ => return Ok(None),
         };
@@ -283,13 +305,27 @@ impl<'a> Parser<'a> {
     fn parse_predicate(&mut self) -> Many<Predicate> {
         let mut predicates = vec![];
         loop {
-            if self.consume(Token::RightArrow) {
+            if self.consume(&Token::RightArrow) {
                 match self.parse_pattern()? {
                     Some(pat) => predicates.push(Predicate::ForwardAssignment(pat)),
                     None => return Err(self.expected(&"pattern after `->'")),
                 }
             } else if let Some(verb) = self.parse_small_verb()? {
                 predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
+            } else if self.consume(&Token::If) {
+                self.consume_or_fail(&Token::LParen)?;
+                let exprs = self.parse_exprs()?;
+                if exprs.len() < 2 {
+                    return err!("Not enough arguments to `if'; expected 2")
+                }
+                if exprs.len() > 2 {
+                    return err!("Too many arguments to `if'; expected 2")
+                }
+                self.consume_or_fail(&Token::RParen)?;
+                
+                let else_ = exprs.pop().unwrap();
+                let then = exprs.pop().unwrap();
+                predicates.push(Predicate::If2(Box::new(then), Box::new(else_)))
             } else {
                 break
             }
@@ -303,7 +339,7 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let mut verb = if self.consume(Token::Colon) {
+        let mut verb = if self.consume(&Token::Colon) {
             match small_verb {
                 UpperName(name) => match self.parse_verb()? {
                     Some(rhs) => UpperAssign(name, Box::new(rhs)),
@@ -316,7 +352,7 @@ impl<'a> Parser<'a> {
         };
 
         loop {
-            if self.consume(Token::ColonAfterWhitespace) {
+            if self.consume(&Token::ColonAfterWhitespace) {
                 let dyadic_case = match self.parse_small_verb()? {
                     Some(dyadic) => dyadic,
                     None => return Err(self.expected(&"verb for dyadic case of ambivalent function")),
@@ -351,11 +387,8 @@ impl<'a> Parser<'a> {
             Some(Token::LBracket) => {
                 self.skip();
                 let names = self.parse_pattern_list()?;
-                if self.consume(Token::RBracket) {
-                    Ok(Some(Pattern::Array(names)))
-                } else {
-                    return Err(self.expected(&"`]' to end pattern"))
-                }
+                self.consume_or_fail(&Token::RBracket)?;
+                Ok(Some(Pattern::Array(names)))
             }
             Some(Token::LParen) => {
                 self.skip();
@@ -364,11 +397,8 @@ impl<'a> Parser<'a> {
                     None => return Err(self.expected(&"pattern")),
                 };
 
-                if self.consume(Token::RParen) {
-                    Ok(Some(inner))
-                } else {
-                    return Err(self.expected(&"`)'"))
-                }
+                self.consume_or_fail(&Token::RParen)?;
+                Ok(Some(inner))
             }
             _ => return Ok(None),
         }
@@ -388,7 +418,7 @@ impl<'a> Parser<'a> {
             pat = Pattern::Array(stranded_pats)
         }
 
-        while self.consume(Token::RightArrow) {
+        while self.consume(&Token::RightArrow) {
             match self.parse_pattern()? {
                 Some(next_pat) => pat = Pattern::As(Box::new(pat), Box::new(next_pat)),
                 None => return Err(self.expected(&"pattern after `->'")),
@@ -401,7 +431,7 @@ impl<'a> Parser<'a> {
     fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
         // TODO predicate syntax  {|x?(pred)| ...},  {|x;y?(pred)|},  {|?(pred)| ...} if useful
         self.skip_newlines();
-        if !self.consume(Token::PrimVerb(lex::PrimVerb::Pipe)) {
+        if !self.consume(&Token::PrimVerb(lex::PrimVerb::Pipe)) {
             return Ok(None)
         }
 
@@ -412,7 +442,7 @@ impl<'a> Parser<'a> {
         };
 
         let y = {
-            let y_required = self.consume(Token::Semicolon);
+            let y_required = self.consume(&Token::Semicolon);
             let y_allowed = y_required | self.skip_newlines();
 
             if y_allowed {
@@ -427,9 +457,7 @@ impl<'a> Parser<'a> {
         };
 
         self.skip_newlines();
-        if !self.consume(Token::PrimVerb(lex::PrimVerb::Pipe)) {
-            return Err(self.expected(&"`|' to end explicit argument list"))
-        }
+        self.consume_or_fail(&Token::PrimVerb(lex::PrimVerb::Pipe))?;
 
         Ok(Some(ExplicitArgs { x, y }))
     }
@@ -448,7 +476,7 @@ impl<'a> Parser<'a> {
                 if exprs.is_empty() {  // TODO remove to enable () parse
                     return Err(self.expected(&"expression"))
                 }
-                if self.consume(Token::RBrace) {
+                if self.consume(&Token::RBrace) {
                     Lambda(maybe_explicit_args, exprs)
                 } else {
                     return Err(self.expected("`;', newline, or `}}'"))

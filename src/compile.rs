@@ -310,6 +310,9 @@ impl Compiler {
             }
             Predicate::ForwardAssignment(pat) =>
                 self.compile_unpacking_assignment(pat, true),
+            Predicate::If2(then, else_) => {
+                // TODO compile branch, take care of scope stuff (put return into branch or after? vm might have to check after jump for return)
+            }
         }
         Ok(())
     }
@@ -367,6 +370,9 @@ impl Compiler {
                     }
                 };
                 self.code.push(Instr::PushPrimVerb { prim: verb });
+            }
+            If3(cond, then, else_) => {
+                
             }
             LowerName(name) => {
                 let src = self.fetch_var(name)?;
