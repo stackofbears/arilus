@@ -250,6 +250,24 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let small_noun = match self.peek() {
+            Some(&Token::IfLower) => {
+                self.skip();
+
+                self.consume_or_fail(&Token::LParen)?;
+                let mut exprs = self.parse_exprs()?;
+                if exprs.len() < 3 {
+                    return err!("Not enough arguments to `if'; expected 3")
+                }
+                if exprs.len() > 3 {
+                    return err!("Too many arguments to `if'; expected 3")
+                }
+                self.consume_or_fail(&Token::RParen)?;
+                
+                let else_ = exprs.pop().unwrap();
+                let then = exprs.pop().unwrap();
+                let cond = exprs.pop().unwrap();
+                If3(Box::new(cond), Box::new(then), Box::new(else_))
+            }
             Some(&Token::PrimNoun(prim)) => {
                 self.skip();
                 PrimNoun(prim)
@@ -303,6 +321,20 @@ impl<'a> Parser<'a> {
                 }
             } else if let Some(verb) = self.parse_small_verb()? {
                 predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
+            } else if self.consume(&Token::IfUpper) {
+                self.consume_or_fail(&Token::LParen)?;
+                let mut exprs = self.parse_exprs()?;
+                if exprs.len() < 2 {
+                    return err!("Not enough arguments to `if'; expected 2")
+                }
+                if exprs.len() > 2 {
+                    return err!("Too many arguments to `if'; expected 2")
+                }
+                self.consume_or_fail(&Token::RParen)?;
+                
+                let else_ = exprs.pop().unwrap();
+                let then = exprs.pop().unwrap();
+                predicates.push(Predicate::If2(Box::new(then), Box::new(else_)))
             } else {
                 break
             }

@@ -207,6 +207,20 @@ impl Val {
                  AtopFunc{..} | BoundFunc{..} | ForkFunc{..} | ExplicitFunc{..})
     }
 
+    fn is_falsy(&self) -> bool {
+        use Val::*;
+        match self {
+            Char(c) => *c == 0,
+            Int(i) => *i == 0,
+            Float(f) => *f == 0.0,
+            U8s(cs) => cs.first() == Some(&0),
+            I64s(is) => is.first() == Some(&0),
+            F64s(fs) => fs.first() == Some(&0.0),
+            Vals(vals) => vals.first().is_some_and(|val| val.is_falsy()),
+            _ => false,
+        }
+    }
+
     fn len(&self) -> Option<usize> {
         use Val::*;
         match self {
@@ -470,6 +484,9 @@ impl Mem {
                     self.locals_stack.truncate(frame.locals_start);
                     return Ok(())
                 }
+                JumpRelative { offset } => ip = (ip as i64 + offset) as usize,
+                JumpRelativeUnless { offset } =>
+                    if self.pop().is_falsy() { ip = (ip as i64 + offset) as usize },
                 PushLiteralInteger(value) => self.push(RcVal::new(Val::Int(value))),
                 PushLiteralFloat(value) => self.push(RcVal::new(Val::Float(value))),
                 PushVar { src } => {
@@ -490,7 +507,8 @@ impl Mem {
                 Call1 => {
                     let func = self.pop();
                     let x = self.pop();
-                    if matches!(self.code.get(ip), Some(Return)) {
+
+                    if self.is_tail_call(ip) {
                         match self.chase_tail(func, x, None)? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
@@ -504,7 +522,8 @@ impl Mem {
                     let y = self.pop();
                     let func = self.pop();
                     let x = self.pop();
-                    if matches!(self.code.get(ip), Some(Return)) {
+
+                    if self.is_tail_call(ip) {
                         match self.chase_tail(func, x, Some(y))? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
@@ -522,7 +541,7 @@ impl Mem {
                 CallPrimVerb2 { prim } => {
                     let y = self.pop();
                     let x = self.pop();
-                    if matches!(self.code.get(ip), Some(Return)) && prim == PrimVerb::At && x.is_func() {
+                    if prim == PrimVerb::At && x.is_func() && self.is_tail_call(ip) {
                         match self.chase_tail(x, y, None)? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
@@ -676,6 +695,12 @@ impl Mem {
             }
             Place::ClosureEnv => frame.closure_env.borrow_mut()[dst.slot] = val,
         }
+    }
+
+    // `ip` should point to the next instruction to execute.
+    #[inline]
+    fn is_tail_call(&self, ip: usize) -> bool {
+        matches!(self.code.get(ip), Some(Instr::Return))
     }
 
     fn chase_tail(&mut self, mut func: RcVal, mut x: RcVal, mut y: Option<RcVal>) -> Result<ChasedTail, String> {

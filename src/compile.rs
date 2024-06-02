@@ -14,7 +14,7 @@ enum Arity { One, Two }
 // TODO better error than string
 pub fn compile(lexer: Lexer, exprs: &[Expr]) -> Result<Vec<Instr>, String> {
     let mut compiler = Compiler::new(lexer);
-    compiler.compile_block(exprs)?;
+    compiler.compile(exprs)?;
     Ok(compiler.code)
 }
 
@@ -47,8 +47,84 @@ impl Compiler {
     pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
         let result = self.compile_block(exprs);
         self.scopes.truncate(1);  // Move back to global scope
+
+        self.eliminate_unconditional_jump_chains();
+
         result
     }
+
+    fn eliminate_unconditional_jump_chains(&mut self) {
+        use Instr::*;
+
+        // `i` is the index of the instruction that contains the offset.
+        fn next_ip(i: usize, offset: i64) -> usize {
+            // Note that we add 1 here because when we run instruction `i`, `ip`
+            // is actually equal to `i + 1`; the offset is from `i + 1`, not
+            // `i`.
+            (i as i64 + 1 + offset) as usize
+        }
+
+        // When we see a chain of unconditional jumps that eventually lead to a
+        // return, return directly instead.
+        //
+        // This can happen in nested ifs, as in:
+        //     { if(c1; if(c2; t2; e2); e1) }
+        // which translates to
+        //     eval c1
+        //     if false, jump to L1
+        //     eval c2
+        //     if false, jump to L2
+        //     eval t2
+        //     jump to L3
+        // L2: eval e2
+        // L3: jump to L4
+        // L1: eval e1
+        // L4: return
+        //
+        // If c1 and c2 are true, then after evaluating t2 we want to jump to
+        // the instruction immediately after e2. That instruction itself is a
+        // jump to the instruction immediately after e1. Put another way, the
+        // else-skipping jump of the outer `if` jumps to the else-skipping jump
+        // of the inner `if`.
+        //
+        // Eliminiating these chains is an optimization, but it's also a matter
+        // of semantic correctness because it lets the interpreter quickly
+        // identify tail calls made from within `if` expressions; it can just
+        // check if the next instruction is a return. The interpreter could
+        // follow these chains itself, but it's better to just fix them here.
+        for i in (0..self.code.len()).rev() {
+            match self.code[i] {
+                JumpRelative { offset } => match self.code.get(next_ip(i, offset)) {
+                    Some(Return) => self.code[i] = Return,
+
+                    // 0: Jump(2)  2 = 3-1
+                    // 1:
+                    // 2:
+                    // 3: Jump(1)  1 = 5-4
+                    // 4:
+                    // 5: (target)
+                    //
+                    // So Jump(2) should be adjusted to Jump(4) (4 = 5-1 = 2+1+1)
+                    Some(JumpRelative { offset: offset2 }) =>
+                        self.code[i] = JumpRelative { offset: offset + offset2 + 1 },
+
+                    Some(JumpRelativeUnless { offset: offset2 }) =>
+                        self.code[i] = JumpRelativeUnless { offset: offset + offset2 + 1 },
+
+                    _ => {}
+                },
+
+                JumpRelativeUnless { offset } => match self.code.get(next_ip(i, offset)) {
+                    Some(JumpRelative { offset: offset2 }) =>
+                        self.code[i] = JumpRelativeUnless { offset: offset + offset2 + 1 },
+                    _ => {}
+                },
+
+                _ => {}
+            }
+        }
+    }
+
 
     fn parse_file(&self, filepath: &str) -> Result<Vec<Expr>, String> {
         let file_contents = fs::read_to_string(filepath).map_err(|err| err.to_string())?;
@@ -299,25 +375,80 @@ impl Compiler {
     fn compile_predicate(&mut self, predicate: &Predicate) -> Result<(), String> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
-                if !matches!(verb, Verb::SmallVerb(SmallVerb::PrimVerb(_))) {
-                    self.compile_verb(verb, Some(if maybe_y_arg.is_some() { Arity::Two }
-                                                 else { Arity::One }))?;
+                match verb {
+                    Verb::SmallVerb(SmallVerb::PrimVerb(PrimVerb::Rec)) =>
+                        self.code.push(Instr::PushPrimVerb { prim: PrimVerb::Rec }),
+
+                    Verb::SmallVerb(SmallVerb::PrimVerb(_)) => {}
+
+                    _ => self.compile_verb(verb, Some(if maybe_y_arg.is_some() { Arity::Two }
+                                                      else { Arity::One }))?,
                 }
+
                 if let Some(y) = maybe_y_arg {
                     self.compile_small_noun(y)?;
                 }
+
                 self.code.push(match verb {
-                    &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) =>
-                        if maybe_y_arg.is_some() { Instr::CallPrimVerb2 { prim } }
-                    else { Instr::CallPrimVerb1 { prim } },
-                    _ =>
+                    &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) if prim != PrimVerb::Rec => {
+                        if maybe_y_arg.is_some() {
+                            Instr::CallPrimVerb2 { prim }
+                        } else {
+                            Instr::CallPrimVerb1 { prim }
+                        }
+                    }
+                    _ => {
                         if maybe_y_arg.is_some() { Instr::Call2 }
-                    else { Instr::Call1 }
+                        else { Instr::Call1 }
+                    }
                 });
             }
+
             Predicate::ForwardAssignment(pat) =>
                 self.compile_unpacking_assignment(pat, true),
+
+            Predicate::If2(then, else_) => self.compile_if(&*then, &*else_)?,
         }
+        Ok(())
+    }
+
+    fn compile_if(&mut self, then: &Expr, else_: &Expr) -> Result<(), String> {
+        // s: start;  t: #then;  e: #else     offset = target      - (index+1)
+        //
+        // s          JumpUnless(t+1) --,     t+1    = (s+t+2)     - (ip=s+1)
+        // s+1        (then start)      |
+        // s+t        (then end)        |
+        // s+t+1      Jump(e+1) --------|--,  e+1    = (s+t+2+e+1) - (ip=s+t+2)
+        // s+t+2      (else start) <----'  |
+        // s+t+2+e    (else end)           |
+        // s+t+2+e+1  (after) <------------'
+        
+        let jump_unless_index = self.push(Instr::Nop);
+
+        // TODO keep local names that are defined in both branches? They'd need
+        // to be get the same slot.
+        {
+            let in_branch_locals_start = next_local_slot(self.get_local_scope());
+            self.compile_expr(then)?;
+            self.cull_locals_at_and_above(in_branch_locals_start);
+        }
+
+        let jump_index = self.push(Instr::Nop);
+
+        self.code[jump_unless_index] = Instr::JumpRelativeUnless {
+            offset: self.code.len() as i64 - (jump_unless_index as i64 + 1)
+        };
+
+        { 
+            let in_branch_locals_start = next_local_slot(self.get_local_scope());
+            self.compile_expr(else_)?;
+            self.cull_locals_at_and_above(in_branch_locals_start);
+        }
+
+        self.code[jump_index] = Instr::JumpRelative {
+            offset: self.code.len() as i64 - (jump_index as i64 + 1)
+        };
+
         Ok(())
     }
 
@@ -375,6 +506,10 @@ impl Compiler {
                 };
                 self.code.push(Instr::PushPrimVerb { prim: verb });
             }
+            If3(cond, then, else_) => {
+                self.compile_expr(&*cond)?;
+                self.compile_if(&*then, &*else_)?;
+            }
             LowerName(name) => {
                 let src = self.fetch_var(name)?;
                 self.code.push(Instr::PushVar { src });
@@ -405,6 +540,11 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+    
+    fn cull_locals_at_and_above(&mut self, too_high: usize) {
+        let scope = self.scopes.last_mut().unwrap();
+        scope.retain(|_, var| var.place == Place::ClosureEnv || var.slot < too_high);
     }
 }
 
