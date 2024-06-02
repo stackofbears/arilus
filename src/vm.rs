@@ -539,8 +539,14 @@ impl Mem {
                     }
                 }
                 CollectVerbAlternatives => {
-                    let dyad = self.pop();
-                    let monad = self.pop();
+                    let mut dyad = self.pop();
+                    if let Val::AmbivalentFunc(_, inner_dyad) = dyad.as_val() {
+                        dyad = inner_dyad.clone();
+                    }
+                    let mut monad = self.pop();
+                    if let Val::AmbivalentFunc(inner_monad, _) = monad.as_val() {
+                        monad = inner_monad.clone();
+                    }
                     self.push(RcVal::new(Val::AmbivalentFunc(monad, dyad)));
                 }
                 MakeAtopFunc => {
