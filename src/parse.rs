@@ -37,6 +37,7 @@ pub enum Noun {
 
 #[derive(Debug, Clone)]
 pub enum Predicate {
+    If2(Box<Expr>, Box<Expr>),
     VerbCall(Verb, Option<SmallNoun>),
     ForwardAssignment(Pattern),
 }
@@ -63,6 +64,7 @@ pub enum Verb {
 
 #[derive(Debug, Clone)]
 pub enum SmallNoun {
+    If3(Box<Expr>, Box<Expr>, Box<Expr>),
     PrimNoun(lex::PrimNoun),
     LowerName(String),
     Block(Vec<Expr>),  // parenthesized
