@@ -1,4 +1,5 @@
 ;; TODO doc, come up with a name for the language so we can name all this properly
+;; TODO highlight function params
 
 ;;; Code:
 
