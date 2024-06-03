@@ -31,12 +31,12 @@
   :group '-faces)
 
 (defface -punctuation-face
-    `((t (:foreground "DodgerBlue2")))
+    `((t (:foreground "cornflower blue")))
   "Face used to highlight punctuation, like ; and ->"
   :group '-faces)
 
 (defconst -keywords
-  (regexp-opt (split-string "load if If") 'words)
+  (regexp-opt (split-string "load if If rec Rec") 'words)
   "Keywords")
 
 (defconst -syntax-table
