@@ -166,8 +166,12 @@ impl Compiler {
             self.module_cache.get(mod_name).unwrap()
         } else {
             let mod_start_index = self.push(Instr::Nop);
-            let mod_exprs = self.parse_file(mod_name)?;
-            let mod_scope = self.compile_with_fresh_scopes(&mod_exprs)?;
+            let mod_exprs = self.parse_file(mod_name).inspect_err(
+                |_| self.code.truncate(mod_start_index)
+            )?;
+            let mod_scope = self.compile_with_fresh_scopes(&mod_exprs).inspect_err(
+                |_| self.code.truncate(mod_start_index)
+            )?;
             let mod_end_index = self.push(Instr::ModuleEnd);
             self.code[mod_start_index] = Instr::ModuleStart {
                 num_instructions: mod_end_index - mod_start_index
@@ -188,7 +192,13 @@ impl Compiler {
                 let load_module_index = self.push(Instr::Nop);
                 let mut local_scope = self.scopes.pop().unwrap();
                 let mod_locals_base_slot = next_local_slot(&local_scope);
-                let (code_index, mod_scope) = self.ensure_module_loaded(mod_name)?;
+                let (code_index, mod_scope) = match self.ensure_module_loaded(mod_name) {
+                    Ok(res) => res,
+                    Err(err) => {
+                        self.scopes.push(local_scope);
+                        return Err(err);
+                    }
+                };
                 for (name, mut var) in mod_scope.iter().map(|(name, var)| (name.clone(), *var)) {
                     var.slot += mod_locals_base_slot;
                     match var.place {
