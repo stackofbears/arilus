@@ -217,6 +217,7 @@ pub enum Token {
     Load,  // load
     IfUpper,  // If
     IfLower,  // if
+    Underscore,  // _
 
     LParen,  // (
     RParen,  // )
@@ -325,6 +326,7 @@ impl Display for Token {
             Load => f.write_str("load"),
             IfUpper => f.write_str("If"),
             IfLower => f.write_str("if"),
+            Underscore => f.write_str("_"),
             LParen => f.write_str("("),
             RParen => f.write_str(")"),
             LBracket => f.write_str("["),
@@ -502,6 +504,8 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
 
         Token::IfUpper,
         Token::IfLower,
+
+        Token::Underscore,
 
         Token::PrimVerb(PrimVerb::P),
         Token::PrimAdverb(PrimAdverb::P),

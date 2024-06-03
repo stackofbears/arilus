@@ -10,12 +10,11 @@ In: ~Has
 HasAny: `In \>:
 AnyIn: ~HasAny
 
-Less: P #: .(`== Not)
-LessAll: P #: .(`In Not)
+less lessAll: _== in '{P #: (`X Not)}
 
-Drop: P # .(Q - p#)
+Drop: P # (Q - p#)
 
 Cut_2: { 0,(y?->is+1) '(X Drop P # ~-) (is,(y#)) }
 
 \ We need p(#0) because [] and "" don't match (maybe they should)
-split splitAny: (==) in '{P Cut_2 `X Less p(#0)}
+split splitAny: _== in '{P Cut_2 `X Less p(#0)}

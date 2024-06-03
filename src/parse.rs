@@ -49,7 +49,9 @@ pub enum Verb {
     SmallVerb(SmallVerb),
 
     // A B
-    // RHS is only Verb to allow (F G n) to be Atop(F, Hook(G, n))
+    // RHS is only Verb instead of SmallVerb to allow (F G n) to be
+    // Atop(F, Bind(G, n)); no other reason! But why can't (A B : C)
+    // be Atop(A, B : C)?
     Atop(Box<Verb>, Box<Verb>),
 
     // A b (note this includes (A (B C)))
@@ -67,7 +69,8 @@ pub enum SmallNoun {
     If3(Box<Expr>, Box<Expr>, Box<Expr>),
     PrimNoun(lex::PrimNoun),
     LowerName(String),
-    Block(Vec<Expr>),  // parenthesized
+    NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
+    Underscored(Box<SmallExpr>),
     IntLiteral(i64),
     FloatLiteral(f64),
     CharLiteral(u8),
@@ -78,6 +81,7 @@ pub enum SmallNoun {
 #[derive(Debug, Clone)]
 pub enum SmallVerb {
     UpperName(String),
+    VerbBlock(Vec<Expr>, Box<Verb>),  // parenthesized
     PrimVerb(lex::PrimVerb),
     Lambda(Option<ExplicitArgs>, Vec<Expr>),
     Adverb(PrimAdverb, Box<SmallExpr>),
@@ -270,6 +274,13 @@ impl<'a> Parser<'a> {
                 let cond = exprs.pop().unwrap();
                 If3(Box::new(cond), Box::new(then), Box::new(else_))
             }
+            Some(Token::Underscore) => {
+                self.skip();
+                match self.parse_small_expr(/*stranding_allowed=*/false)? {
+                    Some(operand) => Underscored(Box::new(operand)),
+                    None => return Err(self.expected(&format!("operand for `_'"))),
+                }
+            }
             Some(&Token::PrimNoun(prim)) => {
                 self.skip();
                 PrimNoun(prim)
@@ -297,10 +308,24 @@ impl<'a> Parser<'a> {
                 noun
             }
             Some(Token::LParen) => {
+                // TODO backtracking can be inefficient if we have to go deep
+                // repeatedly. Instead we can look ahead at the tokens of the
+                // last expression in the block, or refactor to accept parsing a
+                // small noun *or* small verb here.
+                let reset = self.token_index;
                 self.skip();
-                let exprs = self.parse_exprs()?;
-                self.consume_or_fail(&Token::RParen)?;
-                Block(exprs)
+                let mut exprs = self.parse_exprs()?;
+                match exprs.pop() {
+                    None => { todo!("Parse ()") }
+                    Some(Expr::Noun(noun)) => {
+                        self.consume_or_fail(&Token::RParen)?;
+                        NounBlock(exprs, Box::new(noun))
+                    }
+                    _ => {
+                        self.token_index = reset;
+                        return Ok(None);
+                    }
+                }
             }
             Some(Token::LBracket) => {
                 self.skip();
@@ -506,6 +531,25 @@ impl<'a> Parser<'a> {
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(adverb_operand) => Adverb(prim_adverb, Box::new(adverb_operand)),
                     None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
+                }
+            }
+            Some(Token::LParen) => {
+                // TODO backtracking can be inefficient if we have to go deep
+                // repeatedly. Instead we can look ahead at the tokens of the
+                // last expression in the block, or refactor to accept parsing a
+                // small noun *or* small verb here.
+                let reset = self.token_index;
+                self.skip();
+                let mut exprs = self.parse_exprs()?;
+                match exprs.pop() {
+                    Some(Expr::Verb(verb)) => {
+                        self.consume_or_fail(&Token::RParen)?;
+                        VerbBlock(exprs, Box::new(verb))
+                    }
+                    _ => {
+                        self.token_index = reset;
+                        return Ok(None);
+                    }
                 }
             }
             _ => return Ok(None),

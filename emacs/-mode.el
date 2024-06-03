@@ -68,7 +68,7 @@
         ("->\\|;" . '-punctuation-face)
         (,-symbol-verbs . '-symbol-verb-face)
         (,-symbol-adverbs . '-adverb-face)
-        ("\\<\\(p\\|q\\)\\>" . '-adverb-face)
+        ("\\<\\(p\\|q\\|_\\)\\>" . '-adverb-face)
         ("\\(\\`\\|[^A-Za-z_0-9]\\)\\(:\\)" . (2 '-punctuation-face))
         ("\"\\([^\"\\\\]\\|\\\\.\\)*\"" . 'font-lock-string-face)))
 

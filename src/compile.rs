@@ -279,6 +279,13 @@ impl Compiler {
                 let src = self.fetch_var(name)?;
                 self.code.push(Instr::PushVar { src });
             }
+            SmallVerb::VerbBlock(exprs, verb) => {
+                if !exprs.is_empty() {
+                    self.compile_block(exprs)?; 
+                    self.code.push(Instr::Pop);
+                }
+                self.compile_verb(&*verb, None)?;
+            }
             SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
             &SmallVerb::PrimVerb(prim) => {
                 if prim == PrimVerb::Rec && self.scopes.len() < 2 {
@@ -524,7 +531,19 @@ impl Compiler {
                 let src = self.fetch_var(name)?;
                 self.code.push(Instr::PushVar { src });
             }
-            Block(exprs) => self.compile_block(exprs)?,
+            NounBlock(exprs, last) => {
+                if !exprs.is_empty() {
+                    self.compile_block(exprs)?; 
+                    self.code.push(Instr::Pop);
+                }
+                self.compile_noun(&*last)?;
+            }
+            Underscored(small_expr) => {
+                match small_expr.as_ref() {
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb)?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                }
+            }
             IntLiteral(int) => self.code.push(Instr::PushLiteralInteger(*int)),
             FloatLiteral(float) => self.code.push(Instr::PushLiteralFloat(*float)),
             CharLiteral(byte) => {
