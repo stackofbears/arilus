@@ -1,3 +1,8 @@
+\ TODO doc
+
+\ This is partially a staging ground for new primitives, since it's easier to
+\ implement them here than in rust.
+
 Not: ~- 1
 NoMatch: == Not
 Has: ? < p#

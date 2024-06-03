@@ -36,7 +36,7 @@
   :group '-faces)
 
 (defconst -keywords
-  (regexp-opt (split-string "load") 'words)
+  (regexp-opt (split-string "load if If") 'words)
   "Keywords")
 
 (defconst -syntax-table

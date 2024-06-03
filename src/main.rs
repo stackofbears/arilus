@@ -1,4 +1,4 @@
-// mutable references; boolean type; tail call elimination; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); modules
+// mutable references; boolean type; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
 //
 // trains:
 //   - add p and q adverbs
@@ -137,7 +137,8 @@ impl ReplSession {
         let is_assignment = matches!(exprs.last(),
                                      Some(
                                          parse::Expr::Noun(parse::Noun::LowerAssign(_, _)) |
-                                         parse::Expr::Verb(parse::Verb::UpperAssign(_, _))
+                                         parse::Expr::Verb(parse::Verb::UpperAssign(_, _)) |
+                                         parse::Expr::Noun(parse::Noun::ModifyingAssign(_, _))
                                      ));
         if !is_assignment {
             self.compiler.code.push(bytecode::Instr::CallPrimVerb1 {
@@ -186,6 +187,7 @@ fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
     let tokens = lexer.tokenize_to_vec(text)?;
     let exprs = parse::parse(&tokens)?;
     let code = compile::compile(lexer, &exprs)?;
+
     Ok(code)
 }
 

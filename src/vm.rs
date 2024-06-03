@@ -118,6 +118,11 @@ macro_rules! atom {
     }
 }
 
+enum ChasedTail {
+    GoTo(usize),
+    Push(RcVal),
+}
+
 // enum Vals<'a> {
 //     Chars(Chars),
 //     Ints(Ints),
@@ -194,6 +199,27 @@ macro_rules! atom {
 
 impl Val {
     fn as_val(&self) -> &Self { &self }
+
+    fn is_func(&self) -> bool {
+        use Val::*;
+        matches!(self,
+                 PrimFunc(_) | AdverbDerivedFunc{..} | AmbivalentFunc(_, _) |
+                 AtopFunc{..} | BoundFunc{..} | ForkFunc{..} | ExplicitFunc{..})
+    }
+
+    fn is_falsy(&self) -> bool {
+        use Val::*;
+        match self {
+            Char(c) => *c == 0,
+            Int(i) => *i == 0,
+            Float(f) => *f == 0.0,
+            U8s(cs) => cs.first() == Some(&0),
+            I64s(is) => is.first() == Some(&0),
+            F64s(fs) => fs.first() == Some(&0.0),
+            Vals(vals) => vals.first().is_some_and(|val| val.is_falsy()),
+            _ => false,
+        }
+    }
 
     fn len(&self) -> Option<usize> {
         use Val::*;
@@ -458,6 +484,9 @@ impl Mem {
                     self.locals_stack.truncate(frame.locals_start);
                     return Ok(())
                 }
+                JumpRelative { offset } => ip = (ip as i64 + offset) as usize,
+                JumpRelativeUnless { offset } =>
+                    if self.pop().is_falsy() { ip = (ip as i64 + offset) as usize },
                 PushLiteralInteger(value) => self.push(RcVal::new(Val::Int(value))),
                 PushLiteralFloat(value) => self.push(RcVal::new(Val::Float(value))),
                 PushVar { src } => {
@@ -478,15 +507,31 @@ impl Mem {
                 Call1 => {
                     let func = self.pop();
                     let x = self.pop();
-                    let result = self.call_val(func, x, None)?;
-                    self.push(result);
+
+                    if self.is_tail_call(ip) {
+                        match self.chase_tail(func, x, None)? {
+                            ChasedTail::GoTo(code_index) => ip = code_index,
+                            ChasedTail::Push(result) => self.push(result),
+                        }
+                    } else {
+                        let result = self.call_val(func, x, None)?;
+                        self.push(result);
+                    }
                 }
                 Call2 => {
                     let y = self.pop();
                     let func = self.pop();
                     let x = self.pop();
-                    let result = self.call_val(func, x, Some(y))?;
-                    self.push(result);
+
+                    if self.is_tail_call(ip) {
+                        match self.chase_tail(func, x, Some(y))? {
+                            ChasedTail::GoTo(code_index) => ip = code_index,
+                            ChasedTail::Push(result) => self.push(result),
+                        }
+                    } else {
+                        let result = self.call_val(func, x, Some(y))?;
+                        self.push(result);
+                    }
                 }
                 CallPrimVerb1 { prim } => {
                     let x = self.pop();
@@ -496,8 +541,15 @@ impl Mem {
                 CallPrimVerb2 { prim } => {
                     let y = self.pop();
                     let x = self.pop();
-                    let result = self.call_prim_dyad(prim, x, y)?;
-                    self.push(result)
+                    if prim == PrimVerb::At && x.is_func() && self.is_tail_call(ip) {
+                        match self.chase_tail(x, y, None)? {
+                            ChasedTail::GoTo(code_index) => ip = code_index,
+                            ChasedTail::Push(result) => self.push(result),
+                        }
+                    } else {
+                        let result = self.call_prim_dyad(prim, x, y)?;
+                        self.push(result);
+                    }
                 }
                 Pop => { self.pop(); }
                 StoreTo { dst } => self.store(dst, self.stack.last().unwrap().clone()),
@@ -539,8 +591,14 @@ impl Mem {
                     }
                 }
                 CollectVerbAlternatives => {
-                    let dyad = self.pop();
-                    let monad = self.pop();
+                    let mut dyad = self.pop();
+                    if let Val::AmbivalentFunc(_, inner_dyad) = dyad.as_val() {
+                        dyad = inner_dyad.clone();
+                    }
+                    let mut monad = self.pop();
+                    if let Val::AmbivalentFunc(inner_monad, _) = monad.as_val() {
+                        monad = inner_monad.clone();
+                    }
                     self.push(RcVal::new(Val::AmbivalentFunc(monad, dyad)));
                 }
                 MakeAtopFunc => {
@@ -636,6 +694,86 @@ impl Mem {
                 self.locals_stack[absolute_slot] = val;
             }
             Place::ClosureEnv => frame.closure_env.borrow_mut()[dst.slot] = val,
+        }
+    }
+
+    // `ip` should point to the next instruction to execute.
+    #[inline]
+    fn is_tail_call(&self, ip: usize) -> bool {
+        matches!(self.code.get(ip), Some(Instr::Return))
+    }
+
+    fn chase_tail(&mut self, mut func: RcVal, mut x: RcVal, mut y: Option<RcVal>) -> Result<ChasedTail, String> {
+        loop {
+            match func.as_val() {
+                Val::ExplicitFunc{code_index, closure_env} => {
+                    let frame = self.current_frame_mut();
+                    frame.code_index = *code_index;
+                    frame.closure_env = closure_env.clone();
+                    let locals_start = frame.locals_start;
+                    self.locals_stack.truncate(locals_start);
+                    self.locals_stack.push(x);
+                    self.locals_stack.push(y.unwrap_or_else(|| self.zero.clone()));
+                    return Ok(ChasedTail::GoTo(*code_index));
+                }
+                Val::AmbivalentFunc(monad, dyad) =>
+                    func = if y.is_none() { monad.clone() } else { dyad.clone() },
+                Val::AtopFunc { f_func, g_func } => {
+                    x = self.call_val(f_func.clone(), x, None)?;
+                    func = g_func.clone();
+                }
+                Val::BoundFunc { func: bound_func, y: bound_y } => {
+                    y = Some(bound_y.clone());
+                    func = bound_func.clone();
+                }
+                Val::ForkFunc { f_func, h_func, g_func } => {
+                    let new_x = self.call_val(f_func.clone(), x.clone(), y.clone())?;
+                    let new_y = Some(self.call_val(g_func.clone(), x, y)?);
+                    x = new_x;
+                    y = new_y;
+                    func = h_func.clone();                    
+                }
+                Val::PrimFunc(PrimVerb::At) if x.is_func() && y.is_some() => {
+                    func = x;
+                    x = y.unwrap();
+                    y = None;
+                }
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::P, operand } => {
+                    func = operand.clone();
+                    y = None;
+                }
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::Q, operand } => {
+                    func = operand.clone();
+                    if let Some(y_val) = y.take() {
+                        x = y_val;
+                    }
+                }
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::Dot, operand } => func = operand.clone(),
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::Tilde, operand } => {
+                    match &mut y {
+                        Some(y_val) => std::mem::swap(&mut x, y_val),
+                        None => y = Some(x.clone()),
+                    }
+                    func = operand.clone();
+                }
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::Backslash, operand } => {
+                    match y {
+                        Some(y_val) if x.len().unwrap_or(1) == 1 => {
+                            func = operand.clone();
+                            // Remember, the fold seed becomes the first x argument to the operand.
+                            y = Some(index_or_cycle_val(&x, 0).unwrap());
+                            x = y_val;
+                        }
+                        None if x.len().unwrap_or(2) == 2 => {
+                            func = operand.clone();
+                            y = Some(index_or_cycle_val(&x, 1).unwrap());
+                            x = index_or_cycle_val(&x, 0).unwrap();
+                        }
+                        _ => return Ok(ChasedTail::Push(self.fold_val(operand.clone(), x, y)?)),
+                    }
+                }
+                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?))
+            }
         }
     }
 
