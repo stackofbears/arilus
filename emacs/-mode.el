@@ -46,12 +46,17 @@
     (modify-syntax-entry ?% "." table)
     table))
 
-(defconst -symbol-verbs
-  (regexp-opt (split-string "|| && == =! <: >: #: // <= >= ?:
-                             - @ , + * # / ^ | ! $ = < > % ? &")))
+(defconst -symbol-verbs-len-1
+  (regexp-opt (split-string "- @ , + * # / ^ | ! $ = < > % ? &")))
 
-(defconst -symbol-adverbs
-  (regexp-opt (split-string "`: | . ' ` ~ \\")))
+(defconst -symbol-verbs-len-2
+  (regexp-opt (split-string "|| && == =! <: >: #: // <= >= ?:")))
+
+(defconst -symbol-adverbs-len-1
+  (regexp-opt (split-string "| . ' ` ~ \\")))
+
+(defconst -symbol-adverbs-len-2
+  (regexp-opt (split-string "`: @:")))
 
 (setq -mode-fontlock
       `(;; Need OVERRIDE=t or else comments containing string literals won't
@@ -66,8 +71,10 @@
 
         ("\\(\\<[A-Z][A-Za-z_0-9]*\\)\\(\\'\\|[^A-Za-z_0-9:]\\)" . (1 '-identifier-verb-face))
         ("->\\|;" . '-punctuation-face)
-        (,-symbol-verbs . '-symbol-verb-face)
-        (,-symbol-adverbs . '-adverb-face)
+        (,-symbol-verbs-len-2 . '-symbol-verb-face)
+        (,-symbol-adverbs-len-2 . '-adverb-face)
+        (,-symbol-verbs-len-1 . '-symbol-verb-face)
+        (,-symbol-adverbs-len-1 . '-adverb-face)
         ("\\<\\(p\\|q\\|_\\)\\>" . '-adverb-face)
         ("\\(\\`\\|[^A-Za-z_0-9]\\)\\(:\\)" . (2 '-punctuation-face))
         ("\"\\([^\"\\\\]\\|\\\\.\\)*\"" . 'font-lock-string-face)))

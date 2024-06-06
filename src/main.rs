@@ -4,7 +4,10 @@
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
 //   =: for match, >: for gt, <: for lt, !: for not/not-equal (what about `!'? abs?), |: for or (short-circuit), &: for and (short-circuit) (how do these work?), /: for integer-divide
 //
-// Still need: cut, each-atom, each-list, amend
+// Still need: cut, each-atom, each-list
+//
+// Think about whether arrays should always be indexed when called - right now
+// x@y indexes x, while x I and x .i treat i as a constant function.
 //
 // possible match conjunction (also usable as monad/dyad) (after arg syntax)
 // {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more

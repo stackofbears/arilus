@@ -748,6 +748,11 @@ impl Mem {
                         x = y_val;
                     }
                 }
+                Val::AdverbDerivedFunc { adverb: PrimAdverb::AtColon, operand } => {
+                    let index = self.call_val(operand.clone(), x.clone(), None)?;
+                    func = self.prim_index(&y.expect("TODO: monadic @:v"), &index)?;
+                    y = None;
+                }
                 Val::AdverbDerivedFunc { adverb: PrimAdverb::Dot, operand } => func = operand.clone(),
                 Val::AdverbDerivedFunc { adverb: PrimAdverb::Tilde, operand } => {
                     match &mut y {
@@ -834,6 +839,11 @@ impl Mem {
                         maybe_y: Option<RcVal>) -> Result<RcVal, String> {
         use PrimAdverb::*;
         let result = match adverb {
+            AtColon => {
+                let index = self.call_val(operand, x.clone(), None)?;
+                let elem = self.prim_index(&maybe_y.expect("TODO: monadic @:v"), &index)?;
+                self.call_val(elem, x, None)?
+            }
             Dot => self.call_val(operand, x, maybe_y)?,
             P => self.call_val(operand, x, None)?,
             Q => match maybe_y {

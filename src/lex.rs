@@ -307,6 +307,7 @@ pub enum PrimVerb {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimAdverb {
+    AtColon,  // @:
     Dot,  // .
     SingleQuote,  // '
     Backtick,  // `
@@ -425,6 +426,7 @@ impl Display for PrimAdverb {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         use PrimAdverb::*;
         let s: &str = match self {
+            AtColon => "@:",
             SingleQuote => "'",
             Backtick => "`",
             BacktickColon => "`:",
@@ -484,6 +486,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(Slash),
         PrimVerb(DoubleSlash),
 
+        PrimAdverb(AtColon),
         PrimAdverb(Backtick),
         PrimAdverb(BacktickColon),
         PrimAdverb(Backslash),
