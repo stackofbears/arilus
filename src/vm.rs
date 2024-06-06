@@ -1096,7 +1096,7 @@ impl Mem {
             )?,
             Val::ExplicitFunc { .. } => {
                 // map code index -> tokens?
-                write_or!(out, "{{explicit func; TODO: implement printing}}")?
+                write_or!(out, "{{explicit func}}")?
             }
         }
         Ok(())
