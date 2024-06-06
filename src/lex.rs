@@ -246,10 +246,12 @@ pub enum PrimNoun {
     Exit,
     Show,
     Print,
+    GetLine,
     ReadFile,
     Rand,
     Rec,
     Type,
+    PrintBytecode,
     C0,  // The null character
 }
 
@@ -288,10 +290,12 @@ pub enum PrimVerb {
     Exit,
     Show,
     Print,
+    GetLine,
     ReadFile,
     Rand,
     Rec,
     Type,
+    PrintBytecode,
     C0,
 
     P,  // P
@@ -361,10 +365,12 @@ impl Display for PrimNoun {
             PrimNoun::Exit => "exit",
             PrimNoun::Show => "show",
             PrimNoun::Print => "print",
+            PrimNoun::GetLine => "getLine",
             PrimNoun::ReadFile => "readFile",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
             PrimNoun::Type => "Type",
+            PrimNoun::PrintBytecode => "PrintBytecode",
             PrimNoun::C0 => "c0",
         };
 
@@ -408,10 +414,12 @@ impl Display for PrimVerb {
             Exit => "Exit",
             Show => "Show",
             Print => "Print",
+            GetLine => "GetLine",
             ReadFile => "ReadFile",
             Rand => "Rand",
             Rec => "Rec",
             Type => "Type",
+            PrintBytecode => "PrintBytecode",
             C0 => "C0",
             P => "P",
             Q => "Q",
@@ -525,6 +533,9 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
         Token::PrimNoun(PrimNoun::Print),
         Token::PrimVerb(PrimVerb::Print),
 
+        Token::PrimNoun(PrimNoun::GetLine),
+        Token::PrimVerb(PrimVerb::GetLine),
+
         Token::PrimNoun(PrimNoun::ReadFile),
         Token::PrimVerb(PrimVerb::ReadFile),
 
@@ -536,6 +547,9 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
 
         Token::PrimNoun(PrimNoun::Type),
         Token::PrimVerb(PrimVerb::Type),
+
+        Token::PrimNoun(PrimNoun::PrintBytecode),
+        Token::PrimVerb(PrimVerb::PrintBytecode),
 
         Token::PrimNoun(PrimNoun::C0),
         Token::PrimVerb(PrimVerb::C0),

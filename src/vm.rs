@@ -3,6 +3,7 @@ use std::{
     cmp::Ordering,
     ops::{Div, Mul, Sub},
     rc::Rc,
+    fmt::Write,
 };
 
 use crate::bytecode::*;
@@ -375,6 +376,24 @@ impl Ord for Val {
     }
 }
 
+// Used in printing vals.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum PrecedenceContext {
+    Toplevel,
+
+    // Comments are cumulative; if parentheses are needed for one variant,
+    // they're also needed for the variants that follow.
+
+    // Parentheses needed for trains.
+    Small,
+
+    // Parentheses needed for stranded lists.
+    AdverbOperand,
+
+    // Parentheses needed for adverb and conjunction applications.
+    ConjunctionLeftOperand,
+}
+
 #[derive(Debug)]
 struct StackFrame {
     // The first instruction of this function.
@@ -433,7 +452,7 @@ impl Mem {
 
     fn execute(&mut self, mut ip: usize) -> Result<(), String> {
         use Instr::*;
-        
+
         while ip < self.code.len() {
             ip += 1;
             match self.code[ip - 1] {
@@ -455,7 +474,7 @@ impl Mem {
                 MakeFunc { num_instructions } => {
                     let code_index = ip;
                     ip += num_instructions;
-                    
+
                     let closure_data = match self.code.get(ip) {
                         Some(MakeClosure { num_closure_vars }) => {
                             ip += 1;
@@ -731,7 +750,7 @@ impl Mem {
                     let new_y = Some(self.call_val(g_func.clone(), x, y)?);
                     x = new_x;
                     y = new_y;
-                    func = h_func.clone();                    
+                    func = h_func.clone();
                 }
                 Val::PrimFunc(PrimVerb::At) if x.is_func() && y.is_some() => {
                     func = x;
@@ -904,28 +923,33 @@ impl Mem {
     fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
-            P => x,
-            Q => x,
-            Show => RcVal::new(prim_show(x.as_val())?),
-            Print => { self.prim_print(&x)?; println!(); x }
-            DebugPrint => { self.debug_print_val(&x)?; println!(); x }
-            ReadFile => RcVal::new(prim_read_file(x.as_val())?),
-            Hash => RcVal::new(Val::Int(x.len().unwrap_or(1) as i64)),
-            Slash => RcVal::new(iota(&*x)),
-            Pipe => prim_reverse(&x),
-            Comma => prim_ravel(&x),
-            Caret => RcVal::new(Val::Vals(prim_prefixes(&x))),
-            Dollar => RcVal::new(Val::Vals(prim_suffixes(&x))),
-            Question => RcVal::new(prim_where(x.as_val())?),
-            LessThan => RcVal::new(prim_sort(&x, false)),
-            GreaterThan => RcVal::new(prim_sort(&x, true)),
-            LessThanColon => RcVal::new(prim_grade(&x, false)),
-            GreaterThanColon => RcVal::new(prim_grade(&x, true)),
-            Type => RcVal::new(Val::U8s(prim_type(x.as_val()))),
-            Exit => prim_exit(&x)?,
+            P | Q => Ok(x),
+            Show => prim_show(x.as_val()).map(RcVal::new),
+            GetLine => prim_get_line(),
+            Print => self.prim_to_string(&x)
+                .inspect(|s| println!("{s}"))
+                .map(|_| x),
+            DebugPrint => self.prim_to_debug_string(&x)
+                .inspect(|s| println!("{s}"))
+                .map(|_| x),
+            PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
+            ReadFile => prim_read_file(x.as_val()).map(RcVal::new),
+            Hash => Ok(RcVal::new(Val::Int(x.len().unwrap_or(1) as i64))),
+            Slash => Ok(RcVal::new(iota(&*x))),
+            Pipe => Ok(prim_reverse(&x)),
+            Comma => Ok(prim_ravel(&x)),
+            Caret => Ok(RcVal::new(Val::Vals(prim_prefixes(&x)))),
+            Dollar => Ok(RcVal::new(Val::Vals(prim_suffixes(&x)))),
+            Question => prim_where(x.as_val()).map(RcVal::new),
+            LessThan => Ok(RcVal::new(prim_sort(&x, false))),
+            GreaterThan => Ok(RcVal::new(prim_sort(&x, true))),
+            LessThanColon => Ok(RcVal::new(prim_grade(&x, false))),
+            GreaterThanColon => Ok(RcVal::new(prim_grade(&x, true))),
+            Type => Ok(RcVal::new(Val::U8s(prim_type(x.as_val())))),
+            Exit => prim_exit(&x),
             _ => todo!("{x:?} {v:?}")
         };
-        Ok(result)
+        result.map_err(|err| format!("Error in `{v}': {err}"))
     }
 
     fn call_prim_dyad(&mut self, v: PrimVerb, x: RcVal, y: RcVal) -> Result<RcVal, String> {
@@ -961,102 +985,180 @@ impl Mem {
     }
 
     // TODO output formatting (take indent as arg)
-    fn prim_print(&self, x: &Val) -> Result<(), String> {
+    fn prim_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
+        macro_rules! write_or {
+            ($($arg:tt)*) => {
+                write!($($arg)*).map_err(|err| err.to_string())
+            };
+        }
+
+        use PrecedenceContext::*;
+
+        fn parenthesized_if<F: FnOnce(&mut String) -> Result<(), String>>(
+            cond: bool, out: &mut String, f: F
+        ) -> Result<(), String> {
+            if cond { write_or!(out, "(")?; }
+            f(out)?;
+            if cond { write_or!(out, ")")?; }
+            Ok(())
+        }
+
         match x {
-            Val::Char(c) => print!("{}", char::from_u32(*c as u32).unwrap()),
-            Val::Int(i) => print!("{i}"),
-            Val::Float(f) => print!("{f}"),
-            Val::PrimFunc(prim) => print!("{prim}"),
+            Val::Char(c) => write_or!(out, "{}", char::from_u32(*c as u32).unwrap())?,
+            Val::Int(i) => write_or!(out, "{i}")?,
+            Val::Float(float) => write_or!(out, "{float}")?,
+            Val::PrimFunc(prim) => write_or!(out, "{prim}")?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
-                Ok(s) => print!("{s}"),
+                Ok(s) => write_or!(out, "{s}")?,
                 Err(err) => return Err(err.to_string()),
             },
             Val::I64s(is) => {
                 if is.is_empty() {
-                    print!("[]")
+                    write_or!(out, "[]")
                 } else {
-                    print!("{}", is[0]);
-                    for int in &is[1..] { print!(" {int}") }
-                }
+                    parenthesized_if(prec >= AdverbOperand, out, |out| {
+                        write_or!(out, "{}", is[0])?;
+                        for int in &is[1..] { write_or!(out, " {int}")? }
+                        Ok(())
+                    })
+                }?
             }
             Val::F64s(fs) => {
                 if fs.is_empty() {
-                    print!("[]")
+                    write_or!(out, "[]")
                 } else {
-                    print!("{}", fs[0]);
-                    for float in &fs[1..] { print!(" {float}") }
-                }
+                    parenthesized_if(prec >= AdverbOperand, out, |out| {
+                        write_or!(out, "{}", fs[0])?;
+                        for float in &fs[1..] { write_or!(out, " {float}")?; }
+                        Ok(())
+                    })
+                }?
             }
             Val::Vals(vs) => {
                 if vs.is_empty() {
-                    print!("[]")
+                    write_or!(out, "[]")?
                 } else {
                     let nested_list = vs.iter().any(|val| val.len().is_some());
-                    print!("[");
-                    self.debug_print_val(&vs[0])?;
+                    write_or!(out, "[")?;
+                    self.prim_debug_fmt(Toplevel, &vs[0], out)?;
                     for val in &vs[1..] {
-                        if nested_list { print!("\n ") }
-                        else { print!("; ") }
-                        self.debug_print_val(val)?;
+                        if nested_list { write_or!(out, "\n ")? }
+                        else { write_or!(out, "; ")? }
+                        self.prim_debug_fmt(Toplevel, val, out)?;
                     }
-                    print!("]");
+                    write_or!(out, "]")?
                 }
             }
-            Val::AdverbDerivedFunc { adverb, operand } => {
-                print!("{adverb}");
-                self.prim_print(operand.as_val())?;
-            }
-            Val::AtopFunc { f_func, g_func } => {
-                print!(".(");
-                self.prim_print(f_func)?;
-                print!(") ");
-                if let Val::BoundFunc { func, y } = g_func.as_val() {
-                    self.prim_print(func)?;
-                    print!("(");
-                    self.prim_print(y)?;
-                    print!(")");
+            Val::AdverbDerivedFunc { adverb, operand } => parenthesized_if(
+                prec >= ConjunctionLeftOperand, out, |out| {
+                    write_or!(out, "{adverb}")?;
+                    self.prim_fmt(AdverbOperand, operand.as_val(), out)?;
+                    Ok(())
                 }
-            }
-            Val::BoundFunc { func, y } => {
-                print!(".(");
-                self.prim_print(func)?;
-                print!(") (");
-                self.prim_print(y)?;
-                print!(")");
-            }
-            Val::ForkFunc { f_func, h_func, g_func } => {
-                print!(".(");
-                self.prim_print(f_func)?;
-                print!(") .(");
-                self.prim_print(h_func)?;
-                print!(") .(");
-                self.prim_print(g_func)?;
-                print!(")");
-            }
-            Val::AmbivalentFunc(monad, dyad) => {
-                self.prim_print(monad.as_val())?;
-                print!(" : ");
-                self.prim_print(dyad.as_val())?;
-            }
+            )?,
+            Val::AtopFunc { f_func, g_func } => parenthesized_if(
+                prec >= Small, out, |out| {
+                    self.prim_fmt(Toplevel, f_func, out)?;
+                    write_or!(out, " ")?;
+                    if let Val::BoundFunc { func, y } = g_func.as_val() {
+                        self.prim_fmt(Small, func, out)?;
+                        write_or!(out, " ")?;
+                        self.prim_fmt(Small, y, out)?;
+                    } else {
+                        self.prim_fmt(Small, g_func, out)?;
+                    }
+                    Ok(())
+                }
+            )?,
+            Val::BoundFunc { func, y } => parenthesized_if(prec >= Small, out, |out| {
+                self.prim_fmt(Small, func, out)?;
+                write_or!(out, " ")?;
+                self.prim_fmt(Small, y, out)?;
+                Ok(())
+            })?,
+            Val::ForkFunc { f_func, h_func, g_func } => parenthesized_if(
+                prec >= Small, out, |out| {
+                    self.prim_fmt(Toplevel, f_func, out)?;
+                    write_or!(out, " ")?;
+                    self.prim_fmt(Small, h_func, out)?;
+                    write_or!(out, " ")?;
+                    self.prim_fmt(Small, g_func, out)?;
+                    Ok(())
+                }
+            )?,
+            Val::AmbivalentFunc(monad, dyad) => parenthesized_if(
+                prec >= ConjunctionLeftOperand, out, |out| {
+                    self.prim_fmt(ConjunctionLeftOperand, monad.as_val(), out)?;
+                    write_or!(out, " : ")?;
+                    self.prim_fmt(AdverbOperand, dyad.as_val(), out)?;
+                    Ok(())
+                }
+            )?,
             Val::ExplicitFunc { .. } => {
                 // map code index -> tokens?
-                print!("(explicit func; TODO: implement printing)")
+                write_or!(out, "{{explicit func; TODO: implement printing}}")?
             }
         }
         Ok(())
     }
 
     // TODO output formatting
-    fn debug_print_val(&self, x: &Val) -> Result<(), String> {
+    fn prim_debug_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
+        macro_rules! write_or {
+            ($($arg:tt)*) => {
+                write!($($arg)*).map_err(|err| err.to_string())
+            };
+        }
+
         match x {
-            Val::Char(c) => print!("{:?}", char::from_u32(*c as u32).unwrap()),
+            Val::Char(c) => write_or!(out, "{:?}", char::from_u32(*c as u32).unwrap())?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
-                Ok(s) => print!("{s:?}"),
+                Ok(s) => write_or!(out, "{s:?}")?,
                 Err(err) => return Err(err.to_string()),
             },
-            _ => self.prim_print(x)?,
+            _ => self.prim_fmt(prec, x, out)?,
         }
         Ok(())
+    }
+
+    fn prim_to_string(&self, x: &Val) -> Result<String, String> {
+        let mut s = String::new();
+        self.prim_fmt(PrecedenceContext::Toplevel, x, &mut s)?;
+        Ok(s)
+    }
+
+    fn prim_to_debug_string(&self, x: &Val) -> Result<String, String> {
+        let mut s = String::new();
+        self.prim_debug_fmt(PrecedenceContext::Toplevel, x, &mut s)?;
+        Ok(s)
+    }
+
+    fn prim_print_bytecode(&self, x: &Val) -> Result<(), String> {
+        match x {
+            Val::ExplicitFunc { code_index, closure_env } => {
+                if closure_env.borrow().is_empty() {
+                    println!("Env: []");
+                } else {
+                    println!("Env: [");
+                    for (i, val) in closure_env.borrow().iter().enumerate() {
+                        print!("  {i}: ");
+                        print!("{}", self.prim_to_debug_string(val.as_val())?);
+                        println!();
+                    }
+                    println!("]");
+                }
+                let len = irrefutable!(self.code[*code_index - 1],
+                                       Instr::MakeFunc { num_instructions: n } => n);
+
+                println!("Code: [");
+                for instr in &self.code[*code_index .. *code_index+len] {
+                    println!("  {instr}");
+                }
+                println!("]");
+                Ok(())
+            }
+            _ => err!("domain\nx is not an explicit function, so it has no bytecode. x is: {}", self.prim_to_debug_string(x)?),
+        }
     }
 
     fn fold_val(&mut self, f: RcVal, x: RcVal, maybe_y: Option<RcVal>) -> Result<RcVal, String> {
@@ -1111,6 +1213,14 @@ impl Mem {
 }
 
 // Primitives
+
+fn prim_get_line() -> Result<RcVal, String> {
+    let mut line = String::new();
+    if let Err(err) = std::io::stdin().read_line(&mut line) {
+        return Err(err.to_string())
+    }
+    Ok(RcVal::new(Val::U8s(line.into_bytes())))
+}
 
 fn prim_type(x: &Val) -> Vec<u8> {
     let s = match x {

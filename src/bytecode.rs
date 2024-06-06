@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::lex::*;
 
 // The machine has
@@ -68,71 +70,32 @@ pub enum Instr {
                
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place { Local, ClosureEnv }
+
 #[derive(Debug, Clone, Copy)]
 pub struct Var { pub place: Place, pub slot: usize }
-               
-               // Array literals: [1,2,3]:
-               //   PushEmptyArray        (sub1: [])
-               //
-               //   PushPrimVerb ,        (sub1: [])      (verb: ,)
-               //   PushEmptyArray        (sub1: [] [])   (verb: ,)
-               //   PushLiteralInteger 1  (sub1: [] [] 1) (verb: ,)
-               //   PopToSubject2         (sub1: [] [])   (verb: ,) (sub2: 1)
-               //   Call                  (sub1: [] [1])
-               //   PushPrimVerb ,        (sub1: [] [1])  (verb: ,)
-               //   PopToSubject2         (sub1: [])      (verb: ,) (sub2: [1])
-               //   Call                  (sub1: [1])
-               //
-               //   PushPrimVerb ,        (sub1: [1])      (verb: ,)
-               //   PushEmptyArray        (sub1: [1] [])   (verb: ,)
-               //   PushLiteralInteger 1  (sub1: [1] [] 2) (verb: ,)
-               //   PopToSubject2         (sub1: [1] [])   (verb: ,) (sub2: 2)
-               //   Call                  (sub1: [1] [2])
-               //   PushPrimVerb ,        (sub1: [1] [2])  (verb: ,)
-               //   PopToSubject2         (sub1: [1])      (verb: ,) (sub2: [2])
-               //   Call                  (sub1: [1,2])
-               //
-               //   PushPrimVerb ,        (sub1: [1,2])      (verb: ,)
-               //   PushEmptyArray        (sub1: [1,2] [])   (verb: ,)
-               //   PushLiteralInteger 1  (sub1: [1,2] [] 3) (verb: ,)
-               //   PopToSubject2         (sub1: [1,2] [])   (verb: ,) (sub2: 3)
-               //   Call                  (sub1: [1,2] [3])
-               //   PushPrimVerb ,        (sub1: [1,2] [3])  (verb: ,)
-               //   PopToSubject2         (sub1: [1,2])      (verb: ,) (sub2: [3])
-               //   Call                  (sub1: [1,2,3])
 
-               // vs having an AppendItem prim
-               //   PushEmptyArray        (sub1: [])
-               //
-               //   PushPrimVerb AI       (sub1: [])      (verb: AI)
-               //   PushLiteralInteger 1  (sub1: [] 1)    (verb: AI)
-               //   PopToSubject2         (sub1: [])      (verb: AI) (sub2: 1)
-               //   Call                  (sub1: [1])
-               //
-               //   PushPrimVerb AI       (sub1: [1])      (verb: AI)
-               //   PushLiteralInteger 2  (sub1: [1] 2)    (verb: AI)
-               //   PopToSubject2         (sub1: [1])      (verb: AI) (sub2: 2)
-               //   Call                  (sub1: [1,2])
+impl fmt::Display for Instr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Instr::PushVar { src } => write!(f, "PushVar({src})"),
+            Instr::StoreTo { dst } => write!(f, "StoreTo({dst})"),
+            Instr::CallPrimVerb1 { prim } => write!(f, "CallPrimVerb1({prim})"),
+            Instr::CallPrimVerb2 { prim } => write!(f, "CallPrimVerb2({prim})"),
+            Instr::CallPrimAdverb { prim } => write!(f, "CallPrimAdverb({prim})"),
+            Instr::LiteralBytes { bytes } => {
+                let as_str = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
+                write!(f, "LiteralBytes({as_str:?})")
+            }
+            _ => <Instr as fmt::Debug>::fmt(self, f),
+        }
+    }
+}
 
-               //   PushPrimVerb AI       (sub1: [1,2])      (verb: AI)
-               //   PushLiteralInteger 2  (sub1: [1,2] 3)    (verb: AI)
-               //   PopToSubject2         (sub1: [1,2])      (verb: AI) (sub2: 3)
-               //   Call                  (sub1: [1,2,3])
-
-               // vs having special array literal instructions
-               //   MakeArray 3
-               //   PushLiteralInteger 1  
-               //   Pop                   (sub1: [1])
-               //   PushLiteralInteger 2
-               //   Pop                   (sub1: [1,2])
-               //   PushLiteralInteger 3
-               //   Pop                   (sub1: [1,2,3])
-
-// TODO function has number of locals in code or in Val? Probably in code since
-// it can't change. Principle: put it in code if you can
-
-/* Compilation of functions
-MakeClosure (closure env len)
-(closure env len * Var) -> copy vars to env
-EnterFunc (num locals)
-*/
+impl fmt::Display for Var {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.place {
+            Place::Local => write!(f, "Local({})", self.slot),
+            Place::ClosureEnv => write!(f, "ClosureEnv({})", self.slot),
+        }
+    }
+}

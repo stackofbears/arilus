@@ -513,9 +513,11 @@ impl Compiler {
                     lex::PrimNoun::Exit => PrimVerb::Exit,
                     lex::PrimNoun::Show => PrimVerb::Show,
                     lex::PrimNoun::Print => PrimVerb::Print,
+                    lex::PrimNoun::GetLine => PrimVerb::GetLine,
                     lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
                     lex::PrimNoun::Rand => PrimVerb::Rand,
                     lex::PrimNoun::Type => PrimVerb::Type,
+                    lex::PrimNoun::PrintBytecode => PrimVerb::PrintBytecode,
                     lex::PrimNoun::C0 => {
                         self.code.push(Instr::LiteralBytes { bytes: [0; 8] });
                         return Ok(())
