@@ -1,19 +1,10 @@
-// mutable references; boolean type; branching; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
+// mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
 //
-// trains:
-//   - add p and q adverbs
-//     - actually, maybe p and q are identity function nouns, p: and q: are adverbs (better for user funcs)
-//   - P is ident-left and Q is ident-right
-//   - noun assignment  n: F  results in function that runs F on argument and stores result in n; reuse computation in train
-//   - what happens if you give a dyad to p or q?
-//
-// ,: for couple, (,: \f)
-// 
 // Possible primitive symbol changes:
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
 //   =: for match, >: for gt, <: for lt, !: for not/not-equal (what about `!'? abs?), |: for or (short-circuit), &: for and (short-circuit) (how do these work?), /: for integer-divide
 //
-// Still need: cut, copy (filter), each-atom, each-list, amend
+// Still need: cut, each-atom, each-list, amend
 //
 // possible match conjunction (also usable as monad/dyad) (after arg syntax)
 // {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
