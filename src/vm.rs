@@ -8,372 +8,17 @@ use std::{
 
 use crate::bytecode::*;
 use crate::lex::*;
+use crate::prim;
 use crate::util::*;
+use crate::val::*;
 
-// Maybe we go back to moving lists to the heap when they're sliced (and in
-// general moving vals to the heap when they're referenced).
-// Does this work for e.g. x '# 2
-//   Would want to increment rc when creating slices
-//   Could re-traverse after whole operation and inc rcs?
-//    But how would we know which refs were there before and which are new?
-//    Could dec beforehand w/o deletion and then inc all after
-//
-// Preventing cycles: including element at equal or greater depth triggers copy?
-
-// alt formulation: two heaps, one for most vals & one for array vecs
-//
-// alt: Slice becomes raw heap slot (for rc)+ptr to start+len. we just agree that vector elements can't be moved (or mutated?) through a non-unique reference
-
-/*
-problem: some vals need to go on heap for refs
-
-
-
-o1: put everything on heap, just use heap indices as values
-  pro
-o2: move val to heap when ref is taken
-  [1;2;3]
-o3: arrays (ie dyn sized objects) always on heap, others off or on (default off, values move on when ref taken)
-actually, maybe o2 since arrays aren't *actually* expensive to move
-the difference is that capturing lists by value would always elicit a move to heap, unlike slices/ints/refs, so why not put them there in the first place?
-
-[1;2;3]->a  \ a is Val:Ints(Vec)
-a#2  \ Val:Ints moves to heap w/ rc 2, a becomes Val:Slice(0,len,slot), result is Val:Slice(0,2,slot)
-
-a: retaking reference to array x
-
-[1;2;3]->a
-a#2->b
-c:ref a
-
-a:points to array
-b:slice of a
-c:
-
-
-question:
-a:1
-F:{a:a+1}
-G:F
-[]F  \ a=2
-[]G  \ ? Does G share F's environment? If not, then you can't mutate closure envs by eg sending them to functions
-
-f{[]X}
-
-maybe closure envs are refs by default
-
-*/
-
-// TODO save an alloc+indirection: move small values out so RcVal is Small | Rc<BigVal>
-type RcVal = Rc<Val>;
-
-// TODO Ref, Box to say functions shouldn't pervade
-#[derive(Debug, Clone)]
-pub enum Val {
-    Char(u8),
-
-    Int(i64),  // TODO TwoInts, ThreeInts
-
-    Float(f64),
-
-    // TODO switch this out for the non-token type (some primitives won't have
-    // token representations)
-    PrimFunc(PrimVerb),
-
-    AdverbDerivedFunc {
-        adverb: PrimAdverb,
-        operand: RcVal,
-    },
-
-    // First element is the monadic case, second is the dyadic case
-    AmbivalentFunc(RcVal, RcVal),
-
-    // TODO this can probably just be a closure
-    AtopFunc { f_func: RcVal, g_func: RcVal },
-    BoundFunc { func: RcVal, y: RcVal },
-    ForkFunc { f_func: RcVal, h_func: RcVal, g_func: RcVal },
-
-    // TODO decide if closures should refer to a shared environment or be value
-    // types (copying copies environment. Currently, we hold a reference to the env.
-    //   a:1; F:{a:a+1}; G:F
-    //   []F  \ 2
-    //   []G  \ Currently this returns 3. Should G have its own copy of the env, making this 2?
-    ExplicitFunc {
-        // The function's first instruction (ALWAYS points after MakeFunc, so
-        // you can get the function's instruction count with
-        // code[func.code_index-1]
-        code_index: usize,
-
-        closure_env: Rc<RefCell<Vec<RcVal>>>,
-    },
-
-    U8s(Vec<u8>),
-    I64s(Vec<i64>),
-    F64s(Vec<f64>),
-    Vals(Vec<RcVal>),
-}
-
-macro_rules! atom {
-    () => {
-        Val::Char(_) | Val::Int(_) | Val::Float(_) | Val::PrimFunc(_) | Val::AdverbDerivedFunc{..} | Val::AmbivalentFunc(_, _) | Val::AtopFunc{..} | Val::BoundFunc{..} | Val::ForkFunc{..} | Val::ExplicitFunc{..}
-    }
-}
-
+// When looking for a tail call, we'll either tell `Mem::execute` to jump to a
+// code index, or we'll simply call a function without eliminating the tail call
+// (if the function is a primitive, for example) and return the value to be
+// pushed.
 enum ChasedTail {
     GoTo(usize),
     Push(RcVal),
-}
-
-// enum Vals<'a> {
-//     Chars(Chars),
-//     Ints(Ints),
-//     Floats(Floats),
-//     Vals(Vals),
-
-//     CharsInts(CharsInts),
-//     CharsFloats(CharsFoats),
-//     CharsVals(CharsVals),
-
-//     IntsFloats(IntsFloats),
-//     IntsVals(IntsVals),
-// }
-
-// struct Chars<'a> {
-//     x: &'a [u8],
-//     i: usize,
-// }
-
-// trait Dispatch {
-//     type Output;
-//     fn on_atoms(x: Atom, y: Atom) -> Self::Output;
-//     fn // TODO godbolt basically zippevalls, do we have to keep matching for every element?
-// }
-
-// enum ClassifiedVal<'a> {
-//     Atom(Atom<'a>),
-//     List(List<'a>),
-// }
-
-// impl<'a> ClassifiedVal<'a> {
-//     fn data_atom(data: DataAtom) -> Self {
-//         ClassifiedVal::Atom(Atom::Data(data))
-//     }
-//     fn func_atom(data: FuncAtom<'a>) -> Self {
-//         ClassifiedVal::Atom(Atom::Func(data))
-//     }
-// }
-
-// enum List<'a> {
-//     U8s(&'a [u8]),
-//     I64s(&'a [i64]),
-//     F64s(&'a [f64]),
-//     Vals(&'a [RcVal]),
-// }
-
-// #[derive(Clone, Copy)]
-// enum Atom<'a> {
-//     Data(DataAtom),
-//     Func(FuncAtom<'a>),
-// }
-
-// #[derive(Clone, Copy)]
-// enum DataAtom {
-//     Char(u8),
-//     Int(i64),
-//     Float(f64),
-// }
-
-// #[derive(Clone, Copy)]
-// enum FuncAtom<'a> {
-//     PrimFunc(PrimVerb),
-
-//     AdverbDerivedFunc {
-//         adverb: PrimAdverb,
-//         operand: &'a RcVal,
-//     },
-
-//     ExplicitFunc {
-//         code_index: usize,
-//         closure_env: &'a RcVal,
-//     },
-// }
-
-impl Val {
-    fn as_val(&self) -> &Self { &self }
-
-    fn is_func(&self) -> bool {
-        use Val::*;
-        matches!(self,
-                 PrimFunc(_) | AdverbDerivedFunc{..} | AmbivalentFunc(_, _) |
-                 AtopFunc{..} | BoundFunc{..} | ForkFunc{..} | ExplicitFunc{..})
-    }
-
-    fn is_falsy(&self) -> bool {
-        use Val::*;
-        match self {
-            Char(c) => *c == 0,
-            Int(i) => *i == 0,
-            Float(f) => *f == 0.0,
-            U8s(cs) => cs.first() == Some(&0),
-            I64s(is) => is.first() == Some(&0),
-            F64s(fs) => fs.first() == Some(&0.0),
-            Vals(vals) => vals.first().is_some_and(|val| val.is_falsy()),
-            _ => false,
-        }
-    }
-
-    fn len(&self) -> Option<usize> {
-        use Val::*;
-        match self {
-            atom!() => None,
-            U8s(vec) => Some(vec.len()),
-            I64s(vec) => Some(vec.len()),
-            F64s(vec) => Some(vec.len()),
-            Vals(vec) => Some(vec.len()),
-        }
-    }
-
-    // fn classify<'a>(&'a self) -> ClassifiedVal<'a> {
-    //     use Val::*;
-    //     match self {
-    //         &Char(x) => ClassifiedVal::data_atom(DataAtom::Char(x)),
-    //         &Int(x) => ClassifiedVal::data_atom(DataAtom::Int(x)),
-    //         &Float(x) => ClassifiedVal::data_atom(DataAtom::Float(x)),
-
-    //         &PrimFunc(prim) => ClassifiedVal::func_atom(FuncAtom::PrimFunc(prim)),
-    //         &AdverbDerivedFunc { adverb, ref operand } =>
-    //             ClassifiedVal::func_atom(FuncAtom::AdverbDerivedFunc { adverb, operand }),
-    //         &ExplicitFunc { code_index, ref closure_env } =>
-    //             ClassifiedVal::func_atom(FuncAtom::ExplicitFunc { code_index, closure_env }),
-
-    //         U8s(vec) => ClassifiedVal::List(List::U8s(vec)),
-    //         I64s(vec) => ClassifiedVal::List(List::I64s(vec)),
-    //         F64s(vec) => ClassifiedVal::List(List::F64s(vec)),
-    //         Vals(vec) => ClassifiedVal::List(List::Vals(vec)),
-    //     }
-    // }
-}
-
-// Val instances for val sorting.
-
-impl PartialEq for Val {
-    fn eq(&self, other: &Val) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl PartialEq<u8> for Val {
-    fn eq(&self, other: &u8) -> bool {
-        matches!(self, Val::Char(c) if c == other)
-    }
-}
-
-impl PartialEq<i64> for Val {
-    fn eq(&self, other: &i64) -> bool {
-        match self {
-            Val::Int(i) => i == other,
-            Val::Float(f) => float_as_int(*f) == Some(*other),
-            _ => false,
-        }
-    }
-}
-
-impl PartialEq<f64> for Val {
-    fn eq(&self, other: &f64) -> bool {
-        match self {
-            Val::Float(f) => f == other,
-            Val::Int(i) => *i as f64 == *other,
-            _ => false,
-        }
-    }
-}
-
-impl PartialOrd for Val {
-    fn partial_cmp(&self, other: &Val) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Eq for Val {}
-
-impl Ord for Val {
-    fn cmp(&self, other: &Val) -> Ordering {
-        use Val::*;
-
-        fn key_variant(x: &Val) -> u32 {
-            match x {
-                Char(_) => 0,
-                Int(_) => 1,
-                Float(_) => 2,
-                PrimFunc(_) => 3,
-                AdverbDerivedFunc {..} => 4,
-                AmbivalentFunc {..} => 5,
-                AtopFunc{..} => 6,
-                BoundFunc{..} => 7,
-                ForkFunc{..} => 8,
-                ExplicitFunc {..} => 9,
-                U8s(_) => 10,
-                I64s(_) => 11,
-                F64s(_) => 12,
-                Vals(_) => 13,
-            }
-        }
-
-        // TODO better int-float comparison? This is "inaccurate" if `i` can't
-        // be represented in floating point.
-        fn int_float_cmp(i: &i64, f: &f64) -> Ordering {
-            let i_float = *i as f64;
-            i_float.total_cmp(f)
-        }
-
-        fn ints_floats_cmp(is: &[i64], fs: &[f64]) -> Ordering {
-            let len = is.len().min(fs.len());
-            for i in 0..len {
-                let cmp = int_float_cmp(&is[i], &fs[i]);
-                if cmp != Ordering::Equal { return cmp }
-            }
-            is.len().cmp(&fs.len())
-        }
-
-        match (self, other) {
-            (Char(x), Char(y)) => x.cmp(y),
-            (Int(x), Int(y)) => x.cmp(y),
-            (Float(x), Float(y)) => x.total_cmp(y),
-
-            (Int(i), Float(f)) => int_float_cmp(i, f),
-            (Float(f), Int(i)) => int_float_cmp(i, f).reverse(),
-
-            (PrimFunc(_), PrimFunc(_)) => todo!("Sort primitives"),
-            // TODO sort by closure envs instead? Would be cool, but they may
-            // not have envs, and ideally there aren't semantic differences
-            // between explicit and primitive functions
-            (ExplicitFunc{code_index: x, ..}, ExplicitFunc{code_index: y, ..}) => x.cmp(y),
-            (AdverbDerivedFunc{operand: x, ..}, AdverbDerivedFunc{operand: y, ..}) => x.cmp(y),
-
-            (AmbivalentFunc(x_monad, x_dyad), AmbivalentFunc(y_monad, y_dyad)) =>
-                x_monad.cmp(y_monad).then_with(|| x_dyad.cmp(y_dyad)),
-
-            (AtopFunc { f_func: x_f_func, g_func: x_g_func },
-             AtopFunc { f_func: y_f_func, g_func: y_g_func }) =>
-                x_f_func.cmp(y_f_func).then_with(|| x_g_func.cmp(y_g_func)),
-
-            (BoundFunc{func: x_func, y: x_y}, BoundFunc{func: y_func, y: y_y}) =>
-                x_func.cmp(y_func).then_with(|| x_y.cmp(y_y)),
-
-            (ForkFunc{f_func: x_f_func, h_func: x_h_func, g_func: x_g_func},
-             ForkFunc{f_func: y_f_func, h_func: y_h_func, g_func: y_g_func}) =>
-                x_f_func.cmp(y_f_func).then_with(|| x_h_func.cmp(y_h_func)).then_with(|| x_g_func.cmp(y_g_func)),
-
-            (U8s(x), U8s(y)) => x.cmp(y),
-            (I64s(x), I64s(y)) => x.cmp(y),
-
-            (I64s(is), F64s(fs)) => ints_floats_cmp(is, fs),
-            (F64s(fs), I64s(is)) => ints_floats_cmp(is, fs).reverse(),
-
-            (Vals(x), Vals(y)) => x.cmp(y),
-            _ => key_variant(self).cmp(&key_variant(other)),
-        }
-    }
 }
 
 // Used in printing vals.
@@ -493,10 +138,10 @@ impl Mem {
                         _ => vec![],
                     };
 
-                    self.push(RcVal::new(Val::ExplicitFunc {
+                    self.push(RcVal::new(Val::Function(Func::Explicit {
                         code_index,
                         closure_env: Rc::new(RefCell::new(closure_data)),
-                    }));
+                    })));
                 }
                 Return => {
                     let frame = self.stack_frames.pop().unwrap();
@@ -515,12 +160,12 @@ impl Mem {
                 PushPrimVerb { prim: PrimVerb::Rec } => {
                     let frame = self.current_frame();
                     // TODO can we copy the actual function that was called instead?
-                    self.push(RcVal::new(Val::ExplicitFunc {
+                    self.push(RcVal::new(Val::Function(Func::Explicit {
                         code_index: frame.code_index,
                         closure_env: frame.closure_env.clone(),
-                    }));
+                    })));
                 }
-                PushPrimVerb { prim } => self.push(RcVal::new(Val::PrimFunc(prim))),
+                PushPrimVerb { prim } => self.push(RcVal::new(Val::Function(Func::Prim(prim)))),
 
                 // TODO eliminate tail calls for call instructions.
                 Call1 => {
@@ -605,36 +250,36 @@ impl Mem {
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
                     match operand.as_val() {
-                        Val::AmbivalentFunc(monad, _) if matches!(adverb, PrimAdverb::P) => self.push(monad.clone()),
-                        _ => self.push(RcVal::new(Val::AdverbDerivedFunc { adverb, operand })),
+                        Val::Function(Func::Ambivalent(monad, _)) if matches!(adverb, PrimAdverb::P) => self.push(monad.clone()),
+                        _ => self.push(RcVal::new(Val::Function(Func::AdverbDerived { adverb, operand }))),
                     }
                 }
                 CollectVerbAlternatives => {
                     let mut dyad = self.pop();
-                    if let Val::AmbivalentFunc(_, inner_dyad) = dyad.as_val() {
+                    if let Val::Function(Func::Ambivalent(_, inner_dyad)) = dyad.as_val() {
                         dyad = inner_dyad.clone();
                     }
                     let mut monad = self.pop();
-                    if let Val::AmbivalentFunc(inner_monad, _) = monad.as_val() {
+                    if let Val::Function(Func::Ambivalent(inner_monad, _)) = monad.as_val() {
                         monad = inner_monad.clone();
                     }
-                    self.push(RcVal::new(Val::AmbivalentFunc(monad, dyad)));
+                    self.push(RcVal::new(Val::Function(Func::Ambivalent(monad, dyad))));
                 }
                 MakeAtopFunc => {
                     let g_func = self.pop();
                     let f_func = self.pop();
-                    self.push(RcVal::new(Val::AtopFunc { f_func, g_func }));
+                    self.push(RcVal::new(Val::Function(Func::Atop { f_func, g_func })));
                 }
                 MakeBoundFunc => {
                     let y = self.pop();
                     let func = self.pop();
-                    self.push(RcVal::new(Val::BoundFunc { func, y }));
+                    self.push(RcVal::new(Val::Function(Func::Bound { func, y })));
                 }
                 MakeForkFunc => {
                     let g_func = self.pop();
                     let h_func = self.pop();
                     let f_func = self.pop();
-                    self.push(RcVal::new(Val::ForkFunc { f_func, h_func, g_func }));
+                    self.push(RcVal::new(Val::Function(Func::Fork { f_func, h_func, g_func })));
                 }
                 MakeString { num_bytes } => {
                     let mut s = Vec::with_capacity(num_bytes);
@@ -724,8 +369,13 @@ impl Mem {
 
     fn chase_tail(&mut self, mut func: RcVal, mut x: RcVal, mut y: Option<RcVal>) -> Result<ChasedTail, String> {
         loop {
-            match func.as_val() {
-                Val::ExplicitFunc{code_index, closure_env} => {
+            let function = match func.as_val() {
+                Val::Function(f) => f,
+                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?)),
+            };
+
+            match function {
+                Func::Explicit{code_index, closure_env} => {
                     let frame = self.current_frame_mut();
                     frame.code_index = *code_index;
                     frame.closure_env = closure_env.clone();
@@ -735,52 +385,52 @@ impl Mem {
                     self.locals_stack.push(y.unwrap_or_else(|| self.zero.clone()));
                     return Ok(ChasedTail::GoTo(*code_index));
                 }
-                Val::AmbivalentFunc(monad, dyad) =>
+                Func::Ambivalent(monad, dyad) =>
                     func = if y.is_none() { monad.clone() } else { dyad.clone() },
-                Val::AtopFunc { f_func, g_func } => {
+                Func::Atop { f_func, g_func } => {
                     x = self.call_val(f_func.clone(), x, None)?;
                     func = g_func.clone();
                 }
-                Val::BoundFunc { func: bound_func, y: bound_y } => {
+                Func::Bound { func: bound_func, y: bound_y } => {
                     y = Some(bound_y.clone());
                     func = bound_func.clone();
                 }
-                Val::ForkFunc { f_func, h_func, g_func } => {
+                Func::Fork { f_func, h_func, g_func } => {
                     let new_x = self.call_val(f_func.clone(), x.clone(), y.clone())?;
                     let new_y = Some(self.call_val(g_func.clone(), x, y)?);
                     x = new_x;
                     y = new_y;
                     func = h_func.clone();
                 }
-                Val::PrimFunc(PrimVerb::At) if x.is_func() && y.is_some() => {
+                Func::Prim(PrimVerb::At) if x.is_func() && y.is_some() => {
                     func = x;
                     x = y.unwrap();
                     y = None;
                 }
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::P, operand } => {
+                Func::AdverbDerived { adverb: PrimAdverb::P, operand } => {
                     func = operand.clone();
                     y = None;
                 }
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::Q, operand } => {
+                Func::AdverbDerived { adverb: PrimAdverb::Q, operand } => {
                     func = operand.clone();
                     if let Some(y_val) = y.take() {
                         x = y_val;
                     }
                 }
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::AtColon, operand } => {
+                Func::AdverbDerived { adverb: PrimAdverb::AtColon, operand } => {
                     let index = self.call_val(operand.clone(), x.clone(), None)?;
                     func = self.prim_index(&y.expect("TODO: monadic @:v"), &index)?;
                     y = None;
                 }
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::Dot, operand } => func = operand.clone(),
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::Tilde, operand } => {
+                Func::AdverbDerived { adverb: PrimAdverb::Dot, operand } => func = operand.clone(),
+                Func::AdverbDerived { adverb: PrimAdverb::Tilde, operand } => {
                     match &mut y {
                         Some(y_val) => std::mem::swap(&mut x, y_val),
                         None => y = Some(x.clone()),
                     }
                     func = operand.clone();
                 }
-                Val::AdverbDerivedFunc { adverb: PrimAdverb::Backslash, operand } => {
+                Func::AdverbDerived { adverb: PrimAdverb::Backslash, operand } => {
                     match y {
                         Some(y_val) if x.len().unwrap_or(1) == 1 => {
                             func = operand.clone();
@@ -796,7 +446,7 @@ impl Mem {
                         _ => return Ok(ChasedTail::Push(self.fold_val(operand.clone(), x, y)?)),
                     }
                 }
-                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?))
+                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?)),
             }
         }
     }
@@ -806,47 +456,49 @@ impl Mem {
     // function and this call results in `val`.
     fn call_val(&mut self, val: RcVal, x: RcVal, y: Option<RcVal>) -> Result<RcVal, String> {
         let result = match val.as_val() {
-            &Val::ExplicitFunc { ref closure_env, code_index } => {
-                let frame = StackFrame {
-                    code_index,
-                    closure_env: closure_env.clone(),
-                    locals_start: self.locals_stack.len(),
-                };
-                self.stack_frames.push(frame);
-                self.locals_stack.push(x);
-
-                // TODO functions can access this y when they shouldn't be able to
-                //
-                //     F:{y}
-                //     []F
-                //   0
-                //
-                // functions that mention y should always be called dyadically?
-                self.locals_stack.push(y.unwrap_or(self.zero.clone()));
-                self.execute(code_index)?;
-                self.pop()
-            }
-            Val::AdverbDerivedFunc { adverb, operand } =>
-                self.call_prim_adverb(*adverb, operand.clone(), x, y)?,
-            Val::AmbivalentFunc(monad, dyad) =>
-                self.call_val(if y.is_some() { dyad } else { monad }.clone(), x, y)?,
-            Val::AtopFunc { f_func, g_func } => {
-                let f_result = self.call_val(f_func.clone(), x, y)?;
-                self.call_val(g_func.clone(), f_result, None)?
-            }
-            Val::BoundFunc { func, y } => self.call_val(func.clone(), x, Some(y.clone()))?,
-            Val::ForkFunc { f_func, h_func, g_func } => {
-                let f_result = self.call_val(f_func.clone(), x.clone(), y.clone())?;
-                let g_result = self.call_val(g_func.clone(), x, y)?;
-                self.call_val(h_func.clone(), f_result, Some(g_result))?
-            }
-            &Val::PrimFunc(prim) => if let Some(y) = y {
-                self.call_prim_dyad(prim, x, y)?
-            } else {
-                self.call_prim_monad(prim, x)?
-            },
             Val::Char(_) | Val::Int(_) | Val::Float(_) |
             Val::U8s(_) | Val::I64s(_) | Val::F64s(_) | Val::Vals(_) => val,
+            Val::Function(func) => match func {
+                &Func::Explicit { ref closure_env, code_index } => {
+                    let frame = StackFrame {
+                        code_index,
+                        closure_env: closure_env.clone(),
+                        locals_start: self.locals_stack.len(),
+                    };
+                    self.stack_frames.push(frame);
+                    self.locals_stack.push(x);
+
+                    // TODO functions can access this y when they shouldn't be able to
+                    //
+                    //     F:{y}
+                    //     []F
+                    //   0
+                    //
+                    // functions that mention y should always be called dyadically?
+                    self.locals_stack.push(y.unwrap_or(self.zero.clone()));
+                    self.execute(code_index)?;
+                    self.pop()
+                }
+                Func::AdverbDerived { adverb, operand } =>
+                    self.call_prim_adverb(*adverb, operand.clone(), x, y)?,
+                Func::Ambivalent(monad, dyad) =>
+                    self.call_val(if y.is_some() { dyad } else { monad }.clone(), x, y)?,
+                Func::Atop { f_func, g_func } => {
+                    let f_result = self.call_val(f_func.clone(), x, y)?;
+                    self.call_val(g_func.clone(), f_result, None)?
+                }
+                Func::Bound { func, y } => self.call_val(func.clone(), x, Some(y.clone()))?,
+                Func::Fork { f_func, h_func, g_func } => {
+                    let f_result = self.call_val(f_func.clone(), x.clone(), y.clone())?;
+                    let g_result = self.call_val(g_func.clone(), x, y)?;
+                    self.call_val(h_func.clone(), f_result, Some(g_result))?
+                }
+                &Func::Prim(prim) => if let Some(y) = y {
+                    self.call_prim_dyad(prim, x, y)?
+                } else {
+                    self.call_prim_monad(prim, x)?
+                },
+            },
         };
         Ok(result)
     }
@@ -957,7 +609,7 @@ impl Mem {
         let result = match v {
             P => Ok(x),
             Q => Ok(y),
-            Plus => prim_add(x.as_val(), y.as_val()),
+            Plus => prim::add(x.as_val(), y.as_val()), // prim_add(x.as_val(), y.as_val()),
             Minus => prim_subtract(x.as_val(), y.as_val()),
             Asterisk => prim_multiply(x.as_val(), y.as_val()),
             Slash => prim_divide(x.as_val(), y.as_val()),
@@ -1007,7 +659,6 @@ impl Mem {
             Val::Char(c) => write_or!(out, "{}", char::from_u32(*c as u32).unwrap())?,
             Val::Int(i) => write_or!(out, "{i}")?,
             Val::Float(float) => write_or!(out, "{float}")?,
-            Val::PrimFunc(prim) => write_or!(out, "{prim}")?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
                 Ok(s) => write_or!(out, "{s}")?,
                 Err(err) => return Err(err.to_string()),
@@ -1049,54 +700,57 @@ impl Mem {
                     write_or!(out, "]")?
                 }
             }
-            Val::AdverbDerivedFunc { adverb, operand } => parenthesized_if(
-                prec >= ConjunctionLeftOperand, out, |out| {
-                    write_or!(out, "{adverb}")?;
-                    self.prim_fmt(AdverbOperand, operand.as_val(), out)?;
-                    Ok(())
-                }
-            )?,
-            Val::AtopFunc { f_func, g_func } => parenthesized_if(
-                prec >= Small, out, |out| {
-                    self.prim_fmt(Toplevel, f_func, out)?;
-                    write_or!(out, " ")?;
-                    if let Val::BoundFunc { func, y } = g_func.as_val() {
-                        self.prim_fmt(Small, func, out)?;
-                        write_or!(out, " ")?;
-                        self.prim_fmt(Small, y, out)?;
-                    } else {
-                        self.prim_fmt(Small, g_func, out)?;
+            Val::Function(f) => match f {
+                Func::Prim(prim) => write_or!(out, "{prim}")?,
+                Func::AdverbDerived { adverb, operand } => parenthesized_if(
+                    prec >= ConjunctionLeftOperand, out, |out| {
+                        write_or!(out, "{adverb}")?;
+                        self.prim_fmt(AdverbOperand, operand.as_val(), out)?;
+                        Ok(())
                     }
-                    Ok(())
-                }
-            )?,
-            Val::BoundFunc { func, y } => parenthesized_if(prec >= Small, out, |out| {
-                self.prim_fmt(Small, func, out)?;
-                write_or!(out, " ")?;
-                self.prim_fmt(Small, y, out)?;
-                Ok(())
-            })?,
-            Val::ForkFunc { f_func, h_func, g_func } => parenthesized_if(
-                prec >= Small, out, |out| {
-                    self.prim_fmt(Toplevel, f_func, out)?;
+                )?,
+                Func::Atop { f_func, g_func } => parenthesized_if(
+                    prec >= Small, out, |out| {
+                        self.prim_fmt(Toplevel, f_func, out)?;
+                        write_or!(out, " ")?;
+                        if let Val::Function(Func::Bound { func, y }) = g_func.as_val() {
+                            self.prim_fmt(Small, func, out)?;
+                            write_or!(out, " ")?;
+                            self.prim_fmt(Small, y, out)?;
+                        } else {
+                            self.prim_fmt(Small, g_func, out)?;
+                        }
+                        Ok(())
+                    }
+                )?,
+                Func::Bound { func, y } => parenthesized_if(prec >= Small, out, |out| {
+                    self.prim_fmt(Small, func, out)?;
                     write_or!(out, " ")?;
-                    self.prim_fmt(Small, h_func, out)?;
-                    write_or!(out, " ")?;
-                    self.prim_fmt(Small, g_func, out)?;
+                    self.prim_fmt(Small, y, out)?;
                     Ok(())
+                })?,
+                Func::Fork { f_func, h_func, g_func } => parenthesized_if(
+                    prec >= Small, out, |out| {
+                        self.prim_fmt(Toplevel, f_func, out)?;
+                        write_or!(out, " ")?;
+                        self.prim_fmt(Small, h_func, out)?;
+                        write_or!(out, " ")?;
+                        self.prim_fmt(Small, g_func, out)?;
+                        Ok(())
+                    }
+                )?,
+                Func::Ambivalent(monad, dyad) => parenthesized_if(
+                    prec >= ConjunctionLeftOperand, out, |out| {
+                        self.prim_fmt(ConjunctionLeftOperand, monad.as_val(), out)?;
+                        write_or!(out, " : ")?;
+                        self.prim_fmt(AdverbOperand, dyad.as_val(), out)?;
+                        Ok(())
+                    }
+                )?,
+                Func::Explicit { .. } => {
+                    // map code index -> tokens?
+                    write_or!(out, "{{explicit func}}")?
                 }
-            )?,
-            Val::AmbivalentFunc(monad, dyad) => parenthesized_if(
-                prec >= ConjunctionLeftOperand, out, |out| {
-                    self.prim_fmt(ConjunctionLeftOperand, monad.as_val(), out)?;
-                    write_or!(out, " : ")?;
-                    self.prim_fmt(AdverbOperand, dyad.as_val(), out)?;
-                    Ok(())
-                }
-            )?,
-            Val::ExplicitFunc { .. } => {
-                // map code index -> tokens?
-                write_or!(out, "{{explicit func}}")?
             }
         }
         Ok(())
@@ -1135,7 +789,7 @@ impl Mem {
 
     fn prim_print_bytecode(&self, x: &Val) -> Result<(), String> {
         match x {
-            Val::ExplicitFunc { code_index, closure_env } => {
+            Val::Function(Func::Explicit { code_index, closure_env }) => {
                 if closure_env.borrow().is_empty() {
                     println!("Env: []");
                 } else {
@@ -1223,24 +877,7 @@ fn prim_get_line() -> Result<RcVal, String> {
 }
 
 fn prim_type(x: &Val) -> Vec<u8> {
-    let s = match x {
-        Val::Char(_) => &"char",
-        Val::Int(_) => &"int",
-        Val::Float(_) => &"float",
-        Val::U8s(_) => &"string",
-        Val::I64s(_) => &"int list",
-        Val::F64s(_) => &"float list",
-        Val::Vals(_) => &"val list",
-
-        Val::PrimFunc(_) |
-        Val::AdverbDerivedFunc{..} |
-        Val::AmbivalentFunc(_, _) |
-        Val::AtopFunc{..} |
-        Val::BoundFunc{..} |
-        Val::ForkFunc{..} |
-        Val::ExplicitFunc{..} => &"function",
-    };
-    s.as_bytes().to_vec()
+    x.type_name().as_bytes().to_vec()
 }
 
 fn prim_show(x: &Val) -> Result<Val, String> {
@@ -1430,111 +1067,6 @@ fn prim_read_file(x: &Val) -> Result<Val, String> {
         Ok(contents) => Ok(Val::U8s(contents.into_bytes())),
         Err(err) => Err(err.to_string()),
     }
-}
-
-fn float_as_int(f: f64) -> Option<i64> {
-    let trunc = f.trunc();
-    if trunc == f { Some(trunc as i64) } else { None }
-}
-
-fn prim_add(x: &Val, y: &Val) -> Result<RcVal, String> {
-    use Val::*;
-    fn add_char_int(c: u8, i: i64) -> u8 {
-        (c as i64 + i) as u8
-    }
-
-    fn as_int_or_fail(f: f64) -> Result<i64, String> {
-        float_as_int(f).ok_or_else(
-            || format!("domain\nCan't add floats to chars (expected integer, got {f})")
-        )
-    }
-
-    fn add_char_float(c: u8, f: f64) -> Result<u8, String> {
-        Ok(add_char_int(c, as_int_or_fail(f)?))
-    }
-
-    let val = match (x, y) {
-        (Int(i), Int(j)) => Int(i + j),
-
-        (Int(i),  Char(c)) |
-        (Char(c), Int(i)) => Char(add_char_int(*c, *i)),
-
-        (Int(i),   Float(f)) |
-        (Float(f), Int(i)) => Float(*i as f64 + f),
-
-        (Float(f), Char(c)) |
-        (Char(c),  Float(f)) => Char(add_char_float(*c, *f)?),
-
-        (I64s(is), Char(c)) |
-        (Char(c),  I64s(is)) => U8s(map(is, |i| add_char_int(*c, *i))),
-
-        (I64s(is), Int(int)) |
-        (Int(int), I64s(is)) => I64s(map(is, |i| *i + int)),
-
-        (U8s(cs), Int(i)) |
-        (Int(i),  U8s(cs)) => U8s(map(cs, |c| add_char_int(*c, *i))),
-
-        (U8s(cs), Float(f)) |
-        (Float(f), U8s(cs)) => U8s({
-            let i = as_int_or_fail(*f)?;
-            map(cs, |c| add_char_int(*c, i))
-        }),
-
-        (I64s(xs), I64s(ys)) => I64s(zip_map(xs, ys, |x, y| *x + *y)?),
-
-        (I64s(is), Float(f)) |
-        (Float(f), I64s(is)) => F64s(map(is, |i| *i as f64 + *f)),
-
-        (I64s(is), F64s(fs)) | (F64s(fs), I64s(is)) => {
-            let zipped = zip_exact(is, fs)?;
-            if fs.iter().all(|f| f.trunc() == *f) {
-                I64s(map(zipped, |(i, f)| i + *f as i64))
-            } else {
-                F64s(map(zipped, |(i, f)| *i as f64 + f))
-            }
-        }
-
-        (F64s(fs), U8s(cs)) |
-        (U8s(cs),  F64s(fs)) => U8s(
-            zip_traverse(cs, fs, |c, f| add_char_float(*c, *f))?
-        ),
-
-        (F64s(fs), Int(i)) |
-        (Int(i), F64s(fs)) => F64s(map(fs, |f| f + *i as f64)),
-
-        (F64s(xs), F64s(ys)) => F64s(zip_map(xs, ys, |x, y| *x + *y)?),
-
-        (U8s(cs), I64s(is)) |
-        (I64s(is), U8s(cs)) => U8s(
-            zip_map(cs, is, |c, i| add_char_int(*c, *i))?
-        ),
-
-        (Vals(vs), Int(i)) | (Int(i), Vals(vs)) => Vals(
-            traverse(vs, |rc| prim_add(rc.as_val(), &Int(*i)))?
-        ),
-
-        (Vals(vs), I64s(is)) |
-        (I64s(is), Vals(vs)) => Vals(
-            zip_traverse(vs, is, |rc, int| prim_add(rc.as_val(), &Val::Int(*int)))?
-        ),
-
-        (Vals(vs), F64s(fs)) |
-        (F64s(fs), Vals(vs)) => Vals(
-            zip_traverse(vs, fs, |rc, float| prim_add(rc.as_val(), &Val::Float(*float)))?
-        ),
-
-        (Vals(vs), U8s(cs)) |
-        (U8s(cs), Vals(vs)) => Vals({
-            let zipped = zip_exact(vs, cs)?;
-            traverse(zipped, |(rc, ch)| prim_add(rc.as_val(), &Val::Char(*ch)))?
-        }),
-        (Vals(xs), Vals(ys)) => Vals({
-            let zipped = zip_exact(xs, ys)?;
-            traverse(zipped, |(x, y)| prim_add(x.as_val(), y.as_val()))?
-        }),
-        _ => return err!("domain\nCan't add {x:?} and {y:?}"),
-    };
-    Ok(RcVal::new(val))
 }
 
 fn prim_subtract(x: &Val, y: &Val) -> Result<RcVal, String> {
@@ -1897,26 +1429,10 @@ fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
         Val::I64s(is) => Val::I64s(take_from_slice(count, is)),
         Val::F64s(fs) => Val::F64s(take_from_slice(count, fs)),
         Val::Vals(vals) => Val::Vals(take_from_slice(count, vals)),
-        Val::Char(c) => {
-            let mut cs = vec![];
-            cs.resize(count.abs() as usize, *c);
-            Val::U8s(cs)
-        }
-        Val::Int(int) => {
-            let mut ints = vec![];
-            ints.resize(count.abs() as usize, *int);
-            Val::I64s(ints)
-        }
-        Val::Float(float) => {
-            let mut fs = vec![];
-            fs.resize(count.abs() as usize, *float);
-            Val::F64s(fs)
-        }
-        _ => {
-            let mut vals = vec![];
-            vals.resize(count.abs() as usize, x.clone());
-            Val::Vals(vals)
-        }
+        Val::Char(c) => Val::U8s(vec![*c; count.abs() as usize]),
+        Val::Int(int) => Val::I64s(vec![*int; count.abs() as usize]),
+        Val::Float(float) => Val::F64s(vec![*float; count.abs() as usize]),
+        _ => Val::Vals(vec![x; count.abs() as usize]),
     };
     Ok(RcVal::new(result))
 }
@@ -1928,6 +1444,7 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
     }
 
     fn replicate_all<A: Clone>(xs: &[A], y: usize) -> Vec<A> {
+        // TODO see if vec![0; count] -> vec[i] = ... is faster
         let mut vec = Vec::with_capacity(xs.len() * y);
         for x in xs {
             vec.extend(replicate(x, y).cloned())
@@ -2099,36 +1616,66 @@ fn prim_sort(x: &RcVal, down: bool) -> Val {
 
 fn prim_append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
     use std::iter::once;
-    fn one_then_many<A: Copy>(x: &A, ys: &[A]) -> Vec<A> {
-        once(*x).chain(ys.iter().copied()).collect()
+    use Val::*;
+
+    fn one_then_many<A, I>(x: A, ys: I) -> Vec<A>
+    where I: IntoIterator<Item=A> {
+        once(x).chain(ys.into_iter()).collect()
     }
-    fn many_then_one<A: Copy>(xs: &[A], y: &A) -> Vec<A> {
-        xs.iter().copied().chain(once(*y)).collect()
+
+    fn many_then_one<A, I>(xs: I, y: A) -> Vec<A>
+    where I: IntoIterator<Item=A> {
+        xs.into_iter().chain(once(y)).collect()
     }
-    fn many_then_many<A: Copy>(xs: &[A], ys: &[A]) -> Vec<A> {
-        xs.iter().chain(ys.iter()).copied().collect()
+
+    fn many_then_many<A, I, J>(xs: I, ys: J) -> Vec<A>
+    where I: IntoIterator<Item=A>,
+          J: IntoIterator<Item=A> {
+        xs.into_iter().chain(ys.into_iter()).collect()
     }
+
+    fn copies<'a, A: Copy>(x: &'a [A]) -> impl Iterator<Item=A> + 'a {
+        x.iter().copied()
+    }
+
+    fn floats<'a>(x: &'a [i64]) -> impl Iterator<Item=f64> + 'a {
+        x.iter().map(|i| *i as f64)
+    }
+
     let val = match (x.as_val(), y.as_val()) {
-        (Val::Char(x), Val::Char(y)) => Val::U8s(vec![*x, *y]),
-        (Val::Char(x), Val::U8s(y)) => Val::U8s(one_then_many(x, y)),
-        (Val::U8s(x), Val::Char(y)) => Val::U8s(many_then_one(x, y)),
-        (Val::U8s(x), Val::U8s(y)) => Val::U8s(many_then_many(x, y)),
+        (Char(x), Char(y)) => U8s(vec![*x, *y]),
+        (Char(x), U8s(y)) => U8s(one_then_many(*x, copies(y))),
+        (U8s(x), Char(y)) => U8s(many_then_one(copies(x), *y)),
+        (U8s(x), U8s(y)) => U8s(many_then_many(copies(x), copies(y))),
 
-        (Val::Int(x), Val::Int(y)) => Val::I64s(vec![*x, *y]),
-        (Val::Int(x), Val::I64s(y)) => Val::I64s(one_then_many(x, y)),
-        (Val::I64s(x), Val::Int(y)) => Val::I64s(many_then_one(x, y)),
-        (Val::I64s(x), Val::I64s(y)) => Val::I64s(many_then_many(x, y)),
+        (Int(x), Int(y)) => I64s(vec![*x, *y]),
+        (Int(x), I64s(y)) => I64s(one_then_many(*x, y.iter().copied())),
+        (I64s(x), Int(y)) => I64s(many_then_one(copies(x), *y)),
+        (I64s(x), I64s(y)) => I64s(many_then_many(copies(x), copies(y))),
 
-        // TODO consolidate floats and ints?
-        (Val::Float(x), Val::Float(y)) => Val::F64s(vec![*x, *y]),
-        (Val::Float(x), Val::F64s(y)) => Val::F64s(one_then_many(x, y)),
-        (Val::F64s(x), Val::Float(y)) => Val::F64s(many_then_one(x, y)),
-        (Val::F64s(x), Val::F64s(y)) => Val::F64s(many_then_many(x, y)),
+        (Float(x), Float(y)) => F64s(vec![*x, *y]),
+        (Float(x), F64s(y)) => F64s(one_then_many(*x, y.iter().copied())),
+        (F64s(x), Float(y)) => F64s(many_then_one(copies(x), *y)),
+        (F64s(x), F64s(y)) => F64s(many_then_many(copies(x), copies(y))),
 
-        (Val::Vals(x), Val::Vals(y)) => Val::Vals(x.iter().chain(y.iter()).cloned().collect()),
-        (Val::Vals(x), _) => Val::Vals(x.iter().cloned().chain(once(y)).collect()),
-        (_, Val::Vals(y)) => Val::Vals(once(x).chain(y.iter().cloned()).collect()),
-        (_, _) => Val::Vals(vec![x, y]),
+        (Int(x), Float(y)) => F64s(vec![*x as f64, *y]),
+        (Float(x), Int(y)) => F64s(vec![*x, *y as f64]),
+
+        (Int(x), F64s(y)) =>  F64s(one_then_many(*x as f64, copies(y))),
+        (F64s(x), Int(y)) =>  F64s(many_then_one(copies(x), *y as f64)),
+
+        (I64s(x), Float(y)) => F64s(many_then_one(floats(x), *y)),
+        (Float(x), I64s(y)) => F64s(one_then_many(*x, floats(y))),
+
+        (I64s(x), F64s(y)) => F64s(many_then_many(floats(x), copies(y))),
+        (F64s(x), I64s(y)) => F64s(many_then_many(copies(x), floats(y))),
+
+        _ => match (iter_val(&x), iter_val(&y)) {
+            (None, None) => Vals(vec![x, y]),
+            (Some(iter), None) => Vals(many_then_one(iter, y)),
+            (None, Some(iter)) => Vals(one_then_many(x, iter)),
+            (Some(x), Some(y)) => Vals(many_then_many(x, y)),
+        }
     };
     Ok(RcVal::new(val))
 }

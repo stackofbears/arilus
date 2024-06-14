@@ -1,4 +1,6 @@
-// mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?)
+#![feature(min_specialization)]
+
+// mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); error messages (incl. argument errors for commutative primitives, which may output argument info in the wrong order)
 //
 // Possible primitive symbol changes:
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
@@ -35,12 +37,14 @@
 // lit:
 //  num | "{"("(" args ")")? block "}"
 
-//mod explore;
 mod bytecode;
 mod compile;
 mod lex;
+mod ops;
 mod parse;
+mod prim;
 mod util;
+mod val;
 mod vm;
 
 use std::{

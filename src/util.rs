@@ -11,3 +11,8 @@ macro_rules! err {
     };
 }
 pub(crate) use err;
+
+pub fn float_as_int(f: f64) -> Option<i64> {
+    let trunc = f.trunc();
+    if trunc == f { Some(trunc as i64) } else { None }
+}

@@ -26,6 +26,9 @@ pub struct Compiler {
     scopes: Vec<HashMap<String, Var>>,
     
     // (code index right after LoadModule, module vars)
+    //
+    // TODO in REPL use, allow cache entries to become dirty if a module or one
+    // of its transitive imports changes.
     module_cache: HashMap<String, (usize, HashMap<String, Var>)>,
 }
 
