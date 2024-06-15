@@ -294,18 +294,26 @@ impl Mem {
                 }
                 LiteralBytes { bytes } => self.push(RcVal::new(Val::Char(bytes[0]))),
                 CollectToArray { num_elems } => {
-                    let mut all_ints = true;
                     let mut all_chars = true;
+                    let mut all_ints = true;
+                    let mut all_floats = true;
                     for elem in &self.stack[(self.stack.len() - num_elems)..] {
-                        all_ints &= matches!(&**elem, Val::Int(_));
                         all_chars &= matches!(&**elem, Val::Char(_));
+                        all_ints &= matches!(&**elem, Val::Int(_));
+                        all_floats &= matches!(&**elem, Val::Float(_) | Val::Int(_));
                     }
 
                     let elems = self.stack.drain((self.stack.len() - num_elems)..);
-                    let list_val = if all_ints {
-                        Val::I64s(map(elems, |elem| irrefutable!(*elem, Val::Int(int) => int)))
-                    } else if all_chars {
+                    let list_val = if all_chars {
                         Val::U8s(map(elems, |elem| irrefutable!(*elem, Val::Char(ch) => ch)))
+                    } else if all_ints {
+                        Val::I64s(map(elems, |elem| irrefutable!(*elem, Val::Int(int) => int)))
+                    } else if all_floats {
+                        Val::F64s(map(elems, |elem| match *elem {
+                            Val::Float(f) => f,
+                            Val::Int(i) => i as f64,
+                            _ => unreachable!(),
+                        }))
                     } else {
                         Val::Vals(elems.collect())
                     };

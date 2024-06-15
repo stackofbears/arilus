@@ -25,7 +25,7 @@ pub trait Op2<X, Y> {
     #[inline(always)]
     fn op_traverse_y(x: &X, ys: &[Y]) -> Res<Vec<Self::Out>> {
         let mut v = Vec::with_capacity(ys.len());
-        for y in ys { v.push(Self::op(x, y)?); }
+        for i in 0..ys.len() { v.push(Self::op(x, &ys[i])?); }
         Ok(v)
     }
 
@@ -44,8 +44,9 @@ pub trait Op2<X, Y> {
     }
 }
 
-pub trait ToVal {
+pub trait ToVal: Sized {
     fn to_val(self) -> Val;
+    fn to_rc_val(self) -> RcVal { RcVal::new(self.to_val()) }
 }
 impl ToVal for u8 {
     #[inline(always)]
@@ -173,70 +174,77 @@ pub(crate) use impl_op2;
 pub fn dispatch_to_atoms<A: AtomOp2>(x: &Val, y: &Val) -> Res<RcVal> {
     use Val::*;
     let val = match (x, y) {
-        (Char(x), Char(y)) => A::op(x, y)?.to_val(),
-        (Char(x), Int(y)) => A::op(x, y)?.to_val(),
-        (Char(x), Float(y)) => A::op(x, y)?.to_val(),
-        (Char(x), Function(y)) => A::op(x, y)?.to_val(),
-        (Int(x), Char(y)) => A::op(x, y)?.to_val(),
-        (Int(x), Int(y)) => A::op(x, y)?.to_val(),
-        (Int(x), Float(y)) => A::op(x, y)?.to_val(),
-        (Int(x), Function(y)) => A::op(x, y)?.to_val(),
-        (Float(x), Char(y)) => A::op(x, y)?.to_val(),
-        (Float(x), Int(y)) => A::op(x, y)?.to_val(),
-        (Float(x), Float(y)) => A::op(x, y)?.to_val(),
-        (Float(x), Function(y)) => A::op(x, y)?.to_val(),
-        (Function(x), Char(y)) => A::op(x, y)?.to_val(),
-        (Function(x), Int(y)) => A::op(x, y)?.to_val(),
-        (Function(x), Float(y)) => A::op(x, y)?.to_val(),
-        (Function(x), Function(y)) => A::op(x, y)?.to_val(),
+        (Char(x), _) => dispatch_to_atoms_fix_x::<A, _>(x, y)?,
+        (Int(x), _) => dispatch_to_atoms_fix_x::<A, _>(x, y)?,
+        (Float(x), _) => dispatch_to_atoms_fix_x::<A, _>(x, y)?,
+        (Function(x), _) => dispatch_to_atoms_fix_x::<A, _>(x, y)?,
 
-        (Char(x), U8s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Char(x), I64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Char(x), F64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Int(x), U8s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Int(x), I64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Int(x), F64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Float(x), U8s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Float(x), I64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Float(x), F64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Function(x), U8s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Function(x), I64s(y)) => A::op_traverse_y(x, y)?.to_val(),
-        (Function(x), F64s(y)) => A::op_traverse_y(x, y)?.to_val(),
+        (_, Char(y)) => dispatch_to_atoms_fix_y::<A, _>(x, y)?,
+        (_, Int(y)) => dispatch_to_atoms_fix_y::<A, _>(x, y)?,
+        (_, Float(y)) => dispatch_to_atoms_fix_y::<A, _>(x, y)?,
+        (_, Function(y)) => dispatch_to_atoms_fix_y::<A, _>(x, y)?,
 
-        (U8s(x), Char(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (U8s(x), Int(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (U8s(x), Float(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (U8s(x), Function(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (I64s(x), Char(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (I64s(x), Int(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (I64s(x), Float(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (I64s(x), Function(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (F64s(x), Char(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (F64s(x), Int(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (F64s(x), Float(y)) => A::op_traverse_x(x, y)?.to_val(),
-        (F64s(x), Function(y)) => A::op_traverse_x(x, y)?.to_val(),
+        (U8s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (U8s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (U8s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (U8s(x), Vals(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()))?.to_rc_val(),
 
-        (U8s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (U8s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (U8s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (I64s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (I64s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (I64s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (F64s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (F64s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
-        (F64s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_val(),
+        (I64s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (I64s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (I64s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (I64s(x), Vals(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()))?.to_rc_val(),
 
-        (Vals(x), U8s(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(x, &Char(*y)))?.to_val(),
-        (Vals(x), I64s(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(x, &Int(*y)))?.to_val(),
-        (Vals(x), F64s(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(x, &Float(*y)))?.to_val(),
+        (F64s(x), U8s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (F64s(x), I64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (F64s(x), F64s(y)) => A::op_traverse_zip(x, y)?.to_rc_val(),
+        (F64s(x), Vals(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()))?.to_rc_val(),
 
-        (U8s(x), Vals(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(&Char(*x), y))?.to_val(),
-        (I64s(x), Vals(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(&Int(*x), y))?.to_val(),
-        (F64s(x), Vals(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(&Float(*x), y))?.to_val(),
+        (Vals(x), U8s(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y))?.to_rc_val(),
+        (Vals(x), I64s(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y))?.to_rc_val(),
+        (Vals(x), F64s(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y))?.to_rc_val(),
+        (Vals(x), Vals(y)) => zip_traverse(x, y, #[inline] |x, y| dispatch_to_atoms::<A>(x.as_val(), y.as_val()))?.to_rc_val(),
+    };
+    Ok(val)
+}
 
-        (Vals(x), Vals(y)) => zip_traverse(x, y, |x, y| dispatch_to_atoms::<A>(x.as_val(), y.as_val()))?.to_val(),
-        (Vals(x), y) => traverse(x, |x| dispatch_to_atoms::<A>(x.as_val(), y))?.to_val(),
-        (x, Vals(y)) => traverse(y, |y| dispatch_to_atoms::<A>(x.as_val(), y))?.to_val(),
+fn dispatch_to_atoms_fix_x<A, X>(x: &X, y: &Val) -> Res<RcVal>
+where A: Op2<X, u8, Out: ToVal + VecToVal>,
+      A: Op2<X, i64, Out: ToVal + VecToVal>,
+      A: Op2<X, f64, Out: ToVal + VecToVal>,
+      A: Op2<X, Func, Out: ToVal + VecToVal> {
+    use Val::*;
+    let val = match y {
+        Char(y) => A::op(x, y)?.to_val(),
+        Int(y) => A::op(x, y)?.to_val(),
+        Float(y) => A::op(x, y)?.to_val(),
+        Function(y) => A::op(x, y)?.to_val(),
+
+        U8s(y) => A::op_traverse_y(x, y)?.to_val(),
+        I64s(y) => A::op_traverse_y(x, y)?.to_val(),
+        F64s(y) => A::op_traverse_y(x, y)?.to_val(),
+
+        Vals(y) => traverse(y, #[inline] |y| dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()))?.to_val(),
+    };
+    Ok(RcVal::new(val))
+}
+
+fn dispatch_to_atoms_fix_y<A, Y>(x: &Val, y: &Y) -> Res<RcVal>
+where A: Op2<u8, Y, Out: ToVal + VecToVal>,
+      A: Op2<i64, Y, Out: ToVal + VecToVal>,
+      A: Op2<f64, Y, Out: ToVal + VecToVal>,
+      A: Op2<Func, Y, Out: ToVal + VecToVal> {
+    use Val::*;
+    let val = match x {
+        Char(x) => A::op(x, y)?.to_val(),
+        Int(x) => A::op(x, y)?.to_val(),
+        Float(x) => A::op(x, y)?.to_val(),
+        Function(x) => A::op(x, y)?.to_val(),
+
+        U8s(x) => A::op_traverse_x(x, y)?.to_val(),
+        I64s(x) => A::op_traverse_x(x, y)?.to_val(),
+        F64s(x) => A::op_traverse_x(x, y)?.to_val(),
+
+        Vals(x) => traverse(x, #[inline] |x| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y))?.to_val(),
     };
     Ok(RcVal::new(val))
 }
