@@ -5,9 +5,9 @@ type Res<A> = Result<A, String>;
 
 pub fn add(x: &Val, y: &Val) -> Res<RcVal> {
     enum Add {}
-    impl AtomOp for Add {}
+    impl AtomOp2 for Add {}
 
-    impl_op!(
+    impl_op2!(
         Add,
         (x: &u8, y: &i64) -> Res<u8> { Ok((*x as i64 + *y) as u8) }
         (x: &u8, y: &f64) -> Res<u8> {
@@ -33,9 +33,9 @@ pub fn add(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn subtract(x: &Val, y: &Val) -> Res<RcVal> {
     enum Sub {}
-    impl AtomOp for Sub {}
+    impl AtomOp2 for Sub {}
 
-    impl_op!(
+    impl_op2!(
         Sub,
         (x: &u8, y: &u8) -> Res<i64> { Ok(*x as i64 - *y as i64) }
         (x: &u8, y: &i64) -> Res<u8> { Ok((*x as i64 - *y) as u8) }
@@ -60,9 +60,9 @@ pub fn subtract(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn multiply(x: &Val, y: &Val) -> Res<RcVal> {
     enum Mul {}
-    impl AtomOp for Mul {}
+    impl AtomOp2 for Mul {}
 
-    impl_op!(
+    impl_op2!(
         Mul,
         (x: &i64, y: &i64) -> Res<i64> { Ok(x * y) }
         (x: &i64, y: &f64) -> Res<f64> { Ok(*x as f64 * *y) }
@@ -79,9 +79,9 @@ pub fn multiply(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn divide(x: &Val, y: &Val) -> Res<RcVal> {
     enum Div {}
-    impl AtomOp for Div {}
+    impl AtomOp2 for Div {}
 
-    impl_op!(
+    impl_op2!(
         Div,
         (x: &i64, y: &i64) -> Res<f64> { Ok(*x as f64 / *y as f64) }
         (x: &i64, y: &f64) -> Res<f64> { Ok(*x as f64 / *y) }
@@ -98,9 +98,9 @@ pub fn divide(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn int_divide(x: &Val, y: &Val) -> Res<RcVal> {
     enum IntDiv {}
-    impl AtomOp for IntDiv {}
+    impl AtomOp2 for IntDiv {}
 
-    impl_op!(
+    impl_op2!(
         IntDiv,
         (x: &i64, y: &i64) -> Res<i64> { Ok(x.div_euclid(*y)) }
         (x: &i64, y: &f64) -> Res<i64> { Ok(x.div_euclid(*y as i64)) }
@@ -117,9 +117,9 @@ pub fn int_divide(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn int_mod(x: &Val, y: &Val) -> Res<RcVal> {
     enum Mod {}
-    impl AtomOp for Mod {}
+    impl AtomOp2 for Mod {}
 
-    impl_op!(
+    impl_op2!(
         Mod,
         (x: &i64, y: &i64) -> Res<i64> { Ok(x.rem_euclid(*y)) }
         (x: &i64, y: &f64) -> Res<i64> { Ok(x.rem_euclid(*y as i64)) }
@@ -136,7 +136,7 @@ pub fn int_mod(x: &Val, y: &Val) -> Res<RcVal> {
 
 pub fn pow(x: &Val, y: &Val) -> Res<RcVal> {
     enum Pow {}
-    impl AtomOp for Pow {}
+    impl AtomOp2 for Pow {}
 
     enum Either<A, B> { Left(A), Right(B) }
 
@@ -175,7 +175,7 @@ pub fn pow(x: &Val, y: &Val) -> Res<RcVal> {
         }
     }
 
-    impl_op!(
+    impl_op2!(
         Pow,
         (x: &i64, y: &i64) -> Res<Either<i64, f64>> {
             Ok(if *y >= 0 {

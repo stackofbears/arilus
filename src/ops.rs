@@ -3,9 +3,45 @@ use crate::val::*;
 type Res<A> = Result<A, String>;
 
 // An operation on two arguments.
-pub trait Op<X, Y> {
+pub trait Op2<X, Y> {
     type Out;
     fn op(x: &X, y: &Y) -> Res<Self::Out>;
+
+    // TODO let ops return a type other than Vec<Out> in the traverse case
+    // e.g. for Pow<i64, i64>,
+    //   - Out(X, Y) = Either<i64, f64> since (y>=0 -> i, y<0 -> f)
+    //   - Out([X], Y) = Either<Vec<i64>, Vec<f64>> (y still decides)
+    //   - Out(X, [Y]) = Either<Vec<i64>, Vec<f64>> (multiple ys; first go to ints otherwise
+    //                                               drain and convert to floats)
+    //   - Out([X], [Y]) = Either<Vec<i64>, Vec<f64>> (same deal as above)
+
+    #[inline(always)]
+    fn op_traverse_x(xs: &[X], y: &Y) -> Res<Vec<Self::Out>> {
+        let mut v = Vec::with_capacity(xs.len());
+        for i in 0..xs.len() { v.push(Self::op(&xs[i], y)?) }
+        Ok(v)
+    }
+
+    #[inline(always)]
+    fn op_traverse_y(x: &X, ys: &[Y]) -> Res<Vec<Self::Out>> {
+        let mut v = Vec::with_capacity(ys.len());
+        for y in ys { v.push(Self::op(x, y)?); }
+        Ok(v)
+    }
+
+    #[inline(always)]
+    fn op_traverse_zip(xs: &[X], ys: &[Y]) -> Res<Vec<Self::Out>> {
+        let xlen = xs.len();
+        let ylen = ys.len();
+        if xlen != ylen {
+            return Err(length_mismatch_error(xlen, ylen))
+        }
+        let mut v = Vec::with_capacity(xlen);
+        for i in 0..xlen {
+            v.push(Self::op(&xs[i], &ys[i])?)
+        }
+        Ok(v)
+    }
 }
 
 pub trait ToVal {
@@ -72,47 +108,18 @@ impl VecToVal for NoValEmptyEnum {
     fn vec_to_val(_: Vec<Self>) -> Val { unreachable!() }
 }
 
-pub trait AtomOp:
-  Op<u8,  u8,  Out: ToVal + VecToVal> + Op<u8,  i64,  Out: ToVal + VecToVal> +
-  Op<u8,  f64, Out: ToVal + VecToVal> + Op<u8,  Func, Out: ToVal + VecToVal> +
+pub trait AtomOp2:
+  Op2<u8,  u8,  Out: ToVal + VecToVal> + Op2<u8,  i64,  Out: ToVal + VecToVal> +
+  Op2<u8,  f64, Out: ToVal + VecToVal> + Op2<u8,  Func, Out: ToVal + VecToVal> +
 
-  Op<i64, u8,  Out: ToVal + VecToVal> + Op<i64, i64,  Out: ToVal + VecToVal> +
-  Op<i64, f64, Out: ToVal + VecToVal> + Op<i64, Func, Out: ToVal + VecToVal> +
+  Op2<i64, u8,  Out: ToVal + VecToVal> + Op2<i64, i64,  Out: ToVal + VecToVal> +
+  Op2<i64, f64, Out: ToVal + VecToVal> + Op2<i64, Func, Out: ToVal + VecToVal> +
 
-  Op<f64, u8,  Out: ToVal + VecToVal> + Op<f64, i64,  Out: ToVal + VecToVal> +
-  Op<f64, f64, Out: ToVal + VecToVal> + Op<f64, Func, Out: ToVal + VecToVal> +
+  Op2<f64, u8,  Out: ToVal + VecToVal> + Op2<f64, i64,  Out: ToVal + VecToVal> +
+  Op2<f64, f64, Out: ToVal + VecToVal> + Op2<f64, Func, Out: ToVal + VecToVal> +
 
-  Op<Func, u8,  Out: ToVal + VecToVal> + Op<Func, i64,  Out: ToVal + VecToVal> +
-  Op<Func, f64, Out: ToVal + VecToVal> + Op<Func, Func, Out: ToVal + VecToVal> {
-    #[inline(always)]
-    fn op_traverse_x<X, Y>(xs: &[X], y: &Y) -> Res<Vec<<Self as Op<X, Y>>::Out>> 
-      where Self: Op<X, Y> {
-        let mut v = Vec::with_capacity(xs.len());
-        for i in 0..xs.len() { v.push(Self::op(&xs[i], y)?) }
-        Ok(v)
-    }
-
-    #[inline(always)]
-    fn op_traverse_y<X, Y>(x: &X, ys: &[Y]) -> Res<Vec<<Self as Op<X, Y>>::Out>> 
-      where Self: Op<X, Y> {
-        let mut v = Vec::with_capacity(ys.len());
-        for y in ys { v.push(Self::op(x, y)?); }
-        Ok(v)
-    }
-
-    #[inline(always)]
-    fn op_traverse_zip<X, Y>(xs: &[X], ys: &[Y]) -> Res<Vec<<Self as Op<X, Y>>::Out>> where Self: Op<X, Y> {
-        let xlen = xs.len();
-        let ylen = ys.len();
-        if xlen != ylen {
-            return Err(length_mismatch_error(xlen, ylen))
-        }
-        let mut v = Vec::with_capacity(xlen);
-        for i in 0..xlen {
-            v.push(Self::op(&xs[i], &ys[i])?)
-        }
-        Ok(v)
-    }
+  Op2<Func, u8,  Out: ToVal + VecToVal> + Op2<Func, i64,  Out: ToVal + VecToVal> +
+  Op2<Func, f64, Out: ToVal + VecToVal> + Op2<Func, Func, Out: ToVal + VecToVal> {
 }
 
 // These should match Val::type_name
@@ -128,9 +135,9 @@ pub fn domain_error<A: NamedType, B: NamedType>(detail: &str) -> String {
             A::TYPE_NAME, B::TYPE_NAME, &if detail.is_empty() { "" } else { "\n" })
 }
 
-macro_rules! impl_op {
+macro_rules! impl_op2 {
     ($self_type:ty, ($x:ident : &$x_ty:ty, $y:ident : &$y_ty:ty) -> Res<$out:ty> { $($body:tt)* } $($rest:tt)*) => {
-        impl Op<$x_ty, $y_ty> for $self_type {
+        impl Op2<$x_ty, $y_ty> for $self_type {
             type Out = $out;
 
             #[inline(always)]
@@ -138,12 +145,12 @@ macro_rules! impl_op {
                 $($body)*
             }
         }
-        impl_op!($self_type, $($rest)*);
+        impl_op2!($self_type, $($rest)*);
     };
 
     // $detail can be () or (literal)
     ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error $detail:tt $($rest:tt)*) => {
-        $(impl Op<$x_ty, $y_ty> for $self_type {
+        $(impl Op2<$x_ty, $y_ty> for $self_type {
             type Out = NoValEmptyEnum;
 
             #[cold]
@@ -155,15 +162,15 @@ macro_rules! impl_op {
                 Err(domain_error::<$x_ty, $y_ty>(optional_detail!($detail)))
             }
         })+
-        impl_op!($self_type, $($rest)*);
+        impl_op2!($self_type, $($rest)*);
     };
 
     ($self_type:ty,) => {};
 }
-pub(crate) use impl_op;
+pub(crate) use impl_op2;
 
 #[inline]
-pub fn dispatch_to_atoms<A: AtomOp>(x: &Val, y: &Val) -> Res<RcVal> {
+pub fn dispatch_to_atoms<A: AtomOp2>(x: &Val, y: &Val) -> Res<RcVal> {
     use Val::*;
     let val = match (x, y) {
         (Char(x), Char(y)) => A::op(x, y)?.to_val(),

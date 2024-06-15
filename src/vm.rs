@@ -1538,26 +1538,6 @@ where I: IntoIterator,
     Result::from_iter(xs.into_iter().map(f))
 }
 
-fn zip_map<A, X, Y, F>(x: X, y: Y, mut f: F) -> Result<Vec<A>, String>
-where X: IntoIterator,
-      X::IntoIter: ExactSizeIterator,
-      Y: IntoIterator,
-      Y::IntoIter: ExactSizeIterator,
-      F: FnMut(X::Item, Y::Item) -> A {
-    let zipped = zip_exact(x, y)?;
-    Ok(map(zipped, |(a, b)| f(a, b)))
-}
-
-fn zip_traverse<A, X, Y, F>(x: X, y: Y, mut f: F) -> Result<Vec<A>, String>
-where X: IntoIterator,
-      X::IntoIter: ExactSizeIterator,
-      Y: IntoIterator,
-      Y::IntoIter: ExactSizeIterator,
-      F: FnMut(X::Item, Y::Item) -> Result<A, String> {
-    let zipped = zip_exact(x, y)?;
-    traverse(zipped, |(a, b)| f(a, b))
-}
-
 #[derive(Clone)]
 struct ValIter {
     x: RcVal,
@@ -1611,21 +1591,6 @@ fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
         U8s(cs) => RcVal::new(Val::Char(*cs.get(i)?)),
         Vals(vs) => vs.get(i)?.clone(),
     })
-}
-
-fn zip_exact<X: IntoIterator, Y: IntoIterator>(x: X, y: Y) ->
-    Result<impl Iterator<Item=(X::Item, Y::Item)>, String>
-where X::IntoIter: ExactSizeIterator,
-      Y::IntoIter: ExactSizeIterator {
-    let x_iter = x.into_iter();
-    let y_iter = y.into_iter();
-    let xlen = x_iter.len();
-    let ylen = y_iter.len();
-    if xlen == ylen {
-        Ok(x_iter.zip(y_iter))
-    } else {
-        err!("length mismatch: {xlen} vs {ylen}")
-    }
 }
 
 fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
