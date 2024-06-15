@@ -141,23 +141,18 @@ macro_rules! impl_op {
         impl_op!($self_type, $($rest)*);
     };
 
-    ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error($detail:literal) $($rest:tt)*) => {
+    // $detail can be () or (literal)
+    ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error $detail:tt $($rest:tt)*) => {
         $(impl Op<$x_ty, $y_ty> for $self_type {
             type Out = NoValEmptyEnum;
 
+            #[cold]
             fn op(_: &$x_ty, _: &$y_ty) -> Res<Self::Out> {
-                Err(domain_error::<$x_ty, $y_ty>($detail))
-            }
-        })+
-        impl_op!($self_type, $($rest)*);
-    };
-    
-    ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error() $($rest:tt)*) => {
-        $(impl Op<$x_ty, $y_ty> for $self_type {
-            type Out = NoValEmptyEnum;
-
-            fn op(_: &$x_ty, _: &$y_ty) -> Res<Self::Out> {
-                Err(domain_error::<$x_ty, $y_ty>(""))
+                macro_rules! optional_detail {
+                    (()) => { "" };
+                    (($lit:literal)) => { $lit };
+                }
+                Err(domain_error::<$x_ty, $y_ty>(optional_detail!($detail)))
             }
         })+
         impl_op!($self_type, $($rest)*);
