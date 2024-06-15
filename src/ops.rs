@@ -104,9 +104,9 @@ impl VecToVal for RcVal {
     fn vec_to_val(v: Vec<Self>) -> Val { Val::Vals(v) }
 }
 impl VecToVal for NoValEmptyEnum {
-    // TODO this isn't actually unreachable
+    // TODO use an actual null value instead of ints/0
     #[inline(always)]
-    fn vec_to_val(_: Vec<Self>) -> Val { unreachable!() }
+    fn vec_to_val(_: Vec<Self>) -> Val { Val::I64s(vec![]) }
 }
 
 pub trait AtomOp2:
@@ -130,10 +130,20 @@ impl NamedType for i64 { const TYPE_NAME: &'static str = &"int"; }
 impl NamedType for f64 { const TYPE_NAME: &'static str = &"float"; }
 impl NamedType for Func { const TYPE_NAME: &'static str = &"function"; }
 
+#[inline(never)]
+fn domain_error_concrete(a_type: &str, b_type: &str, detail: &str) -> String {
+    format!("domain\nUnsupported arguments: {a_type} and {b_type}{}{detail}",
+            &if detail.is_empty() { "" } else { "\n" })
+}
+
 #[cold]
 pub fn domain_error<A: NamedType, B: NamedType>(detail: &str) -> String {
-    format!("domain\nUnsupported arguments: {} and {}{}{detail}",
-            A::TYPE_NAME, B::TYPE_NAME, &if detail.is_empty() { "" } else { "\n" })
+    domain_error_concrete(A::TYPE_NAME, B::TYPE_NAME, detail)
+}
+
+#[cold]
+pub fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
+    format!("length mismatch: {xlen} vs {ylen}")
 }
 
 macro_rules! impl_op2 {
@@ -170,7 +180,6 @@ macro_rules! impl_op2 {
 }
 pub(crate) use impl_op2;
 
-#[inline]
 pub fn dispatch_to_atoms<A: AtomOp2>(x: &Val, y: &Val) -> Res<RcVal> {
     use Val::*;
     let val = match (x, y) {
@@ -249,8 +258,7 @@ where A: Op2<u8, Y, Out: ToVal + VecToVal>,
     Ok(RcVal::new(val))
 }
 
-#[inline(always)]
-fn traverse<A, X, F: Fn(&X) -> Res<A>>(xs: &[X], f: F) -> Res<Vec<A>> {
+fn traverse<A, X, F: FnMut(&X) -> Res<A>>(xs: &[X], mut f: F) -> Res<Vec<A>> {
     let mut v = Vec::with_capacity(xs.len());
     for x in xs { v.push(f(x)?) }
     Ok(v)
@@ -268,9 +276,4 @@ fn zip_traverse<A, X, Y, F: FnMut(&X, &Y) -> Res<A>>(
         v.push(f(&xs[i], &ys[i])?)
     }
     Ok(v)
-}
-
-#[inline(never)]
-fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
-    format!("length mismatch: {xlen} vs {ylen}")
 }

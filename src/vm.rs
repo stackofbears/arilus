@@ -250,6 +250,7 @@ impl Mem {
                     let operand = self.pop();
                     match operand.as_val() {
                         Val::Function(Func::Ambivalent(monad, _)) if matches!(adverb, PrimAdverb::P) => self.push(monad.clone()),
+                        
                         _ => self.push(RcVal::new(Val::Function(Func::AdverbDerived { adverb, operand }))),
                     }
                 }
