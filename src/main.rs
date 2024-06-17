@@ -83,7 +83,7 @@ impl ReplSession {
     fn new() -> Self {
         let mut mem = vm::Mem::new();
         let print_and_pop_result = vec![
-            bytecode::Instr::CallPrimVerb1 { prim: lex::PrimVerb::DebugPrint },
+            bytecode::Instr::CallPrimFunc1 { prim: bytecode::PrimFunc::Verb(lex::PrimVerb::DebugPrint) },
             bytecode::Instr::Pop,
         ];
         mem.code = print_and_pop_result;
@@ -139,8 +139,8 @@ impl ReplSession {
                                          parse::Expr::Noun(parse::Noun::ModifyingAssign(_, _))
                                      ));
         if !is_assignment {
-            self.compiler.code.push(bytecode::Instr::CallPrimVerb1 {
-                prim: lex::PrimVerb::DebugPrint
+            self.compiler.code.push(bytecode::Instr::CallPrimFunc1 {
+                prim: bytecode::PrimFunc::Verb(lex::PrimVerb::DebugPrint)
             });
         }
         self.compiler.code.push(bytecode::Instr::Pop);
@@ -185,7 +185,6 @@ fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
     let tokens = lexer.tokenize_to_vec(text)?;
     let exprs = parse::parse(&tokens)?;
     let code = compile::compile(lexer, &exprs)?;
-
     Ok(code)
 }
 

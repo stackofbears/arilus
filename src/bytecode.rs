@@ -26,13 +26,13 @@ pub enum Instr {
     PushLiteralInteger(i64),
     PushLiteralFloat(f64),
     PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
-    PushPrimVerb { prim: PrimVerb },  // Pushes `prim` onto stack.
+    PushPrimFunc { prim: PrimFunc },  // Pushes `prim` onto stack.
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
     Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
     Pop,  // TODO currenltly we compile multi-statment expressions into (E1; Pop; E2; Pop; ...; EN) - can we instead do (E1; E2; ...; Pop(N-1); EN)? Pro - fewer pops; con - hold onto vals longer than necessary, may make a reference non-unique when it can be
     StoreTo { dst: Var }, // Copies the top stack value into dst.
-    CallPrimVerb1 { prim: PrimVerb },  // Pops the top stack value, calls `prim` on it, and pushes the result
-    CallPrimVerb2 { prim: PrimVerb },  // Let [x, y] be the top two stack values (y on top). Pops both, calls `prim` with x and y as its left and right arguments, and pushes the result.
+    CallPrimFunc1 { prim: PrimFunc },  // Pops the top stack value, calls `prim` on it, and pushes the result. `prim` must not be Verb(PrimVerb::Rec).
+    CallPrimFunc2 { prim: PrimFunc },  // Let [x, y] be the top two stack values (y on top). Pops both, calls `prim` with x and y as its left and right arguments, and pushes the result. `prim` must not be Verb(PrimVerb::Rec).
     CallPrimAdverb { prim: PrimAdverb },  // Let [f] be the top stack value. Pops `f`, Calls `prim` on it, and pushes the result.
     MakeString { num_bytes: usize }, // Followed by ceil(num_bytes/8) LiteralBytes.
     LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal. TODO as a char literal, this is currently only ascii, and the first byte is the character; the rest are 0
@@ -79,8 +79,8 @@ impl fmt::Display for Instr {
         match self {
             Instr::PushVar { src } => write!(f, "PushVar({src})"),
             Instr::StoreTo { dst } => write!(f, "StoreTo({dst})"),
-            Instr::CallPrimVerb1 { prim } => write!(f, "CallPrimVerb1({prim})"),
-            Instr::CallPrimVerb2 { prim } => write!(f, "CallPrimVerb2({prim})"),
+            Instr::CallPrimFunc1 { prim } => write!(f, "CallPrimFunc1({prim})"),
+            Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),
             Instr::CallPrimAdverb { prim } => write!(f, "CallPrimAdverb({prim})"),
             Instr::LiteralBytes { bytes } => {
                 let as_str = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
@@ -96,6 +96,22 @@ impl fmt::Display for Var {
         match self.place {
             Place::Local => write!(f, "Local({})", self.slot),
             Place::ClosureEnv => write!(f, "ClosureEnv({})", self.slot),
+        }
+    }
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimFunc {
+    Verb(PrimVerb),
+    Sum
+}
+
+impl std::fmt::Display for PrimFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            PrimFunc::Verb(prim_verb) => prim_verb.fmt(f),
+            PrimFunc::Sum => f.write_str("\\+"),
         }
     }
 }

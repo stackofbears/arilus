@@ -1,6 +1,16 @@
+use std::{
+    borrow::Cow::{self, Borrowed, Owned},
+    iter,
+};
+
 use crate::val::*;
 
 type Res<A> = Result<A, String>;
+
+#[cold]
+pub fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
+    format!("length mismatch: {xlen} vs {ylen}")
+}
 
 // An operation on two arguments.
 pub trait Op2<X, Y> {
@@ -15,6 +25,7 @@ pub trait Op2<X, Y> {
     //                                               drain and convert to floats)
     //   - Out([X], [Y]) = Either<Vec<i64>, Vec<f64>> (same deal as above)
 
+    // TODO op on Cow?
     #[inline(always)]
     fn op_traverse_x(xs: &[X], y: &Y) -> Res<Vec<Self::Out>> {
         let mut v = Vec::with_capacity(xs.len());
@@ -31,18 +42,71 @@ pub trait Op2<X, Y> {
 
     #[inline(always)]
     fn op_traverse_zip(xs: &[X], ys: &[Y]) -> Res<Vec<Self::Out>> {
-        let xlen = xs.len();
-        let ylen = ys.len();
-        if xlen != ylen {
-            return Err(length_mismatch_error(xlen, ylen))
+        let len = xs.len();
+        if len != ys.len() {
+            return Err(length_mismatch_error(len, ys.len()))
         }
-        let mut v = Vec::with_capacity(xlen);
-        for i in 0..xlen {
+        let mut v = Vec::with_capacity(len);
+        for i in 0..len {
             v.push(Self::op(&xs[i], &ys[i])?)
         }
         Ok(v)
     }
 }
+
+pub trait Op2TakeX<X, Y>: Op2<X, Y> {
+    #[inline(always)]
+    fn op_traverse_x_take_x(xs: Vec<X>, y: &Y) -> Res<Vec<Self::Out>> {
+        xs.into_iter()
+            .map(|x| Self::op(&x, y))
+            .collect::<Res<Vec<_>>>()
+    }
+
+    #[inline(always)]
+    fn op_traverse_zip_take_x(xs: Vec<X>, ys: &[Y]) -> Res<Vec<Self::Out>> {
+        if xs.len() != ys.len() {
+            return Err(length_mismatch_error(xs.len(), ys.len()))
+        }
+        iter::zip(xs, ys)
+            .map(|(x, y)| Self::op(&x, y))
+            .collect::<Res<Vec<_>>>()
+    }
+}
+
+pub trait Op2TakeY<X, Y>: Op2<X, Y> {
+    #[inline(always)]
+    fn op_traverse_y_take_y(x: &X, ys: Vec<Y>) -> Res<Vec<Self::Out>> {
+        ys.into_iter()
+            .map(|y| Self::op(x, &y))
+            .collect::<Res<Vec<_>>>()
+    }
+
+    #[inline(always)]
+    fn op_traverse_zip_take_y(xs: &[X], ys: Vec<Y>) -> Res<Vec<Self::Out>> {
+        if xs.len() != ys.len() {
+            return Err(length_mismatch_error(xs.len(), ys.len()))
+        }
+        iter::zip(xs, ys)
+            .map(|(x, y)| Self::op(x, &y))
+            .collect::<Res<Vec<_>>>()
+    }
+}
+
+pub trait Op2TakeXY<X, Y>: Op2<X, Y> + Op2TakeX<X, Y> + Op2TakeY<X, Y> {
+    #[inline(always)]
+    fn op_traverse_zip_take_x_take_y(xs: Vec<X>, ys: Vec<Y>) -> Res<Vec<Self::Out>> {
+        if xs.len() != ys.len() {
+            return Err(length_mismatch_error(xs.len(), ys.len()))
+        }
+        iter::zip(xs, ys)
+            .map(|(x, y)| Self::op(&x, &y))
+            .collect::<Res<Vec<_>>>()
+    }
+}
+
+impl<X, Y, A: Op2<X, Y>> Op2TakeX<X, Y> for A {}
+impl<X, Y, A: Op2<X, Y>> Op2TakeY<X, Y> for A {}
+impl<X, Y, A: Op2TakeX<X, Y> + Op2TakeY<X, Y>> Op2TakeXY<X, Y> for A {}
 
 pub trait ToVal: Sized {
     fn to_val(self) -> Val;
@@ -110,75 +174,229 @@ impl VecToVal for NoValEmptyEnum {
 }
 
 pub trait AtomOp2:
-  Op2<u8,  u8,  Out: ToVal + VecToVal> + Op2<u8,  i64,  Out: ToVal + VecToVal> +
-  Op2<u8,  f64, Out: ToVal + VecToVal> + Op2<u8,  Func, Out: ToVal + VecToVal> +
+  Op2TakeXY<u8,  u8,  Out: ToVal + VecToVal> + Op2TakeXY<u8,  i64,  Out: ToVal + VecToVal> +
+  Op2TakeXY<u8,  f64, Out: ToVal + VecToVal> + Op2TakeXY<u8,  Func, Out: ToVal + VecToVal> +
 
-  Op2<i64, u8,  Out: ToVal + VecToVal> + Op2<i64, i64,  Out: ToVal + VecToVal> +
-  Op2<i64, f64, Out: ToVal + VecToVal> + Op2<i64, Func, Out: ToVal + VecToVal> +
+  Op2TakeXY<i64, u8,  Out: ToVal + VecToVal> + Op2TakeXY<i64, i64,  Out: ToVal + VecToVal> +
+  Op2TakeXY<i64, f64, Out: ToVal + VecToVal> + Op2TakeXY<i64, Func, Out: ToVal + VecToVal> +
 
-  Op2<f64, u8,  Out: ToVal + VecToVal> + Op2<f64, i64,  Out: ToVal + VecToVal> +
-  Op2<f64, f64, Out: ToVal + VecToVal> + Op2<f64, Func, Out: ToVal + VecToVal> +
+  Op2TakeXY<f64, u8,  Out: ToVal + VecToVal> + Op2TakeXY<f64, i64,  Out: ToVal + VecToVal> +
+  Op2TakeXY<f64, f64, Out: ToVal + VecToVal> + Op2TakeXY<f64, Func, Out: ToVal + VecToVal> +
 
-  Op2<Func, u8,  Out: ToVal + VecToVal> + Op2<Func, i64,  Out: ToVal + VecToVal> +
-  Op2<Func, f64, Out: ToVal + VecToVal> + Op2<Func, Func, Out: ToVal + VecToVal> {
+  Op2TakeXY<Func, u8,  Out: ToVal + VecToVal> + Op2TakeXY<Func, i64,  Out: ToVal + VecToVal> +
+  Op2TakeXY<Func, f64, Out: ToVal + VecToVal> + Op2TakeXY<Func, Func, Out: ToVal + VecToVal> {
 }
 
-// These should match Val::type_name
-pub trait NamedType { const TYPE_NAME: &'static str; }
-impl NamedType for u8 { const TYPE_NAME: &'static str = &"char"; }
-impl NamedType for i64 { const TYPE_NAME: &'static str = &"int"; }
-impl NamedType for f64 { const TYPE_NAME: &'static str = &"float"; }
-impl NamedType for Func { const TYPE_NAME: &'static str = &"function"; }
-
-#[inline(never)]
-fn domain_error_concrete(a_type: &str, b_type: &str, detail: &str) -> String {
-    format!("domain\nUnsupported arguments: {a_type} and {b_type}{}{detail}",
-            &if detail.is_empty() { "" } else { "\n" })
+pub fn dispatch_to_atoms_rc<A: AtomOp2>(x: RcVal, y: RcVal) -> Res<RcVal> {
+    match (RcVal::try_unwrap(x), RcVal::try_unwrap(y)) {
+        (Err(x), Err(y)) => dispatch_to_atoms::<A>(x.as_val(), y.as_val()),
+        (Ok(x), Err(y)) => dispatch_to_atoms_take_x::<A>(x, y.as_val()),
+        (Err(x), Ok(y)) => dispatch_to_atoms_take_y::<A>(x.as_val(), y),
+        (Ok(x), Ok(y)) => dispatch_to_atoms_take_x_take_y::<A>(x, y),
+    }
 }
 
-#[cold]
-pub fn domain_error<A: NamedType, B: NamedType>(detail: &str) -> String {
-    domain_error_concrete(A::TYPE_NAME, B::TYPE_NAME, detail)
-}
+pub fn dispatch_to_atoms_take_x_take_y<A: AtomOp2>(x: Val, y: Val) -> Res<RcVal> {
+    use Val::*;
+    let val = match (x, y) {
+        (Char(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y)?,
+        (Int(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y)?,
+        (Float(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y)?,
+        (Function(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y)?,
 
-#[cold]
-pub fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
-    format!("length mismatch: {xlen} vs {ylen}")
-}
-
-macro_rules! impl_op2 {
-    ($self_type:ty, ($x:ident : &$x_ty:ty, $y:ident : &$y_ty:ty) -> Res<$out:ty> { $($body:tt)* } $($rest:tt)*) => {
-        impl Op2<$x_ty, $y_ty> for $self_type {
-            type Out = $out;
-
-            #[inline(always)]
-            fn op($x: &$x_ty, $y: &$y_ty) -> Res<$out> {
-                $($body)*
+        (x, Char(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y)?,
+        (x, Int(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y)?,
+        (x, Float(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y)?,
+        (x, Function(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y)?,
+        
+        (U8s(x), U8s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (U8s(x), I64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (U8s(x), F64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (U8s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
             }
-        }
-        impl_op2!($self_type, $($rest)*);
-    };
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
 
-    // $detail can be () or (literal)
-    ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error $detail:tt $($rest:tt)*) => {
-        $(impl Op2<$x_ty, $y_ty> for $self_type {
-            type Out = NoValEmptyEnum;
-
-            #[cold]
-            fn op(_: &$x_ty, _: &$y_ty) -> Res<Self::Out> {
-                macro_rules! optional_detail {
-                    (()) => { "" };
-                    (($lit:literal)) => { $lit };
-                }
-                Err(domain_error::<$x_ty, $y_ty>(optional_detail!($detail)))
+        (I64s(x), U8s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (I64s(x), I64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (I64s(x), F64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (I64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
             }
-        })+
-        impl_op2!($self_type, $($rest)*);
-    };
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
 
-    ($self_type:ty,) => {};
+        (F64s(x), U8s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (F64s(x), I64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (F64s(x), F64s(y)) => A::op_traverse_zip_take_x_take_y(x, y)?.to_rc_val(),
+        (F64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(&x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), U8s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), I64s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+                
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), F64s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, &y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_rc::<A>(x, y)
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+    };
+    Ok(val)
 }
-pub(crate) use impl_op2;
+
+pub fn dispatch_to_atoms_take_x<A: AtomOp2>(x: Val, y: &Val) -> Res<RcVal> {
+    use Val::*;
+    let val = match (x, y) {
+        (Char(x), y) => dispatch_to_atoms_fix_x::<A, _>(&x, y)?,
+        (Int(x), y) => dispatch_to_atoms_fix_x::<A, _>(&x, y)?,
+        (Float(x), y) => dispatch_to_atoms_fix_x::<A, _>(&x, y)?,
+        (Function(x), y) => dispatch_to_atoms_fix_x::<A, _>(&x, y)?,
+
+        (x, Char(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y)?,
+        (x, Int(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y)?,
+        (x, Float(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y)?,
+        (x, Function(y)) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y)?,
+        
+        (U8s(x), U8s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (U8s(x), I64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (U8s(x), F64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (U8s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (I64s(x), U8s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (I64s(x), I64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (I64s(x), F64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (I64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (F64s(x), U8s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (F64s(x), I64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (F64s(x), F64s(y)) => A::op_traverse_zip_take_x(x, y)?.to_rc_val(),
+        (F64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_x::<A, _>(&x, y.as_val()),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), U8s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), I64s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), F64s(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x::<A>(x, y.as_val()),
+                Err(x) => dispatch_to_atoms::<A>(x.as_val(), y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+    };
+    Ok(val)
+}
+
+pub fn dispatch_to_atoms_take_y<A: AtomOp2>(x: &Val, y: Val) -> Res<RcVal> {
+    use Val::*;
+    let val = match (x, y) {
+        (Char(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y)?,
+        (Int(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y)?,
+        (Float(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y)?,
+        (Function(x), y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y)?,
+
+        (x, Char(y)) => dispatch_to_atoms_fix_y::<A, _>(x, &y)?,
+        (x, Int(y)) => dispatch_to_atoms_fix_y::<A, _>(x, &y)?,
+        (x, Float(y)) => dispatch_to_atoms_fix_y::<A, _>(x, &y)?,
+        (x, Function(y)) => dispatch_to_atoms_fix_y::<A, _>(x, &y)?,
+        
+        (U8s(x), U8s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (U8s(x), I64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (U8s(x), F64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (U8s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (I64s(x), U8s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (I64s(x), I64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (I64s(x), F64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (I64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (F64s(x), U8s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (F64s(x), I64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (F64s(x), F64s(y)) => A::op_traverse_zip_take_y(x, y)?.to_rc_val(),
+        (F64s(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), U8s(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), I64s(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), F64s(y)) => iter::zip(x, y).map(
+            |(x, y)| dispatch_to_atoms_fix_y::<A, _>(x.as_val(), &y),
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+
+        (Vals(x), Vals(y)) => iter::zip(x, y).map(
+            |(x, y)| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_take_y::<A>(x.as_val(), y),
+                Err(y) => dispatch_to_atoms::<A>(x.as_val(), y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_rc_val(),
+    };
+    Ok(val)
+}
 
 pub fn dispatch_to_atoms<A: AtomOp2>(x: &Val, y: &Val) -> Res<RcVal> {
     use Val::*;
@@ -216,7 +434,7 @@ pub fn dispatch_to_atoms<A: AtomOp2>(x: &Val, y: &Val) -> Res<RcVal> {
     Ok(val)
 }
 
-fn dispatch_to_atoms_fix_x<A, X>(x: &X, y: &Val) -> Res<RcVal>
+pub fn dispatch_to_atoms_fix_x<A, X>(x: &X, y: &Val) -> Res<RcVal>
 where A: Op2<X, u8, Out: ToVal + VecToVal>,
       A: Op2<X, i64, Out: ToVal + VecToVal>,
       A: Op2<X, f64, Out: ToVal + VecToVal>,
@@ -237,7 +455,59 @@ where A: Op2<X, u8, Out: ToVal + VecToVal>,
     Ok(RcVal::new(val))
 }
 
-fn dispatch_to_atoms_fix_y<A, Y>(x: &Val, y: &Y) -> Res<RcVal>
+pub fn dispatch_to_atoms_fix_x_take_y<A: AtomOp2, X>(x: &X, y: Val) -> Res<RcVal>
+where A: Op2<X, u8, Out: ToVal + VecToVal>,
+      A: Op2<X, i64, Out: ToVal + VecToVal>,
+      A: Op2<X, f64, Out: ToVal + VecToVal>,
+      A: Op2<X, Func, Out: ToVal + VecToVal> {
+    use Val::*;
+    let val = match y {
+        Char(y) => A::op(x, &y)?.to_val(),
+        Int(y) => A::op(x, &y)?.to_val(),
+        Float(y) => A::op(x, &y)?.to_val(),
+        Function(y) => A::op(x, &y)?.to_val(),
+
+        U8s(y) => A::op_traverse_y_take_y(x, y)?.to_val(),
+        I64s(y) => A::op_traverse_y_take_y(x, y)?.to_val(),
+        F64s(y) => A::op_traverse_y_take_y(x, y)?.to_val(),
+
+        Vals(y) => y.into_iter().map(
+            |y| match RcVal::try_unwrap(y) {
+                Ok(y) => dispatch_to_atoms_fix_x_take_y::<A, _>(x, y),
+                Err(y) => dispatch_to_atoms_fix_x::<A, _>(x, y.as_val()),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_val(),
+    };
+    Ok(RcVal::new(val))
+}
+
+pub fn dispatch_to_atoms_take_x_fix_y<A: AtomOp2, Y>(x: Val, y: &Y) -> Res<RcVal>
+where A: Op2<u8, Y, Out: ToVal + VecToVal>,
+      A: Op2<i64, Y, Out: ToVal + VecToVal>,
+      A: Op2<f64, Y, Out: ToVal + VecToVal>,
+      A: Op2<Func, Y, Out: ToVal + VecToVal> {
+    use Val::*;
+    let val = match x {
+        Char(x) => A::op(&x, y)?.to_val(),
+        Int(x) => A::op(&x, y)?.to_val(),
+        Float(x) => A::op(&x, y)?.to_val(),
+        Function(x) => A::op(&x, y)?.to_val(),
+
+        U8s(x) => A::op_traverse_x_take_x(x, y)?.to_val(),
+        I64s(x) => A::op_traverse_x_take_x(x, y)?.to_val(),
+        F64s(x) => A::op_traverse_x_take_x(x, y)?.to_val(),
+
+        Vals(x) => x.into_iter().map(
+            |x| match RcVal::try_unwrap(x) {
+                Ok(x) => dispatch_to_atoms_take_x_fix_y::<A, _>(x, y),
+                Err(x) => dispatch_to_atoms_fix_y::<A, _>(x.as_val(), y),
+            }
+        ).collect::<Res<Vec<_>>>()?.to_val(),
+    };
+    Ok(RcVal::new(val))
+}
+
+pub fn dispatch_to_atoms_fix_y<A, Y>(x: &Val, y: &Y) -> Res<RcVal>
 where A: Op2<u8, Y, Out: ToVal + VecToVal>,
       A: Op2<i64, Y, Out: ToVal + VecToVal>,
       A: Op2<f64, Y, Out: ToVal + VecToVal>,

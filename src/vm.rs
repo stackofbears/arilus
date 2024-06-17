@@ -156,7 +156,7 @@ impl Mem {
                     let val = self.load(src);
                     self.push(val);
                 }
-                PushPrimVerb { prim: PrimVerb::Rec } => {
+                PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) } => {
                     let frame = self.current_frame();
                     // TODO can we copy the actual function that was called instead?
                     self.push(RcVal::new(Val::Function(Func::Explicit {
@@ -164,7 +164,7 @@ impl Mem {
                         closure_env: frame.closure_env.clone(),
                     })));
                 }
-                PushPrimVerb { prim } => self.push(RcVal::new(Val::Function(Func::Prim(prim)))),
+                PushPrimFunc { prim } => self.push(RcVal::new(Val::Function(Func::Prim(prim)))),
 
                 // TODO eliminate tail calls for call instructions.
                 Call1 => {
@@ -196,15 +196,15 @@ impl Mem {
                         self.push(result);
                     }
                 }
-                CallPrimVerb1 { prim } => {
+                CallPrimFunc1 { prim } => {
                     let x = self.pop();
                     let result = self.call_prim_monad(prim, x)?;
                     self.push(result);
                 }
-                CallPrimVerb2 { prim } => {
+                CallPrimFunc2 { prim } => {
                     let y = self.pop();
                     let x = self.pop();
-                    if prim == PrimVerb::At && x.is_func() && self.is_tail_call(ip) {
+                    if prim == PrimFunc::Verb(PrimVerb::At) && x.is_func() && self.is_tail_call(ip) {
                         match self.chase_tail(x, y, None)? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
@@ -410,7 +410,7 @@ impl Mem {
                     y = new_y;
                     func = h_func.clone();
                 }
-                Func::Prim(PrimVerb::At) if x.is_func() && y.is_some() => {
+                Func::Prim(PrimFunc::Verb(PrimVerb::At)) if x.is_func() && y.is_some() => {
                     func = x;
                     x = y.unwrap();
                     y = None;
@@ -580,66 +580,72 @@ impl Mem {
         Ok(result)
     }
 
-    fn call_prim_monad(&mut self, v: PrimVerb, x: RcVal) -> Result<RcVal, String> {
+    fn call_prim_monad(&mut self, v: PrimFunc, x: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
-            P | Q => Ok(x),
-            Show => prim_show(x.as_val()).map(RcVal::new),
-            GetLine => prim_get_line(),
-            Print => self.prim_to_string(&x)
-                .inspect(|s| println!("{s}"))
-                .map(|_| x),
-            DebugPrint => self.prim_to_debug_string(&x)
-                .inspect(|s| println!("{s}"))
-                .map(|_| x),
-            PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
-            ReadFile => prim_read_file(x.as_val()).map(RcVal::new),
-            Hash => Ok(RcVal::new(Val::Int(x.len().unwrap_or(1) as i64))),
-            Slash => Ok(RcVal::new(iota(&*x))),
-            Pipe => Ok(prim_reverse(&x)),
-            Comma => Ok(prim_ravel(&x)),
-            Caret => Ok(RcVal::new(Val::Vals(prim_prefixes(&x)))),
-            Dollar => Ok(RcVal::new(Val::Vals(prim_suffixes(&x)))),
-            Question => prim_where(x.as_val()).map(RcVal::new),
-            LessThan => Ok(RcVal::new(prim_sort(&x, false))),
-            GreaterThan => Ok(RcVal::new(prim_sort(&x, true))),
-            LessThanColon => Ok(RcVal::new(prim_grade(&x, false))),
-            GreaterThanColon => Ok(RcVal::new(prim_grade(&x, true))),
-            Type => Ok(RcVal::new(Val::U8s(prim_type(x.as_val())))),
-            Exit => prim_exit(&x),
-            _ => todo!("{x:?} {v:?}")
+            PrimFunc::Sum => prim::sum(x, None),
+            PrimFunc::Verb(verb) => match verb {
+                P | Q => Ok(x),
+                Show => prim_show(x.as_val()).map(RcVal::new),
+                GetLine => prim_get_line(),
+                Print => self.prim_to_string(&x)
+                    .inspect(|s| println!("{s}"))
+                    .map(|_| x),
+                DebugPrint => self.prim_to_debug_string(&x)
+                    .inspect(|s| println!("{s}"))
+                    .map(|_| x),
+                PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
+                ReadFile => prim_read_file(x.as_val()).map(RcVal::new),
+                Hash => Ok(RcVal::new(Val::Int(x.len().unwrap_or(1) as i64))),
+                Slash => Ok(RcVal::new(iota(&*x))),
+                Pipe => Ok(prim_reverse(&x)),
+                Comma => Ok(prim_ravel(&x)),
+                Caret => Ok(RcVal::new(Val::Vals(prim_prefixes(&x)))),
+                Dollar => Ok(RcVal::new(Val::Vals(prim_suffixes(&x)))),
+                Question => prim_where(x.as_val()).map(RcVal::new),
+                LessThan => Ok(RcVal::new(prim_sort(&x, false))),
+                GreaterThan => Ok(RcVal::new(prim_sort(&x, true))),
+                LessThanColon => Ok(RcVal::new(prim_grade(&x, false))),
+                GreaterThanColon => Ok(RcVal::new(prim_grade(&x, true))),
+                Type => Ok(RcVal::new(Val::U8s(prim_type(x.as_val())))),
+                Exit => prim_exit(&x),
+                _ => todo!("{x:?} {v:?}")
+            }
         };
         result.map_err(|err| format!("Error in `{v}': {err}"))
     }
 
-    fn call_prim_dyad(&mut self, v: PrimVerb, x: RcVal, y: RcVal) -> Result<RcVal, String> {
+    fn call_prim_dyad(&mut self, v: PrimFunc, x: RcVal, y: RcVal) -> Result<RcVal, String> {
         use PrimVerb::*;
         let result = match v {
-            P => Ok(x),
-            Q => Ok(y),
-            Plus => prim::add(x.as_val(), y.as_val()),
-            Minus => prim::subtract(x.as_val(), y.as_val()),
-            Asterisk => prim::multiply(x.as_val(), y.as_val()),
-            Slash => prim::divide(x.as_val(), y.as_val()),
-            DoubleSlash => prim::int_divide(x.as_val(), y.as_val()),
-            Percent => prim::int_mod(x.as_val(), y.as_val()),
-            Caret => prim::pow(x.as_val(), y.as_val()),
-            Hash => prim_take(x, y.as_val()),
-            HashColon => prim_copy(&x, &y),
-            Comma => prim_append(x, y),
-            DoubleEquals => prim_match(x.as_val(), y.as_val()),
-            Equals => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
-            EqualBang => prim_compare(&x, &y, |ord| ord != Ordering::Equal),
-            GreaterThan => prim_compare(&x, &y, |ord| ord > Ordering::Equal),
-            GreaterThanEquals => prim_compare(&x, &y, |ord| ord >= Ordering::Equal),
-            LessThan => prim_compare(&x, &y, |ord| ord < Ordering::Equal),
-            LessThanEquals => prim_compare(&x, &y, |ord| ord <= Ordering::Equal),
-            LessThanColon => prim_choose_atoms(&x, &y, Val::le),
-            GreaterThanColon => prim_choose_atoms(&x, &y, Val::ge),
-            At => self.prim_index(&x, &y),
-            Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), y.as_val())))),
-            QuestionColon => Ok(RcVal::new(Val::I64s(prim_subsequence_starts(x.as_val(), y.as_val())))),
-            _ => todo!("{x:?} {v:?} {y:?}"),
+            PrimFunc::Sum => prim::sum(x, Some(y)),
+            PrimFunc::Verb(verb) => match verb {
+                P => Ok(x),
+                Q => Ok(y),
+                Plus => prim::add(x, y),
+                Minus => prim::subtract(x.as_val(), y.as_val()),
+                Asterisk => prim::multiply(x.as_val(), y.as_val()),
+                Slash => prim::divide(x.as_val(), y.as_val()),
+                DoubleSlash => prim::int_divide(x.as_val(), y.as_val()),
+                Percent => prim::int_mod(x.as_val(), y.as_val()),
+                Caret => prim::pow(x.as_val(), y.as_val()),
+                Hash => prim_take(x, y.as_val()),
+                HashColon => prim_copy(&x, &y),
+                Comma => prim_append(x, y),
+                DoubleEquals => prim_match(x.as_val(), y.as_val()),
+                Equals => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
+                EqualBang => prim_compare(&x, &y, |ord| ord != Ordering::Equal),
+                GreaterThan => prim_compare(&x, &y, |ord| ord > Ordering::Equal),
+                GreaterThanEquals => prim_compare(&x, &y, |ord| ord >= Ordering::Equal),
+                LessThan => prim_compare(&x, &y, |ord| ord < Ordering::Equal),
+                LessThanEquals => prim_compare(&x, &y, |ord| ord <= Ordering::Equal),
+                LessThanColon => prim_choose_atoms(&x, &y, Val::le),
+                GreaterThanColon => prim_choose_atoms(&x, &y, Val::ge),
+                At => self.prim_index(&x, &y),
+                Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), y.as_val())))),
+                QuestionColon => Ok(RcVal::new(Val::I64s(prim_subsequence_starts(x.as_val(), y.as_val())))),
+                _ => todo!("{x:?} {v:?} {y:?}"),
+            },
         };
         result.map_err(|err| format!("Error in `{v}': {err}"))
     }
@@ -1589,17 +1595,6 @@ fn zip_vals(x: &RcVal, y: &RcVal) -> Option<Result<ZippedVals, String>> {
         _ => (),
     }
     Some(Ok(ZippedVals { x: x.clone(), y: y.clone(), i: 0 }))
-}
-
-fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
-    use Val::*;
-    Some(match val.as_val() {
-        atom!() => val.clone(),
-        I64s(is) => RcVal::new(Val::Int(*is.get(i)?)),
-        F64s(fs) => RcVal::new(Val::Float(*fs.get(i)?)),
-        U8s(cs) => RcVal::new(Val::Char(*cs.get(i)?)),
-        Vals(vs) => vs.get(i)?.clone(),
-    })
 }
 
 fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {

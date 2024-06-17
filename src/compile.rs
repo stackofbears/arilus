@@ -277,6 +277,11 @@ impl Compiler {
 
     // TODO compile_small_verb should expect an arity (may be decided by a particular adverb)
     fn compile_small_verb(&mut self, small_verb: &SmallVerb) -> Result<(), String> {
+        if let Some(prim) = form_primitive_from_small_verb(small_verb) {
+            self.code.push(Instr::PushPrimFunc { prim });
+            return Ok(());
+        }
+
         match small_verb {
             SmallVerb::UpperName(name) => {
                 let src = self.fetch_var(name)?;
@@ -294,7 +299,7 @@ impl Compiler {
                 if prim == PrimVerb::Rec && self.scopes.len() < 2 {
                     return err!("Can't use `Rec` outside of an explicit definition")
                 }
-                self.code.push(Instr::PushPrimVerb { prim })
+                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(prim) })
             }
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
@@ -395,33 +400,31 @@ impl Compiler {
     fn compile_predicate(&mut self, predicate: &Predicate) -> Result<(), String> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
-                match verb {
-                    Verb::SmallVerb(SmallVerb::PrimVerb(PrimVerb::Rec)) =>
-                        self.code.push(Instr::PushPrimVerb { prim: PrimVerb::Rec }),
-
-                    Verb::SmallVerb(SmallVerb::PrimVerb(_)) => {}
-
-                    _ => self.compile_verb(verb, Some(if maybe_y_arg.is_some() { Arity::Two }
-                                                      else { Arity::One }))?,
-                }
-
-                if let Some(y) = maybe_y_arg {
-                    self.compile_small_noun(y)?;
-                }
-
-                self.code.push(match verb {
-                    &Verb::SmallVerb(SmallVerb::PrimVerb(prim)) if prim != PrimVerb::Rec => {
-                        if maybe_y_arg.is_some() {
-                            Instr::CallPrimVerb2 { prim }
-                        } else {
-                            Instr::CallPrimVerb1 { prim }
+                let prim_func = form_primitive_from_verb(verb);
+                if prim_func.is_none() {
+                    match verb {
+                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimVerb::Rec)) =>
+                                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) }),
+                        _ => {
+                            let arity = if maybe_y_arg.is_some() { Arity::Two } else { Arity::One };
+                            self.compile_verb(verb, Some(arity))?;
                         }
                     }
-                    _ => {
-                        if maybe_y_arg.is_some() { Instr::Call2 }
-                        else { Instr::Call1 }
+                }
+
+                match maybe_y_arg {
+                    None => self.code.push(match prim_func {
+                        Some(prim) => Instr::CallPrimFunc1 { prim },
+                        None => Instr::Call1,
+                    }),
+                    Some(y) => {
+                        self.compile_small_noun(y)?;
+                        self.code.push(match prim_func {
+                            Some(prim) => Instr::CallPrimFunc2 { prim },
+                            None => Instr::Call2,
+                        });
                     }
-                });
+                }
             }
 
             Predicate::ForwardAssignment(pat) =>
@@ -526,7 +529,7 @@ impl Compiler {
                         return Ok(())
                     }
                 };
-                self.code.push(Instr::PushPrimVerb { prim: verb });
+                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(verb) });
             }
             If3(cond, then, else_) => {
                 self.compile_expr(&*cond)?;
@@ -642,5 +645,29 @@ fn pattern_to_small_noun(pat: &Pattern) -> SmallNoun {
                 |elem| Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(elem)))
             ).collect()
         ),
+    }
+}
+
+fn form_primitive_from_verb(verb: &Verb) -> Option<PrimFunc> {
+    match verb {
+        Verb::SmallVerb(small_verb) => form_primitive_from_small_verb(small_verb),
+        _ => None,
+    }
+}
+
+fn form_primitive_from_small_verb(small_verb: &SmallVerb) -> Option<PrimFunc> {
+    match small_verb {
+        // Rec is special-cased because we can't just compile it into a call to
+        // a prim verb; the bytecode interpreter would panic if we attempted to
+        // run CallPrimFuncX with it.
+        &SmallVerb::PrimVerb(prim) if prim != PrimVerb::Rec =>
+            Some(PrimFunc::Verb(prim)),
+
+        SmallVerb::Adverb(PrimAdverb::Backslash, expr_box) => match expr_box.as_ref() {
+            SmallExpr::Verb(SmallVerb::PrimVerb(PrimVerb::Plus)) => Some(PrimFunc::Sum),
+            _ => None,
+        }
+
+        _ => None,
     }
 }

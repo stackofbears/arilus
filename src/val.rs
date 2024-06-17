@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::RefCell,
     cmp::Ordering,
     rc::Rc,
@@ -6,6 +7,7 @@ use std::{
 
 use crate::lex::*;
 use crate::util;
+use crate::bytecode::PrimFunc;
 
 // Maybe we go back to moving lists to the heap when they're sliced (and in
 // general moving vals to the heap when they're referenced).
@@ -62,9 +64,19 @@ maybe closure envs are refs by default
 */
 
 // TODO save an alloc+indirection: move small values out so RcVal is Small | Rc<BigVal>
+// Possible val format (nan-boxed):
+// Val {
+//    Char(u8),
+//    Int(i64),
+//    Float(f64),
+//    Ints(ptr to [rc; N; elem1; elem2; ...; elemN]),
+//    Prim(usize),
+//    Function(ptr to [rc; code idx; N; closureVal1; closureVal2; ...; closureValN]),
+// }
 pub type RcVal = Rc<Val>;
 
-// TODO Ref, Box to say functions shouldn't pervade
+// TODO Ref
+// TODO Box to say functions shouldn't pervade
 #[derive(Debug, Clone)]
 pub enum Val {
     Char(u8),
@@ -81,7 +93,7 @@ pub enum Val {
 pub enum Func {
     // TODO switch this out for the non-token type (some primitives won't have
     // token representations)
-    Prim(PrimVerb),
+    Prim(PrimFunc),
 
     AdverbDerived {
         adverb: PrimAdverb,
@@ -120,6 +132,13 @@ pub(crate) use atom;
 
 impl Val {
     pub fn as_val(&self) -> &Self { &self }
+
+    // pub fn into_cow<'a>(self: &'a mut Rc<Val>) -> Cow<'a, Val> {
+    //     match RcVal::try_unwrap(self) {
+    //         Ok(value) => Cow::Owned(value),
+    //         Err(reference) => Cow::Borrowed(reference.as_val()),
+    //     }
+    // }
 
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -296,3 +315,15 @@ pub enum NoValEmptyEnum {}
 impl Default for NoValEmptyEnum {
     fn default() -> Self { unsafe { std::hint::unreachable_unchecked() } }
 }
+
+pub fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
+    use Val::*;
+    Some(match val.as_val() {
+        atom!() => val.clone(),
+        I64s(is) => RcVal::new(Val::Int(*is.get(i)?)),
+        F64s(fs) => RcVal::new(Val::Float(*fs.get(i)?)),
+        U8s(cs) => RcVal::new(Val::Char(*cs.get(i)?)),
+        Vals(vs) => vs.get(i)?.clone(),
+    })
+}
+
