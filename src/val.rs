@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cell::RefCell,
     cmp::Ordering,
     rc::Rc,
@@ -73,7 +72,6 @@ maybe closure envs are refs by default
 //    Prim(usize),
 //    Function(ptr to [rc; code idx; N; closureVal1; closureVal2; ...; closureValN]),
 // }
-pub type RcVal = Rc<Val>;
 
 // TODO Ref
 // TODO Box to say functions shouldn't pervade
@@ -82,11 +80,11 @@ pub enum Val {
     Char(u8),
     Int(i64),  // TODO TwoInts, ThreeInts
     Float(f64),
-    Function(Func),
-    U8s(Vec<u8>),
-    I64s(Vec<i64>),
-    F64s(Vec<f64>),
-    Vals(Vec<RcVal>),
+    Function(Rc<Func>),
+    U8s(Rc<Vec<u8>>),
+    I64s(Rc<Vec<i64>>),
+    F64s(Rc<Vec<f64>>),
+    Vals(Rc<Vec<Val>>),
 }
 
 #[derive(Debug, Clone)]
@@ -97,16 +95,16 @@ pub enum Func {
 
     AdverbDerived {
         adverb: PrimAdverb,
-        operand: RcVal,
+        operand: Val,
     },
 
     // First element is the monadic case, second is the dyadic case
-    Ambivalent(RcVal, RcVal),
+    Ambivalent(Val, Val),
 
     // TODO this can probably just be a closure
-    Atop { f_func: RcVal, g_func: RcVal },
-    Bound { func: RcVal, y: RcVal },
-    Fork { f_func: RcVal, h_func: RcVal, g_func: RcVal },
+    Atop { f_func: Val, g_func: Val },
+    Bound { func: Val, y: Val },
+    Fork { f_func: Val, h_func: Val, g_func: Val },
 
     // TODO decide if closures should refer to a shared environment or be value
     // types (copying copies environment. Currently, we hold a reference to the env.
@@ -119,7 +117,7 @@ pub enum Func {
         // code[func.code_index-1]
         code_index: usize,
 
-        closure_env: Rc<RefCell<Vec<RcVal>>>,
+        closure_env: Rc<RefCell<Vec<Val>>>,
     },
 }
 
@@ -132,13 +130,6 @@ pub(crate) use atom;
 
 impl Val {
     pub fn as_val(&self) -> &Self { &self }
-
-    // pub fn into_cow<'a>(self: &'a mut Rc<Val>) -> Cow<'a, Val> {
-    //     match RcVal::try_unwrap(self) {
-    //         Ok(value) => Cow::Owned(value),
-    //         Err(reference) => Cow::Borrowed(reference.as_val()),
-    //     }
-    // }
 
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -235,13 +226,15 @@ impl Ord for Val {
                 Char(_) => 0,
                 Int(_) => 1,
                 Float(_) => 2,
-                Function(Prim(_)) => 3,
-                Function(AdverbDerived {..}) => 4,
-                Function(Ambivalent {..}) => 5,
-                Function(Atop{..}) => 6,
-                Function(Bound{..}) => 7,
-                Function(Fork{..}) => 8,
-                Function(Explicit {..}) => 9,
+                Function(rc) => match &**rc {
+                    Prim(_) => 3,
+                    AdverbDerived {..} => 4,
+                    Ambivalent {..} => 5,
+                    Atop{..} => 6,
+                    Bound{..} => 7,
+                    Fork{..} => 8,
+                    Explicit {..} => 9,
+                }
                 U8s(_) => 10,
                 I64s(_) => 11,
                 F64s(_) => 12,
@@ -273,7 +266,7 @@ impl Ord for Val {
             (Int(i), Float(f)) => int_float_cmp(i, f),
             (Float(f), Int(i)) => int_float_cmp(i, f).reverse(),
 
-            (Function(f), Function(g)) => match (f, g) {
+            (Function(f), Function(g)) => match (f.as_ref(), g.as_ref()) {
                 (Prim(_), Prim(_)) => todo!("Sort primitives"),
                 // TODO sort by closure envs instead? Would be cool, but they may
                 // not have envs, and ideally there aren't semantic differences
@@ -316,14 +309,13 @@ impl Default for NoValEmptyEnum {
     fn default() -> Self { unsafe { std::hint::unreachable_unchecked() } }
 }
 
-pub fn index_or_cycle_val(val: &RcVal, i: usize) -> Option<RcVal> {
+pub fn index_or_cycle_val(val: &Val, i: usize) -> Option<Val> {
     use Val::*;
     Some(match val.as_val() {
         atom!() => val.clone(),
-        I64s(is) => RcVal::new(Val::Int(*is.get(i)?)),
-        F64s(fs) => RcVal::new(Val::Float(*fs.get(i)?)),
-        U8s(cs) => RcVal::new(Val::Char(*cs.get(i)?)),
+        U8s(cs) => Val::Char(*cs.get(i)?),
+        I64s(is) => Val::Int(*is.get(i)?),
+        F64s(fs) => Val::Float(*fs.get(i)?),
         Vals(vs) => vs.get(i)?.clone(),
     })
 }
-

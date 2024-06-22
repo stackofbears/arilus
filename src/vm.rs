@@ -17,7 +17,7 @@ use crate::val::*;
 // pushed.
 enum ChasedTail {
     GoTo(usize),
-    Push(RcVal),
+    Push(Val),
 }
 
 // Used in printing vals.
@@ -43,8 +43,7 @@ struct StackFrame {
     // The first instruction of this function.
     code_index: usize,
 
-    // Always points to Val::Vals.
-    closure_env: Rc<RefCell<Vec<RcVal>>>,
+    closure_env: Rc<RefCell<Vec<Val>>>,
 
     // Index into locals_stack. Local slots are offsets from this index.
     locals_start: usize,
@@ -53,17 +52,14 @@ struct StackFrame {
 pub struct Mem {
     pub code: Vec<Instr>,
 
-    pub stack: Vec<RcVal>,
+    pub stack: Vec<Val>,
 
     // Stack of local scopes
-    locals_stack: Vec<RcVal>,
+    locals_stack: Vec<Val>,
 
     // Details about the explicit function (or global scope) we're currently
     // in. Never empty!
     stack_frames: Vec<StackFrame>,
-
-    // TODO intern small ints (actually not necessary if we do Small | Rc<Big>)
-    zero: RcVal,
 }
 
 impl Mem {
@@ -77,8 +73,6 @@ impl Mem {
                 locals_start: 0,
                 code_index: usize::MAX,
             }],
-
-            zero: Rc::new(Val::Int(0)),
         }
     }
 
@@ -137,7 +131,7 @@ impl Mem {
                         _ => vec![],
                     };
 
-                    self.push(RcVal::new(Val::Function(Func::Explicit {
+                    self.push(Val::Function(Rc::new(Func::Explicit {
                         code_index,
                         closure_env: Rc::new(RefCell::new(closure_data)),
                     })));
@@ -150,8 +144,8 @@ impl Mem {
                 JumpRelative { offset } => ip = (ip as i64 + offset) as usize,
                 JumpRelativeUnless { offset } =>
                     if self.pop().is_falsy() { ip = (ip as i64 + offset) as usize },
-                PushLiteralInteger(value) => self.push(RcVal::new(Val::Int(value))),
-                PushLiteralFloat(value) => self.push(RcVal::new(Val::Float(value))),
+                PushLiteralInteger(value) => self.push(Val::Int(value)),
+                PushLiteralFloat(value) => self.push(Val::Float(value)),
                 PushVar { src } => {
                     let val = self.load(src);
                     self.push(val);
@@ -159,12 +153,12 @@ impl Mem {
                 PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) } => {
                     let frame = self.current_frame();
                     // TODO can we copy the actual function that was called instead?
-                    self.push(RcVal::new(Val::Function(Func::Explicit {
+                    self.push(Val::Function(Rc::new(Func::Explicit {
                         code_index: frame.code_index,
                         closure_env: frame.closure_env.clone(),
                     })));
                 }
-                PushPrimFunc { prim } => self.push(RcVal::new(Val::Function(Func::Prim(prim)))),
+                PushPrimFunc { prim } => self.push(Val::Function(Rc::new(Func::Prim(prim)))),
 
                 // TODO eliminate tail calls for call instructions.
                 Call1 => {
@@ -224,19 +218,19 @@ impl Mem {
                             if cs.len() != count {
                                 return err!("Array unpacking failed; expected {count} elements, got {}", cs.len())
                             }
-                            self.stack.extend(cs.iter().rev().map(|c| RcVal::new(Val::Char(*c))))
+                            self.stack.extend(cs.iter().rev().map(|c| Val::Char(*c)))
                         }
                         Val::I64s(is) => {
                             if is.len() != count {
                                 return err!("Array unpacking failed; expected {count} elements, got {}", is.len())
                             }
-                            self.stack.extend(is.iter().rev().map(|i| RcVal::new(Val::Int(*i))))
+                            self.stack.extend(is.iter().rev().map(|i| Val::Int(*i)))
                         }
                         Val::F64s(fs) =>  {
                             if fs.len() != count {
                                 return err!("Array unpacking failed; expected {count} elements, got {}", fs.len())
                             }
-                            self.stack.extend(fs.iter().rev().map(|f| RcVal::new(Val::Float(*f))))
+                            self.stack.extend(fs.iter().rev().map(|f| Val::Float(*f)))
                         }
                         Val::Vals(vs) => {
                             if vs.len() != count {
@@ -248,38 +242,58 @@ impl Mem {
                 }
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
-                    match operand.as_val() {
-                        Val::Function(Func::Ambivalent(monad, _)) if matches!(adverb, PrimAdverb::P) => self.push(monad.clone()),
-                        
-                        _ => self.push(RcVal::new(Val::Function(Func::AdverbDerived { adverb, operand }))),
+
+                    fn apply_adverb(adverb: PrimAdverb, operand: Val) -> Val {
+                        if adverb == PrimAdverb::P {
+                            if let Val::Function(rc) = &operand {
+                                if let Func::Ambivalent(monad, _) = &**rc {
+                                    return monad.clone()
+                                }
+                            }
+                        }
+                        Val::Function(Rc::new(Func::AdverbDerived { adverb, operand }))
                     }
+
+                    self.push(apply_adverb(adverb, operand));
                 }
                 CollectVerbAlternatives => {
-                    let mut dyad = self.pop();
-                    if let Val::Function(Func::Ambivalent(_, inner_dyad)) = dyad.as_val() {
-                        dyad = inner_dyad.clone();
+                    fn get_dyad_case(val: Val) -> Val {
+                        if let Val::Function(rc) = &val {
+                            if let Func::Ambivalent(_, inner_dyad) = &**rc {
+                                return inner_dyad.clone()
+                            }
+                        }
+                        val
                     }
-                    let mut monad = self.pop();
-                    if let Val::Function(Func::Ambivalent(inner_monad, _)) = monad.as_val() {
-                        monad = inner_monad.clone();
+                    let dyad_case = get_dyad_case(self.pop());
+
+                    fn get_monad_case(val: Val) -> Val {
+                        if let Val::Function(rc) = &val {
+                            if let Func::Ambivalent(inner_monad, _) = &**rc {
+                                return inner_monad.clone()
+                            }
+                        }
+                        val
                     }
-                    self.push(RcVal::new(Val::Function(Func::Ambivalent(monad, dyad))));
+                    let monad_case = get_monad_case(self.pop());
+
+                    self.push(Val::Function(Rc::new(Func::Ambivalent(monad_case, dyad_case))));
                 }
                 MakeAtopFunc => {
                     let g_func = self.pop();
                     let f_func = self.pop();
-                    self.push(RcVal::new(Val::Function(Func::Atop { f_func, g_func })));
+                    self.push(Val::Function(Rc::new(Func::Atop { f_func, g_func })));
                 }
                 MakeBoundFunc => {
                     let y = self.pop();
                     let func = self.pop();
-                    self.push(RcVal::new(Val::Function(Func::Bound { func, y })));
+                    self.push(Val::Function(Rc::new(Func::Bound { func, y })));
                 }
                 MakeForkFunc => {
                     let g_func = self.pop();
                     let h_func = self.pop();
                     let f_func = self.pop();
-                    self.push(RcVal::new(Val::Function(Func::Fork { f_func, h_func, g_func })));
+                    self.push(Val::Function(Rc::new(Func::Fork { f_func, h_func, g_func })));
                 }
                 MakeString { num_bytes } => {
                     let mut s = Vec::with_capacity(num_bytes);
@@ -291,34 +305,34 @@ impl Mem {
                             }
                         });
                     }
-                    self.push(RcVal::new(Val::U8s(s)));
+                    self.push(Val::U8s(Rc::new(s)));
                 }
-                LiteralBytes { bytes } => self.push(RcVal::new(Val::Char(bytes[0]))),
+                LiteralBytes { bytes } => self.push(Val::Char(bytes[0])),
                 CollectToArray { num_elems } => {
                     let mut all_chars = true;
                     let mut all_ints = true;
                     let mut all_floats = true;
                     for elem in &self.stack[(self.stack.len() - num_elems)..] {
-                        all_chars &= matches!(&**elem, Val::Char(_));
-                        all_ints &= matches!(&**elem, Val::Int(_));
-                        all_floats &= matches!(&**elem, Val::Float(_) | Val::Int(_));
+                        all_chars &= matches!(elem, Val::Char(_));
+                        all_ints &= matches!(elem, Val::Int(_));
+                        all_floats &= matches!(elem, Val::Float(_) | Val::Int(_));
                     }
 
                     let elems = self.stack.drain((self.stack.len() - num_elems)..);
                     let list_val = if all_chars {
-                        Val::U8s(map(elems, |elem| irrefutable!(*elem, Val::Char(ch) => ch)))
+                        Val::U8s(Rc::new(map(elems, |elem| irrefutable!(elem, Val::Char(ch) => ch))))
                     } else if all_ints {
-                        Val::I64s(map(elems, |elem| irrefutable!(*elem, Val::Int(int) => int)))
+                        Val::I64s(Rc::new(map(elems, |elem| irrefutable!(elem, Val::Int(int) => int))))
                     } else if all_floats {
-                        Val::F64s(map(elems, |elem| match *elem {
+                        Val::F64s(Rc::new(map(elems, |elem| match elem {
                             Val::Float(f) => f,
                             Val::Int(i) => i as f64,
                             _ => unreachable!(),
-                        }))
+                        })))
                     } else {
-                        Val::Vals(elems.collect())
+                        Val::Vals(Rc::new(elems.collect()))
                     };
-                    self.push(RcVal::new(list_val))
+                    self.push(list_val)
                 }
             }
         }
@@ -326,12 +340,12 @@ impl Mem {
     }
 
     #[inline]
-    fn push(&mut self, val: RcVal) {
+    fn push(&mut self, val: Val) {
         self.stack.push(val)
     }
 
     #[inline]
-    fn pop(&mut self) -> RcVal {
+    fn pop(&mut self) -> Val {
         self.stack.pop().unwrap()
     }
 
@@ -346,7 +360,7 @@ impl Mem {
     }
 
 
-    fn load(&mut self, var: Var) -> RcVal {
+    fn load(&mut self, var: Var) -> Val {
         // TODO do all local/closure vars point to non-lists (instead to slices)?
         let frame = self.current_frame();
         match var.place {
@@ -355,13 +369,13 @@ impl Mem {
         }
     }
 
-    fn store(&mut self, dst: Var, val: RcVal) {
+    fn store(&mut self, dst: Var, val: Val) {
         let frame = self.current_frame();
         match dst.place {
             Place::Local => {
                 let absolute_slot = frame.locals_start + dst.slot;
                 if absolute_slot >= self.locals_stack.len() {
-                    self.locals_stack.resize(absolute_slot + 1, self.zero.clone());  // TODO is zero right?
+                    self.locals_stack.resize(absolute_slot + 1, Val::Int(0));  // TODO is zero right?
                 }
                 self.locals_stack[absolute_slot] = val;
             }
@@ -375,10 +389,10 @@ impl Mem {
         matches!(self.code.get(ip), Some(Instr::Return))
     }
 
-    fn chase_tail(&mut self, mut func: RcVal, mut x: RcVal, mut y: Option<RcVal>) -> Result<ChasedTail, String> {
+    fn chase_tail(&mut self, mut func: Val, mut x: Val, mut y: Option<Val>) -> Result<ChasedTail, String> {
         loop {
-            let function = match func.as_val() {
-                Val::Function(f) => f,
+            let function = match &func {
+                Val::Function(rc) => &**rc,
                 _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?)),
             };
 
@@ -390,7 +404,7 @@ impl Mem {
                     let locals_start = frame.locals_start;
                     self.locals_stack.truncate(locals_start);
                     self.locals_stack.push(x);
-                    self.locals_stack.push(y.unwrap_or_else(|| self.zero.clone()));
+                    self.locals_stack.push(y.unwrap_or_else(|| Val::Int(0)));
                     return Ok(ChasedTail::GoTo(*code_index));
                 }
                 Func::Ambivalent(monad, dyad) =>
@@ -462,11 +476,11 @@ impl Mem {
     // Calls `val` with arguments `x` and, if present, `y`. If `val` is a
     // function, run the function; otherwise, `val` is treated as a constant
     // function and this call results in `val`.
-    fn call_val(&mut self, val: RcVal, x: RcVal, y: Option<RcVal>) -> Result<RcVal, String> {
+    fn call_val(&mut self, val: Val, x: Val, y: Option<Val>) -> Result<Val, String> {
         let result = match val.as_val() {
             Val::Char(_) | Val::Int(_) | Val::Float(_) |
             Val::U8s(_) | Val::I64s(_) | Val::F64s(_) | Val::Vals(_) => val,
-            Val::Function(func) => match func {
+            Val::Function(func) => match &**func {
                 &Func::Explicit { ref closure_env, code_index } => {
                     let frame = StackFrame {
                         code_index,
@@ -483,7 +497,7 @@ impl Mem {
                     //   0
                     //
                     // functions that mention y should always be called dyadically?
-                    self.locals_stack.push(y.unwrap_or(self.zero.clone()));
+                    self.locals_stack.push(y.unwrap_or(Val::Int(0)));
                     self.execute(code_index)?;
                     self.pop()
                 }
@@ -513,9 +527,9 @@ impl Mem {
 
     fn call_prim_adverb(&mut self,
                         adverb: PrimAdverb,
-                        operand: RcVal,
-                        x: RcVal,  // TODO take &Val?
-                        maybe_y: Option<RcVal>) -> Result<RcVal, String> {
+                        operand: Val,
+                        x: Val,
+                        maybe_y: Option<Val>) -> Result<Val, String> {
         use PrimAdverb::*;
         let result = match adverb {
             AtColon => {
@@ -532,43 +546,43 @@ impl Mem {
             SingleQuote => match maybe_y {
                 None => match iter_val(&x) {
                     None => self.call_val(operand, x, None)?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter.map(|val| self.call_val(operand.clone(), val, None))
-                    )?),
+                    )?,
                 }
                 Some(y) => match zip_vals(&x, &y) {
                     None => self.call_val(operand, x, Some(y))?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter?.map(|(x_val, y_val)| self.call_val(operand.clone(), x_val, Some(y_val)))
-                    )?),
+                    )?,
                 }
             }
             Backtick => match maybe_y {
                 None => match iter_val(&x) {
                     None => self.call_val(operand, x, None)?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter.map(|val| self.call_val(operand.clone(), val, None))
-                    )?),
+                    )?,
                 }
                 Some(y) => match iter_val(&x) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter.map(|x_val| self.call_val(operand.clone(), x_val, Some(y.clone())))
-                    )?),
+                    )?,
                 }
             }
             BacktickColon => match maybe_y {
                 None => match iter_val(&x) {
                     None => self.call_val(operand, x, None)?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter.map(|val| self.call_val(operand.clone(), val, None))
-                    )?),
+                    )?,
                 }
                 Some(y) => match iter_val(&y) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
-                    Some(iter) => RcVal::new(collect_list(
+                    Some(iter) => collect_list(
                         iter.map(|y_val| self.call_val(operand.clone(), x.clone(), Some(y_val)))
-                    )?),
+                    )?,
                 }
             }
             Tilde => match maybe_y {
@@ -580,13 +594,13 @@ impl Mem {
         Ok(result)
     }
 
-    fn call_prim_monad(&mut self, v: PrimFunc, x: RcVal) -> Result<RcVal, String> {
+    fn call_prim_monad(&mut self, v: PrimFunc, x: Val) -> Result<Val, String> {
         use PrimVerb::*;
         let result = match v {
-            PrimFunc::Sum => prim::sum(x, None),
+            PrimFunc::Sum => self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, None), // TODO prim::sum(x, None),
             PrimFunc::Verb(verb) => match verb {
                 P | Q => Ok(x),
-                Show => prim_show(x.as_val()).map(RcVal::new),
+                Show => prim_show(x),
                 GetLine => prim_get_line(),
                 Print => self.prim_to_string(&x)
                     .inspect(|s| println!("{s}"))
@@ -595,19 +609,19 @@ impl Mem {
                     .inspect(|s| println!("{s}"))
                     .map(|_| x),
                 PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
-                ReadFile => prim_read_file(x.as_val()).map(RcVal::new),
-                Hash => Ok(RcVal::new(Val::Int(x.len().unwrap_or(1) as i64))),
-                Slash => Ok(RcVal::new(iota(&*x))),
-                Pipe => Ok(prim_reverse(&x)),
+                ReadFile => prim_read_file(x.as_val()),
+                Hash => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
+                Slash => Ok(iota(&x)),
+                Pipe => Ok(prim_reverse(x)),
                 Comma => Ok(prim_ravel(&x)),
-                Caret => Ok(RcVal::new(Val::Vals(prim_prefixes(&x)))),
-                Dollar => Ok(RcVal::new(Val::Vals(prim_suffixes(&x)))),
-                Question => prim_where(x.as_val()).map(RcVal::new),
-                LessThan => Ok(RcVal::new(prim_sort(&x, false))),
-                GreaterThan => Ok(RcVal::new(prim_sort(&x, true))),
-                LessThanColon => Ok(RcVal::new(prim_grade(&x, false))),
-                GreaterThanColon => Ok(RcVal::new(prim_grade(&x, true))),
-                Type => Ok(RcVal::new(Val::U8s(prim_type(x.as_val())))),
+                Caret => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
+                Dollar => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
+                Question => prim_where(&x),
+                LessThan => Ok(prim_sort(x, false)),
+                GreaterThan => Ok(prim_sort(x, true)),
+                LessThanColon => Ok(prim_grade(&x, false)),
+                GreaterThanColon => Ok(prim_grade(&x, true)),
+                Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
                 Exit => prim_exit(&x),
                 _ => todo!("{x:?} {v:?}")
             }
@@ -615,24 +629,25 @@ impl Mem {
         result.map_err(|err| format!("Error in `{v}': {err}"))
     }
 
-    fn call_prim_dyad(&mut self, v: PrimFunc, x: RcVal, y: RcVal) -> Result<RcVal, String> {
+    fn call_prim_dyad(&mut self, v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
         use PrimVerb::*;
         let result = match v {
-            PrimFunc::Sum => prim::sum(x, Some(y)),
+            PrimFunc::Sum => self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
             PrimFunc::Verb(verb) => match verb {
                 P => Ok(x),
                 Q => Ok(y),
                 Plus => prim::add(x, y),
-                Minus => prim::subtract(x.as_val(), y.as_val()),
-                Asterisk => prim::multiply(x.as_val(), y.as_val()),
-                Slash => prim::divide(x.as_val(), y.as_val()),
-                DoubleSlash => prim::int_divide(x.as_val(), y.as_val()),
-                Percent => prim::int_mod(x.as_val(), y.as_val()),
-                Caret => prim::pow(x.as_val(), y.as_val()),
-                Hash => prim_take(x, y.as_val()),
+                Minus => prim::subtract(x, y),
+                Asterisk => prim::multiply(x, y),
+                Slash => prim::divide(x, y),
+                DoubleSlash => prim::int_divide(x, y),
+                Percent => prim::int_mod(x, y),
+                Caret => prim::pow(x, y),
+                Hash => prim_take(x, &y),
                 HashColon => prim_copy(&x, &y),
                 Comma => prim_append(x, y),
-                DoubleEquals => prim_match(x.as_val(), y.as_val()),
+                DoubleEquals => prim_match(&x, &y),
+                // TODO take Val instead of &
                 Equals => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
                 EqualBang => prim_compare(&x, &y, |ord| ord != Ordering::Equal),
                 GreaterThan => prim_compare(&x, &y, |ord| ord > Ordering::Equal),
@@ -642,8 +657,8 @@ impl Mem {
                 LessThanColon => prim_choose_atoms(&x, &y, Val::le),
                 GreaterThanColon => prim_choose_atoms(&x, &y, Val::ge),
                 At => self.prim_index(&x, &y),
-                Question => Ok(RcVal::new(Val::Int(prim_find(x.as_val(), y.as_val())))),
-                QuestionColon => Ok(RcVal::new(Val::I64s(prim_subsequence_starts(x.as_val(), y.as_val())))),
+                Question => Ok(Val::Int(prim_find(x.as_val(), y.as_val()))),
+                QuestionColon => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
                 _ => todo!("{x:?} {v:?} {y:?}"),
             },
         };
@@ -714,7 +729,7 @@ impl Mem {
                     write_or!(out, "]")?
                 }
             }
-            Val::Function(f) => match f {
+            Val::Function(rc) => match &**rc {
                 Func::Prim(prim) => write_or!(out, "{prim}")?,
                 Func::AdverbDerived { adverb, operand } => parenthesized_if(
                     prec >= ConjunctionLeftOperand, out, |out| {
@@ -727,13 +742,17 @@ impl Mem {
                     prec >= Small, out, |out| {
                         self.prim_fmt(Toplevel, f_func, out)?;
                         write_or!(out, " ")?;
-                        if let Val::Function(Func::Bound { func, y }) = g_func.as_val() {
-                            self.prim_fmt(Small, func, out)?;
-                            write_or!(out, " ")?;
-                            self.prim_fmt(Small, y, out)?;
-                        } else {
-                            self.prim_fmt(Small, g_func, out)?;
-                        }
+                        || -> Result<(), String> {
+                            if let Val::Function(rc) = g_func {
+                                if let Func::Bound { func, y } = &**rc {
+                                    self.prim_fmt(Small, func, out)?;
+                                    write_or!(out, " ")?;
+                                    self.prim_fmt(Small, y, out)?;
+                                    return Ok(());
+                                }
+                            }
+                            self.prim_fmt(Small, g_func, out)
+                        }()?;
                         Ok(())
                     }
                 )?,
@@ -802,8 +821,8 @@ impl Mem {
     }
 
     fn prim_print_bytecode(&self, x: &Val) -> Result<(), String> {
-        match x {
-            Val::Function(Func::Explicit { code_index, closure_env }) => {
+        if let Val::Function(rc) = x {
+            if let Func::Explicit { code_index, closure_env } = &**rc {
                 if closure_env.borrow().is_empty() {
                     println!("Env: []");
                 } else {
@@ -823,13 +842,14 @@ impl Mem {
                     println!("  {instr}");
                 }
                 println!("]");
-                Ok(())
+                return Ok(())
             }
-            _ => err!("domain\nx is not an explicit function, so it has no bytecode. x is: {}", self.prim_to_debug_string(x)?),
         }
+        err!("domain\nx is not an explicit function, so it has no bytecode. x is: {}",
+             self.prim_to_debug_string(x)?)
     }
 
-    fn fold_val(&mut self, f: RcVal, x: RcVal, maybe_y: Option<RcVal>) -> Result<RcVal, String> {
+    fn fold_val(&mut self, f: Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
         let (mut seed, start) = match maybe_y {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
@@ -845,7 +865,7 @@ impl Mem {
         Ok(seed)
     }
 
-    fn prim_index(&mut self, x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+    fn prim_index(&mut self, x: &Val, y: &Val) -> Result<Val, String> {
         fn oob(i: i64, len: usize) -> String {
             format!("index out of bounds\nRequested index {i}, but length is {len}")
         }
@@ -863,12 +883,12 @@ impl Mem {
         use Val::*;
         let val = match (x.as_val(), y.as_val()) {
             (Int(_) | Char(_), &Int(i)) => return index_atom(x, i),
-            (Int(int), I64s(is)) => I64s(traverse(is, |i| index_atom(int, *i))?),
-            (Char(ch), I64s(is)) => U8s(traverse(is, |i| index_atom(ch, *i))?),
+            (Int(int), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index_atom(int, *i))?)),
+            (Char(ch), I64s(is)) => U8s(Rc::new(traverse(&**is, |i| index_atom(ch, *i))?)),
             (I64s(is), &Int(i)) => Int(*index(is, i)?),
-            (I64s(xs), I64s(is)) => I64s(traverse(is, |i| index(xs, *i).copied())?),
+            (I64s(xs), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index(xs, *i).copied())?)),
             (U8s(cs), &Int(i)) => Char(*index(cs, i)?),
-            (U8s(cs), I64s(is)) => U8s(traverse(is, |i| index(cs, *i).copied())?),
+            (U8s(cs), I64s(is)) => U8s(Rc::new(traverse(&**is, |i| index(cs, *i).copied())?)),
             (Vals(vs), &Int(i)) => return Ok(index(vs, i)?.clone()),
             (Vals(vs), I64s(is)) => collect_list(is.iter().map(|i| index(vs, *i).cloned()))?,
             (Int(_) | Char(_) | I64s(_) | U8s(_) | Vals(_), Vals(is)) => collect_list(
@@ -876,43 +896,43 @@ impl Mem {
             )?,
             _ => return self.call_val(x.clone(), y.clone(), None),
         };
-        Ok(RcVal::new(val))
+        Ok(val)
     }
 }
 
 // Primitives
 
-fn prim_get_line() -> Result<RcVal, String> {
+fn prim_get_line() -> Result<Val, String> {
     let mut line = String::new();
     if let Err(err) = std::io::stdin().read_line(&mut line) {
         return Err(err.to_string())
     }
-    Ok(RcVal::new(Val::U8s(line.into_bytes())))
+    Ok(Val::U8s(Rc::new(line.into_bytes())))
 }
 
 fn prim_type(x: &Val) -> Vec<u8> {
     x.type_name().as_bytes().to_vec()
 }
 
-fn prim_show(x: &Val) -> Result<Val, String> {
+fn prim_show(x: Val) -> Result<Val, String> {
     fn as_bytes<A: ToString>(a: A) -> Val {
-        Val::U8s(a.to_string().into_bytes())
+        Val::U8s(Rc::new(a.to_string().into_bytes()))
     }
 
     let ret = match x {
-        Val::Char(c) => as_bytes(char::from_u32(*c as u32).unwrap()),
+        Val::Char(c) => as_bytes(char::from_u32(c as u32).unwrap()),
         Val::Int(i) => as_bytes(i),
         Val::Float(f) => as_bytes(f),
-        Val::U8s(cs) => Val::Vals(map(cs, |c| RcVal::new(as_bytes(char::from_u32(*c as u32).unwrap())))),
-        Val::I64s(is) => Val::Vals(map(is, |i| RcVal::new(as_bytes(i)))),
-        Val::F64s(fs) => Val::Vals(map(fs, |f| RcVal::new(as_bytes(f)))),
-        Val::Vals(vs) => Val::Vals(traverse(vs, |v| prim_show(v.as_val()).map(RcVal::new))?),
+        Val::U8s(cs) => Val::Vals(Rc::new(map_rc(cs, |c| as_bytes(char::from_u32(*c as u32).unwrap())))),
+        Val::I64s(is) => Val::Vals(Rc::new(map_rc(is, |i| as_bytes(*i)))),
+        Val::F64s(fs) => Val::Vals(Rc::new(map_rc(fs, |f| as_bytes(*f)))),
+        Val::Vals(vs) => Val::Vals(Rc::new(traverse_rc(vs, |v| prim_show(v.clone()))?)),
         _ => return err!("domain\nUnable to show {x:?}"), //TODO actually we can!
     };
     Ok(ret)
 }
 
-fn prim_exit(x: &RcVal) -> Result<RcVal, String> {
+fn prim_exit(x: &Val) -> Result<Val, String> {
     use std::process::exit;
 
     match x.as_val() {
@@ -922,47 +942,45 @@ fn prim_exit(x: &RcVal) -> Result<RcVal, String> {
     }
 }
 
-fn prim_prefixes(x: &RcVal) -> Vec<RcVal> {
-    fn get_prefixes<A: Clone, F: Fn(Vec<A>) -> Val>(xs: &Vec<A>, f: F) -> Vec<RcVal> {
-        map(1..=xs.len(), |i| RcVal::new(f(xs[..i].to_vec())))
+fn prim_prefixes(x: &Val) -> Vec<Val> {
+    fn get_prefixes<A: Clone, F: Fn(Rc<Vec<A>>) -> Val>(xs: &Vec<A>, f: F) -> Vec<Val> {
+        map(1..=xs.len(), |i| f(Rc::new(xs[..i].to_vec())))
     }
 
     match x.as_val() {
-        Val::Char(c) if true => vec![RcVal::new(Val::U8s(vec![*c]))],
-        Val::Int(i) if true => vec![RcVal::new(Val::I64s(vec![*i]))],
-        Val::Float(f) if true => vec![RcVal::new(Val::F64s(vec![*f]))],
+        Val::Char(c) if true => vec![Val::U8s(Rc::new(vec![*c]))],
+        Val::Int(i) if true => vec![Val::I64s(Rc::new(vec![*i]))],
+        Val::Float(f) if true => vec![Val::F64s(Rc::new(vec![*f]))],
         atom!() => vec![x.clone()],
-        Val::U8s(xs) => get_prefixes(xs, |vec| Val::U8s(vec)),
-        Val::I64s(xs) => get_prefixes(xs, |vec| Val::I64s(vec)),
-        Val::F64s(xs) => get_prefixes(xs, |vec| Val::F64s(vec)),
-        Val::Vals(xs) => get_prefixes(xs, |vec| Val::Vals(vec)),
+        Val::U8s(xs) => get_prefixes(&**xs, |rc_vec| Val::U8s(rc_vec)),
+        Val::I64s(xs) => get_prefixes(&**xs, |rc_vec| Val::I64s(rc_vec)),
+        Val::F64s(xs) => get_prefixes(&**xs, |rc_vec| Val::F64s(rc_vec)),
+        Val::Vals(xs) => get_prefixes(&**xs, |rc_vec| Val::Vals(rc_vec)),
     }
 }
 
-fn prim_suffixes(x: &RcVal) -> Vec<RcVal> {
-    fn get_suffixes<A: Clone, F: Fn(Vec<A>) -> Val>(xs: &Vec<A>, f: F) -> Vec<RcVal> {
-        map(0..xs.len(), |i| RcVal::new(f(xs[i..].to_vec())))
+fn prim_suffixes(x: &Val) -> Vec<Val> {
+    fn get_suffixes<A: Clone, F: Fn(Rc<Vec<A>>) -> Val>(xs: &Vec<A>, f: F) -> Vec<Val> {
+        map(0..xs.len(), |i| f(Rc::new(xs[i..].to_vec())))
     }
 
     match x.as_val() {
-        Val::Char(c) if true => vec![RcVal::new(Val::U8s(vec![*c]))],
-        Val::Int(i) if true => vec![RcVal::new(Val::I64s(vec![*i]))],
-        Val::Float(f) if true => vec![RcVal::new(Val::F64s(vec![*f]))],
+        Val::Char(c) if true => vec![Val::U8s(Rc::new(vec![*c]))],
+        Val::Int(i) if true => vec![Val::I64s(Rc::new(vec![*i]))],
+        Val::Float(f) if true => vec![Val::F64s(Rc::new(vec![*f]))],
         atom!() => vec![x.clone()],
-        Val::U8s(xs) => get_suffixes(xs, |vec| Val::U8s(vec)),
-        Val::I64s(xs) => get_suffixes(xs, |vec| Val::I64s(vec)),
-        Val::F64s(xs) => get_suffixes(xs, |vec| Val::F64s(vec)),
-        Val::Vals(xs) => get_suffixes(xs, |vec| Val::Vals(vec)),
+        Val::U8s(xs) => get_suffixes(xs, |rc_vec| Val::U8s(rc_vec)),
+        Val::I64s(xs) => get_suffixes(xs, |rc_vec| Val::I64s(rc_vec)),
+        Val::F64s(xs) => get_suffixes(xs, |rc_vec| Val::F64s(rc_vec)),
+        Val::Vals(xs) => get_suffixes(xs, |rc_vec| Val::Vals(rc_vec)),
     }
 }
 
-fn prim_choose_atoms<F>(x: &RcVal, y: &RcVal, f: F) -> Result<RcVal, String>
+fn prim_choose_atoms<F>(x: &Val, y: &Val, f: F) -> Result<Val, String>
 where F: Copy + Fn(&Val, &Val) -> bool {
     Ok(match zip_vals(x, y) {
-        None => if f(x.as_val(), y.as_val()) { x.clone() } else { y.clone() },
-        Some(iter) => RcVal::new(
-            collect_list(iter?.map(|(x, y)| prim_choose_atoms(&x, &y, f)))?
-        ),
+        None => if f(x, y) { x.clone() } else { y.clone() },
+        Some(iter) => collect_list(iter?.map(|(x, y)| prim_choose_atoms(&x, &y, f)))?
     })
 }
 
@@ -972,12 +990,12 @@ fn prim_find(x: &Val, y: &Val) -> i64 {
     use Val::*;
     match (x, y) {
         (atom!(), _) => if x == y { 0 } else { 1 },
-        (U8s(xs), Char(c)) => index_of(xs, c),
-        (I64s(xs), Int(i)) => index_of(xs, i),
+        (U8s(xs), Char(c)) => index_of(&**xs, c),
+        (I64s(xs), Int(i)) => index_of(&**xs, i),
         (I64s(xs), Float(f)) =>
-            float_as_int(*f).map(|i| index_of(xs, &i)).unwrap_or(xs.len() as i64),
-        (F64s(xs), Float(f)) => index_of(xs, f),
-        (F64s(xs), Int(i)) => index_of(xs, &(*i as f64)),
+            float_as_int(*f).map(|i| index_of(&**xs, &i)).unwrap_or(xs.len() as i64),
+        (F64s(xs), Float(f)) => index_of(&**xs, f),
+        (F64s(xs), Int(i)) => index_of(&**xs, &(*i as f64)),
         (Vals(xs), _) => index_of(xs.iter().map(|rc_val| rc_val.as_val()), y),
         _ => x.len().unwrap_or(1) as i64,
     }
@@ -986,24 +1004,24 @@ fn prim_find(x: &Val, y: &Val) -> i64 {
 fn prim_where(x: &Val) -> Result<Val, String> {
     use Val::*;
     let val = match x {
-        Int(i) => Val::I64s(replicate_with_i64(0, *i)?.collect()),
-        Float(f) => Val::I64s(replicate_with_float(0, *f)?.collect()),
+        Int(i) => Val::I64s(Rc::new(replicate_with_i64(0, *i)?.collect())),
+        Float(f) => Val::I64s(Rc::new(replicate_with_float(0, *f)?.collect())),
         I64s(xs) => {
             let mut vec = vec![];
             for (i, n) in xs.iter().enumerate() {
                 vec.extend(replicate_with_i64(i as i64, *n)?)
             }
-            Val::I64s(vec)
+            Val::I64s(Rc::new(vec))
         }
         F64s(xs) => {
             let mut vec = vec![];
             for (i, f) in xs.iter().enumerate() {
                 vec.extend(replicate_with_float(i as i64, *f)?)
             }
-            Val::I64s(vec)
+            Val::I64s(Rc::new(vec))
         }
         Vals(xs) => Val::Vals(
-            traverse(xs, |val| prim_where(val).map(RcVal::new))?
+            Rc::new(traverse(&**xs, |val| prim_where(val))?)
         ),
         _ => return err!("domain\nExpected integers, got {x:?}"),
     };
@@ -1049,7 +1067,7 @@ fn prim_subsequence_starts(x: &Val, y: &Val) -> Vec<i64> {
         (F64s(xs), Vals(ys)) => subsequence_starts_by(xs, ys, |x, y| y.as_val() == x),
         (F64s(xs), _) => replicate(0, xs.len()).collect(),
 
-        (Vals(xs), atom!()) => map(xs, |x| (x.as_val() == y) as i64),
+        (Vals(xs), atom!()) => map(&**xs, |x| (x == y) as i64),
 
         (Vals(xs), U8s(ys)) => subsequence_starts_by(xs, ys, |x, y| x.as_val() == y),
         (Vals(xs), I64s(ys)) => subsequence_starts_by(xs, ys, |x, y| x.as_val() == y),
@@ -1078,41 +1096,42 @@ fn prim_read_file(x: &Val) -> Result<Val, String> {
         }
     ).map_err(|err| err.to_string())?;
     match std::fs::read_to_string(path) {
-        Ok(contents) => Ok(Val::U8s(contents.into_bytes())),
+        Ok(contents) => Ok(Val::U8s(Rc::new(contents.into_bytes()))),
         Err(err) => Err(err.to_string()),
     }
 }
 
-fn prim_reverse(x: &RcVal) -> RcVal {
+fn prim_reverse(x: Val) -> Val {
     use Val::*;
     fn reverse_iter<A: Clone>(xs: &[A]) -> Vec<A> {
         xs.iter().cloned().rev().collect()
     }
 
-    match x.as_val() {
-        atom!() => x.clone(),
-        U8s(xs) => RcVal::new(U8s(reverse_iter(xs))),
-        I64s(xs) => RcVal::new(I64s(xs.iter().cloned().rev().collect())),
-        F64s(xs) => RcVal::new(F64s(xs.iter().cloned().rev().collect())),
-        Vals(xs) => RcVal::new(Vals(xs.iter().cloned().rev().collect())),
+    match x {
+        atom!() => x,
+        // TODO inplace
+        U8s(xs) => U8s(Rc::new(reverse_iter(xs.as_slice()))),
+        I64s(xs) => I64s(Rc::new(xs.iter().cloned().rev().collect())),
+        F64s(xs) => F64s(Rc::new(xs.iter().cloned().rev().collect())),
+        Vals(xs) => Vals(Rc::new(xs.iter().cloned().rev().collect())),
     }
 }
 
 // TODO reshape on list y
-fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
+fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
     let count = match y {
         &Val::Int(i) => i,
         _ => return err!("Invalid right argument {y:?}"),
     };
 
-    fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Vec<A> {
+    fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Rc<Vec<A>> {
         let (start, count) = if count < 0 {
             let abs_count = (-count) as usize;
             (xs.len() - abs_count % xs.len(), abs_count)
         } else {
             (0, count as usize)
         };
-        xs.iter().cloned().cycle().skip(start).take(count).collect()
+        Rc::new(xs.iter().cloned().cycle().skip(start).take(count).collect())
     }
 
     let result = match x.as_val() {
@@ -1120,15 +1139,15 @@ fn prim_take(x: RcVal, y: &Val) -> Result<RcVal, String> {
         Val::I64s(is) => Val::I64s(take_from_slice(count, is)),
         Val::F64s(fs) => Val::F64s(take_from_slice(count, fs)),
         Val::Vals(vals) => Val::Vals(take_from_slice(count, vals)),
-        Val::Char(c) => Val::U8s(vec![*c; count.abs() as usize]),
-        Val::Int(int) => Val::I64s(vec![*int; count.abs() as usize]),
-        Val::Float(float) => Val::F64s(vec![*float; count.abs() as usize]),
-        _ => Val::Vals(vec![x; count.abs() as usize]),
+        Val::Char(c) => Val::U8s(Rc::new(vec![*c; count.abs() as usize])),
+        Val::Int(int) => Val::I64s(Rc::new(vec![*int; count.abs() as usize])),
+        Val::Float(float) => Val::F64s(Rc::new(vec![*float; count.abs() as usize])),
+        _ => Val::Vals(Rc::new(vec![x; count.abs() as usize])),
     };
-    Ok(RcVal::new(result))
+    Ok(result)
 }
 
-fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
+fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
     use Val::*;
     fn unexpected_y(y: &Val) -> String {
         format!("domain\nExpected non-negative integer, got {y:?}")
@@ -1154,31 +1173,31 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
         Ok(vec)
     }
 
-    fn run_one(x: &RcVal, y: usize) -> Val {
+    fn run_one(x: &Val, y: usize) -> Val {
         match x.as_val() {
-             Char(x) if true =>  U8s(replicate(*x, y).collect()),
-              Int(x) if true => I64s(replicate(*x, y).collect()),
-            Float(x) if true => F64s(replicate(*x, y).collect()),
-             atom!() => Vals(replicate(x.clone(), y).collect()),
-             U8s(xs) =>  U8s(replicate_all(xs, y)),
-            I64s(xs) => I64s(replicate_all(xs, y)),
-            F64s(xs) => F64s(replicate_all(xs, y)),
-            Vals(xs) => Vals(replicate_all(xs, y)),
+             Char(x) if true =>  U8s(Rc::new(replicate(*x, y).collect())),
+              Int(x) if true => I64s(Rc::new(replicate(*x, y).collect())),
+            Float(x) if true => F64s(Rc::new(replicate(*x, y).collect())),
+             atom!() => Vals(Rc::new(replicate(x.clone(), y).collect())),
+             U8s(xs) =>  U8s(Rc::new(replicate_all(xs, y))),
+            I64s(xs) => I64s(Rc::new(replicate_all(xs, y))),
+            F64s(xs) => F64s(Rc::new(replicate_all(xs, y))),
+            Vals(xs) => Vals(Rc::new(replicate_all(xs, y))),
         }
     }
 
-    fn run_many<Y>(x: &RcVal, y: Y) -> Result<Val, String>
+    fn run_many<Y>(x: &Val, y: Y) -> Result<Val, String>
     where Y: Clone + ExactSizeIterator<Item=usize> {
         let count = y.clone().sum();
         let val = match x.as_val() {
-             Char(x) if true =>  U8s(replicate(*x, count).collect()),
-              Int(x) if true => I64s(replicate(*x, count).collect()),
-            Float(x) if true => F64s(replicate(*x, count).collect()),
-             atom!() => Vals(replicate(x.clone(), count).collect()),
-            U8s(xs) => U8s(replicate_each(xs, y, count)?),
-            I64s(xs) => I64s(replicate_each(xs, y, count)?),
-            F64s(xs) => F64s(replicate_each(xs, y, count)?),
-            Vals(xs) => Vals(replicate_each(xs, y, count)?),
+             Char(x) if true =>  U8s(Rc::new(replicate(*x, count).collect())),
+              Int(x) if true => I64s(Rc::new(replicate(*x, count).collect())),
+            Float(x) if true => F64s(Rc::new(replicate(*x, count).collect())),
+             atom!() => Vals(Rc::new(replicate(x.clone(), count).collect())),
+            U8s(xs) => U8s(Rc::new(replicate_each(xs, y, count)?)),
+            I64s(xs) => I64s(Rc::new(replicate_each(xs, y, count)?)),
+            F64s(xs) => F64s(Rc::new(replicate_each(xs, y, count)?)),
+            Vals(xs) => Vals(Rc::new(replicate_each(xs, y, count)?)),
         };
         Ok(val)
     }
@@ -1199,7 +1218,7 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
         Int(i) => run_one(x, int_as_usize(*i)?),
         Float(f) => run_one(x, float_as_usize(*f)?),
         I64s(is) => {
-            for i in is {
+            for i in is.iter() {
                 if *i < 0 {
                     return Err(unexpected_y(&Val::Int(*i)))
                 }
@@ -1207,7 +1226,7 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
             run_many(x, is.iter().map(|i| *i as usize))?
         }
         F64s(fs) => {
-            for f in fs {
+            for f in fs.iter() {
                 if *f < 0.0 || *f != f.trunc() {
                     return Err(unexpected_y(&Val::Float(*f)))
                 }
@@ -1223,7 +1242,7 @@ fn prim_copy(x: &RcVal, y: &RcVal) -> Result<RcVal, String> {
         _ => return Err(unexpected_y(y)),
     };
 
-    Ok(RcVal::new(val))
+    Ok(val)
 }
 
 fn cmp<A: Ord>(down: bool, a: &A, b: &A) -> Ordering {
@@ -1251,78 +1270,80 @@ fn cmp_floats(down: bool, a: &f64, b: &f64) -> Ordering {
 //     }
 // }
 
-fn prim_grade(x: &RcVal, down: bool) -> Val {
-    let mut indices: Vec<i64> = vec![];
-    match x.as_val() {
-        atom!() => indices.push(0),
+fn prim_grade(x: &Val, down: bool) -> Val {
+    let indices = match x.as_val() {
+        atom!() => vec![0],
         Val::U8s(cs) => {  // TODO unicode
-            indices = (0..cs.len() as i64).collect();
+            let mut indices: Vec<i64> = (0..cs.len() as i64).collect();
             indices.sort_unstable_by(|i, j| cmp(down, &cs[*i as usize], &cs[*j as usize]));
+            indices
         }
         Val::I64s(ints) => {
-            indices = (0..ints.len() as i64).collect();
+            let mut indices: Vec<i64> = (0..ints.len() as i64).collect();
             indices.sort_unstable_by(|i, j| cmp(down, &ints[*i as usize], &ints[*j as usize]));
+            indices
         }
         Val::F64s(fs) => {
-            indices = (0..fs.len() as i64).collect();
+            let mut indices: Vec<i64> = (0..fs.len() as i64).collect();
             indices.sort_unstable_by(|i, j| cmp_floats(down, &fs[*i as usize], &fs[*j as usize]));
+            indices
         }
         Val::Vals(vals) => {
-            indices = (0..vals.len() as i64).collect();
+            let mut indices: Vec<i64> = (0..vals.len() as i64).collect();
             indices.sort_by(|i, j| cmp(down, &vals[*i as usize], &vals[*j as usize]));
+            indices
         }
     };
-    Val::I64s(indices)
+    Val::I64s(Rc::new(indices))
 }
 
-fn prim_sort(x: &RcVal, down: bool) -> Val {
-    match x.as_val() {
-        Val::Char(c) if true => Val::U8s(vec![*c]),
-        Val::Int(i) if true => Val::I64s(vec![*i]),
-        Val::Float(f) if true => Val::F64s(vec![*f]),
-        atom!() => Val::Vals(vec![x.clone()]),
+fn prim_sort(x: Val, down: bool) -> Val {
+    match x {
+        Val::Char(c) if true => Val::U8s(Rc::new(vec![c])),
+        Val::Int(i) if true => Val::I64s(Rc::new(vec![i])),
+        Val::Float(f) if true => Val::F64s(Rc::new(vec![f])),
+        atom!() => Val::Vals(Rc::new(vec![x])),
         Val::U8s(cs) => {
-            let mut sorted = cs.clone();
+            let mut sorted = Rc::unwrap_or_clone(cs);
             sorted.sort_unstable_by(|a, b| cmp(down, a, b));
-            Val::U8s(sorted)
+            Val::U8s(Rc::new(sorted))
         }
         Val::I64s(is) => {
-            let mut sorted = is.clone();
+            let mut sorted = Rc::unwrap_or_clone(is);
             sorted.sort_unstable_by(|a, b| cmp(down, a, b));
-            Val::I64s(sorted)
+            Val::I64s(Rc::new(sorted))
         }
         Val::F64s(fs) => {
-            let mut sorted = fs.clone();
+            let mut sorted = Rc::unwrap_or_clone(fs);
             sorted.sort_unstable_by(|a, b| cmp_floats(down, a, b));
-            Val::F64s(sorted)
+            Val::F64s(Rc::new(sorted))
         }
         Val::Vals(vals) => {
-            let mut sorted = vals.clone();
+            let mut sorted = Rc::unwrap_or_clone(vals);
             sorted.sort_by(|a, b| cmp(down, a, b));
-            Val::Vals(sorted)
+            Val::Vals(Rc::new(sorted))
         }
-
     }
 }
 
-fn prim_append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
+fn prim_append(x: Val, y: Val) -> Result<Val, String> {
     use std::iter::once;
     use Val::*;
 
-    fn one_then_many<A, I>(x: A, ys: I) -> Vec<A>
+    fn one_then_many<A, I>(x: A, ys: I) -> Rc<Vec<A>>
     where I: IntoIterator<Item=A> {
-        once(x).chain(ys.into_iter()).collect()
+        Rc::new(once(x).chain(ys.into_iter()).collect())
     }
 
-    fn many_then_one<A, I>(xs: I, y: A) -> Vec<A>
+    fn many_then_one<A, I>(xs: I, y: A) -> Rc<Vec<A>>
     where I: IntoIterator<Item=A> {
-        xs.into_iter().chain(once(y)).collect()
+        Rc::new(xs.into_iter().chain(once(y)).collect())
     }
 
-    fn many_then_many<A, I, J>(xs: I, ys: J) -> Vec<A>
+    fn many_then_many<A, I, J>(xs: I, ys: J) -> Rc<Vec<A>>
     where I: IntoIterator<Item=A>,
           J: IntoIterator<Item=A> {
-        xs.into_iter().chain(ys.into_iter()).collect()
+        Rc::new(xs.into_iter().chain(ys.into_iter()).collect())
     }
 
     fn copies<'a, A: Copy>(x: &'a [A]) -> impl Iterator<Item=A> + 'a {
@@ -1334,23 +1355,23 @@ fn prim_append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
     }
 
     let val = match (x.as_val(), y.as_val()) {
-        (Char(x), Char(y)) => U8s(vec![*x, *y]),
+        (Char(x), Char(y)) => U8s(Rc::new(vec![*x, *y])),
         (Char(x), U8s(y)) => U8s(one_then_many(*x, copies(y))),
         (U8s(x), Char(y)) => U8s(many_then_one(copies(x), *y)),
         (U8s(x), U8s(y)) => U8s(many_then_many(copies(x), copies(y))),
 
-        (Int(x), Int(y)) => I64s(vec![*x, *y]),
+        (Int(x), Int(y)) => I64s(Rc::new(vec![*x, *y])),
         (Int(x), I64s(y)) => I64s(one_then_many(*x, y.iter().copied())),
         (I64s(x), Int(y)) => I64s(many_then_one(copies(x), *y)),
         (I64s(x), I64s(y)) => I64s(many_then_many(copies(x), copies(y))),
 
-        (Float(x), Float(y)) => F64s(vec![*x, *y]),
+        (Float(x), Float(y)) => F64s(Rc::new(vec![*x, *y])),
         (Float(x), F64s(y)) => F64s(one_then_many(*x, y.iter().copied())),
         (F64s(x), Float(y)) => F64s(many_then_one(copies(x), *y)),
         (F64s(x), F64s(y)) => F64s(many_then_many(copies(x), copies(y))),
 
-        (Int(x), Float(y)) => F64s(vec![*x as f64, *y]),
-        (Float(x), Int(y)) => F64s(vec![*x, *y as f64]),
+        (Int(x), Float(y)) => F64s(Rc::new(vec![*x as f64, *y])),
+        (Float(x), Int(y)) => F64s(Rc::new(vec![*x, *y as f64])),
 
         (Int(x), F64s(y)) =>  F64s(one_then_many(*x as f64, copies(y))),
         (F64s(x), Int(y)) =>  F64s(many_then_one(copies(x), *y as f64)),
@@ -1362,58 +1383,58 @@ fn prim_append(x: RcVal, y: RcVal) -> Result<RcVal, String> {
         (F64s(x), I64s(y)) => F64s(many_then_many(copies(x), floats(y))),
 
         _ => match (iter_val(&x), iter_val(&y)) {
-            (None, None) => Vals(vec![x, y]),
+            (None, None) => Vals(Rc::new(vec![x, y])),
             (Some(iter), None) => Vals(many_then_one(iter, y)),
             (None, Some(iter)) => Vals(one_then_many(x, iter)),
             (Some(x), Some(y)) => Vals(many_then_many(x, y)),
         }
     };
-    Ok(RcVal::new(val))
+    Ok(val)
 }
 
-fn prim_ravel(x: &RcVal) -> RcVal {
+fn prim_ravel(x: &Val) -> Val {
     match x.as_val() {
-        atom!() => RcVal::new(Val::Vals(vec![x.clone()])),
+        atom!() => Val::Vals(Rc::new(vec![x.clone()])),
         Val::U8s(_) | Val::I64s(_) | Val::F64s(_) => x.clone(),
 
         // TODO do something about this mess
-        Val::Vals(_) => RcVal::new(collect_list(
+        Val::Vals(_) => collect_list(
             ValIter { x: x.clone(), i: 0 }
             .flat_map(|val| ValIter { x: prim_ravel(&val), i: 0 })
-            .map(|val| -> Result<RcVal, ()> { Ok(val) })
-        ).unwrap()),
+            .map(|val| -> Result<Val, ()> { Ok(val) })
+        ).unwrap(),
     }
 }
 
-fn prim_compare<F: Fn(Ordering) -> bool + Copy>(x: &RcVal, y: &RcVal, op: F) -> Result<RcVal, String> {
+fn prim_compare<F: Fn(Ordering) -> bool + Copy>(x: &Val, y: &Val, op: F) -> Result<Val, String> {
     use Val::*;
     let result = match zip_vals(&x, &y) {
         None => Int(op(x.as_val().cmp(y.as_val())) as i64),
         // TODO we already know this will consist of bits
         Some(iter) => collect_list(iter?.map(|(x, y)| prim_compare(&x, &y, op)))?
     };
-    Ok(RcVal::new(result))
+    Ok(result)
 }
 
 fn iota(x: &Val) -> Val {
     use Val::*;
     match x {
-        &Int(i) => Val::I64s(if i >= 0 { 0..i } else { i..0 }.collect()),
+        &Int(i) => Val::I64s(Rc::new(if i >= 0 { 0..i } else { i..0 }.collect())),
         _ => todo!("Implement x/ on non-ints"),
     }
 }
 
 // TODO should [] == "" be 1?
-fn prim_match(x: &Val, y: &Val) -> Result<RcVal, String> {
-    Ok(RcVal::new(Val::Int((x == y) as i64)))
+fn prim_match(x: &Val, y: &Val) -> Result<Val, String> {
+    Ok(Val::Int((x == y) as i64))
 }
 
-fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val, E> {
+fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E> {
     enum List {
         U8s(Vec<u8>),
         I64s(Vec<i64>),
         F64s(Vec<f64>),
-        Vals(Vec<RcVal>),
+        Vals(Vec<Val>),
     }
 
     let cap = match it.size_hint() {
@@ -1422,7 +1443,7 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
     };
 
     let mut list = match it.next() {
-        None => return Ok(Val::I64s(vec![])),
+        None => return Ok(Val::I64s(Rc::new(vec![]))),
         Some(Err(err)) => return Err(err),
         Some(Ok(rc)) => match rc.as_val() {
             Val::Char(c) => {
@@ -1472,8 +1493,8 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
                     }
                 }
                 _ => {
-                    let mut vals: Vec<RcVal> =
-                        ints.drain(..).map(|i| RcVal::new(Val::Int(i))).collect();
+                    let mut vals: Vec<Val> =
+                        ints.drain(..).map(|i| Val::Int(i)).collect();
                     vals.reserve(cap - vals.len());
                     vals.push(val);
                     list = List::Vals(vals);
@@ -1483,8 +1504,8 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
                 Val::Float(f) => fs.push(*f),
                 Val::Int(i) => fs.push(*i as f64),
                 _ => {
-                    let mut vals: Vec<RcVal> =
-                        fs.drain(..).map(|f| RcVal::new(Val::Float(f))).collect();
+                    let mut vals: Vec<Val> =
+                        fs.drain(..).map(|f| Val::Float(f)).collect();
                     vals.reserve(cap - vals.len());
                     vals.push(val);
                     list = List::Vals(vals);
@@ -1493,8 +1514,8 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
             List::U8s(cs) => match val.as_val() {
                 Val::Char(c) => cs.push(*c),
                 _ => {
-                    let mut vals: Vec<RcVal> =
-                        cs.drain(..).map(|c| RcVal::new(Val::Char(c))).collect();
+                    let mut vals: Vec<Val> =
+                        cs.drain(..).map(|c| Val::Char(c)).collect();
                     vals.reserve(cap - vals.len());
                     vals.push(val);
                     list = List::Vals(vals);
@@ -1505,10 +1526,10 @@ fn collect_list<E, I: Iterator<Item=Result<RcVal, E>>>(mut it: I) -> Result<Val,
     }
 
     Ok(match list {
-        List::U8s(cs) => Val::U8s(cs),
-        List::I64s(ints) => Val::I64s(ints),
-        List::F64s(fs) => Val::F64s(fs),
-        List::Vals(vals) => Val::Vals(vals),
+        List::U8s(cs) => Val::U8s(Rc::new(cs)),
+        List::I64s(ints) => Val::I64s(Rc::new(ints)),
+        List::F64s(fs) => Val::F64s(Rc::new(fs)),
+        List::Vals(vals) => Val::Vals(Rc::new(vals)),
     })
 }
 
@@ -1547,20 +1568,38 @@ where I: IntoIterator,
     Vec::from_iter(xs.into_iter().map(f))
 }
 
+
 fn traverse<A, E, I, F>(xs: I, f: F) -> Result<Vec<A>, E>
 where I: IntoIterator,
       F: FnMut(I::Item) -> Result<A, E> {
     Result::from_iter(xs.into_iter().map(f))
 }
 
+// TODO for map_rc/traverse_rc, allow f to take Val or &Val
+fn map_rc<A, X, F>(xs: Rc<Vec<X>>, mut f: F) -> Vec<A>
+where F: FnMut(&X) -> A {
+    match Rc::try_unwrap(xs) {
+        Ok(xs) => xs.into_iter().map(|x| f(&x)).collect(),
+        Err(rc) => rc.iter().map(f).collect(),
+    }
+}
+
+fn traverse_rc<A, E, X, F>(xs: Rc<Vec<X>>, mut f: F) -> Result<Vec<A>, E>
+where F: FnMut(&X) -> Result<A, E> {
+    match Rc::try_unwrap(xs) {
+        Ok(xs) => xs.into_iter().map(|x| f(&x)).collect::<Result<Vec<_>, _>>(),
+        Err(xs) => xs.iter().map(f).collect::<Result<Vec<_>, _>>(),
+    }
+}
+
 #[derive(Clone)]
 struct ValIter {
-    x: RcVal,
+    x: Val,
     i: usize,
 }
 
 impl Iterator for ValIter {
-    type Item = RcVal;
+    type Item = Val;
     fn next(&mut self) -> Option<Self::Item> {
         self.i += 1;
         index_or_cycle_val(&self.x, self.i - 1)
@@ -1568,13 +1607,13 @@ impl Iterator for ValIter {
 }
 
 struct ZippedVals {
-    x: RcVal,
-    y: RcVal,
+    x: Val,
+    y: Val,
     i: usize,
 }
 
 impl Iterator for ZippedVals {
-    type Item = (RcVal, RcVal);
+    type Item = (Val, Val);
     fn next(&mut self) -> Option<Self::Item> {
         let x_val = index_or_cycle_val(&self.x, self.i)?;
         let y_val = index_or_cycle_val(&self.y, self.i)?;
@@ -1583,12 +1622,12 @@ impl Iterator for ZippedVals {
     }
 }
 
-fn iter_val(x: &RcVal) -> Option<ValIter> {
+fn iter_val(x: &Val) -> Option<ValIter> {
     if x.len().is_none() { return None }
     Some(ValIter { x: x.clone(), i: 0 })
 }
 
-fn zip_vals(x: &RcVal, y: &RcVal) -> Option<Result<ZippedVals, String>> {
+fn zip_vals(x: &Val, y: &Val) -> Option<Result<ZippedVals, String>> {
     match (x.len(), y.len()) {
         (None, None) => return None,
         (Some(xlen), Some(ylen)) => if let Err(err) = match_length(xlen, ylen) { return Some(Err(err)) },
