@@ -110,6 +110,9 @@ pub trait Op2<X: Atom, Y: Atom> {
     // TODO + vectoval?
     type Out: ToVal + VecToVal;
     fn op(x: X, y: Y) -> Res<Self::Out>;
+    // fn op_vec_bare(x: Rc<Vec<X>>, y: Y) -> Res<Vec<Self::Out>>;
+    // fn op_bare_vec(x: X, y: Rc<Vec<Y>>) -> Res<Vec<Self::Out>>;
+    // fn op_vec_vec(x: Rc<Vec<X>>, y: Rc<Vec<Y>>) -> Res<Vec<Self::Out>>;
 }
 
 // TODO valrefconsumer (doesn't take vec) superclass of val consumer (can take vec)
@@ -146,12 +149,10 @@ where A: AtomConsumer<u8, AtomRet=Ret> +
 }
 
 pub trait IsVal {
-    fn as_val_ref(&self) -> &Val;
     fn dispatch<Ret, F: ValConsumer<Ret=Ret>>(self, f: F) -> Ret;
 }
 
 impl IsVal for Val {
-    fn as_val_ref(&self) -> &Val { self }
     fn dispatch<Ret, F: ValConsumer>(self, f: F) -> F::Ret {
         use Val::*;
         match self {
@@ -180,7 +181,6 @@ impl IsVal for Val {
 }
 
 impl IsVal for &Val {
-    fn as_val_ref(&self) -> &Val { *self }
     fn dispatch<Ret, F: ValConsumer<Ret=Ret>>(self, f: F) -> Ret {
         use Val::*;
         match self {
@@ -273,11 +273,11 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> 
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         let val = if !self.flip {
             y.iter()
-                .map(|y| Op::op(self.x, *y))
+                .map(#[inline(always)] |y| Op::op(self.x, *y))
                 .collect::<Res<Vec<_>>>()?.to_val()
         } else {
             y.iter()
-                .map(|y| Op::op(*y, self.x))
+                .map(#[inline(always)] |y| Op::op(*y, self.x))
                 .collect::<Res<Vec<_>>>()?.to_val()
         };
         Ok(val)
@@ -286,27 +286,27 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> 
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         let val = if !self.flip {
             y.into_iter()
-                .map(|y| Op::op(self.x, y))
+                .map(#[inline(always)] |y| Op::op(self.x, y))
                 .collect::<Res<Vec<_>>>()?.to_val()
         } else {
             y.into_iter()
-                .map(|y| Op::op(y, self.x))
+                .map(#[inline(always)] |y| Op::op(y, self.x))
                 .collect::<Res<Vec<_>>>()?.to_val()
         };
         Ok(val)
     }
 }
 
-impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtom<Op, X> where XAtom<Op, X>: Copy {
+impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtom<Op, X> {
     type MultiValRet = Res<Val>;
     #[inline(always)]
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        let outs = a.iter().map(|y| y.dispatch(self)).collect::<Res<Vec<_>>>()?;
+        let outs = a.iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
         Ok(outs.to_val())
     }
     #[inline(always)]
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        let outs = a.into_iter().map(|y| y.dispatch(self)).collect::<Res<Vec<_>>>()?;
+        let outs = a.into_iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
         Ok(outs.to_val())
     }
 }
