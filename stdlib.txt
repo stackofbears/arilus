@@ -21,3 +21,6 @@ Cut_2: { 0,(y?->is+1) '(X Drop P # ~-) (is,(y#)) }
 split splitAny: _== in '{P Cut_2 `X Less p(#0)}
 
 Get: {x GetLine->a#(a#-1)}
+
+\ x .(100 Times _{do_thing})
+Times: {|n;f| { if(y=0; x; x F Rec (y-1)) } n}

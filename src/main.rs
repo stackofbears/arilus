@@ -1,6 +1,6 @@
-#![feature(min_specialization)]
-
 // mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); error messages (incl. argument errors for commutative primitives, which may output argument info in the wrong order)
+//
+// FIX: [] shows as "", []#n is just []
 //
 // Possible primitive symbol changes:
 //   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
@@ -180,16 +180,8 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
     level
 }
 
-fn compile_string(text: &str) -> Result<Vec<bytecode::Instr>, String> {
-    let lexer = lex::Lexer::new();
-    let tokens = lexer.tokenize_to_vec(text)?;
-    let exprs = parse::parse(&tokens)?;
-    let code = compile::compile(lexer, &exprs)?;
-    Ok(code)
-}
-
 fn go(text: &str) -> Result<(), String> {
-    let code = compile_string(text)?;
+    let code = compile::compile_string(text)?;
     let mut mem = vm::Mem::new();
     mem.code = code;
     mem.execute_from_toplevel(0)?;

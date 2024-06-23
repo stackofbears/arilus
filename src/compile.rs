@@ -18,6 +18,15 @@ pub fn compile(lexer: Lexer, exprs: &[Expr]) -> Result<Vec<Instr>, String> {
     Ok(compiler.code)
 }
 
+// Compile program text.
+pub fn compile_string(text: &str) -> Result<Vec<Instr>, String> {
+    let lexer = lex::Lexer::new();
+    let tokens = lexer.tokenize_to_vec(text)?;
+    let exprs = parse(&tokens)?;
+    let code = compile(lexer, &exprs)?;
+    Ok(code)
+}
+
 // Invariants: `scopes` non-empty after `new`.
 pub struct Compiler {
     pub code: Vec<Instr>,
