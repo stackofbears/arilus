@@ -369,8 +369,8 @@ impl Display for PrimNoun {
             PrimNoun::ReadFile => "readFile",
             PrimNoun::Rand => "rand",
             PrimNoun::Rec => "rec",
-            PrimNoun::Type => "Type",
-            PrimNoun::PrintBytecode => "PrintBytecode",
+            PrimNoun::Type => "type",
+            PrimNoun::PrintBytecode => "printBytecode",
             PrimNoun::C0 => "c0",
         };
 
