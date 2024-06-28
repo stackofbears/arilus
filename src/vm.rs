@@ -865,6 +865,7 @@ impl Mem {
         Ok(seed)
     }
 
+    // TODO index by float when int-convertible.
     fn prim_index(&mut self, x: &Val, y: &Val) -> Result<Val, String> {
         fn oob(i: i64, len: usize) -> String {
             format!("index out of bounds\nRequested index {i}, but length is {len}")
@@ -882,16 +883,19 @@ impl Mem {
 
         use Val::*;
         let val = match (x.as_val(), y.as_val()) {
-            (Int(_) | Char(_), &Int(i)) => return index_atom(x, i),
-            (Int(int), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index_atom(int, *i))?)),
+            (Int(_) | Char(_) | Float(_), &Int(i)) => return index_atom(x, i),
             (Char(ch), I64s(is)) => U8s(Rc::new(traverse(&**is, |i| index_atom(ch, *i))?)),
-            (I64s(is), &Int(i)) => Int(*index(is, i)?),
-            (I64s(xs), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index(xs, *i).copied())?)),
+            (Int(int), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index_atom(int, *i))?)),
+            (Float(float), I64s(is)) => F64s(Rc::new(traverse(&**is, |i| index_atom(float, *i))?)),
             (U8s(cs), &Int(i)) => Char(*index(cs, i)?),
             (U8s(cs), I64s(is)) => U8s(Rc::new(traverse(&**is, |i| index(cs, *i).copied())?)),
+            (I64s(is), &Int(i)) => Int(*index(is, i)?),
+            (I64s(xs), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index(xs, *i).copied())?)),
+            (F64s(is), &Int(i)) => Float(*index(is, i)?),
+            (F64s(xs), I64s(is)) => F64s(Rc::new(traverse(&**is, |i| index(xs, *i).copied())?)),
             (Vals(vs), &Int(i)) => return Ok(index(vs, i)?.clone()),
             (Vals(vs), I64s(is)) => collect_list(is.iter().map(|i| index(vs, *i).cloned()))?,
-            (Int(_) | Char(_) | I64s(_) | U8s(_) | Vals(_), Vals(is)) => collect_list(
+            (Char(_) | Int(_) | Float(_) | U8s(_) | I64s(_) | F64s(_) | Vals(_), Vals(is)) => collect_list(
                 is.iter().map(|i| self.prim_index(x, i))
             )?,
             _ => return self.call_val(x.clone(), y.clone(), None),
