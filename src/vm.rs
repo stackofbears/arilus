@@ -1279,17 +1279,17 @@ fn prim_grade(x: &Val, down: bool) -> Val {
         atom!() => vec![0],
         Val::U8s(cs) => {  // TODO unicode
             let mut indices: Vec<i64> = (0..cs.len() as i64).collect();
-            indices.sort_unstable_by(|i, j| cmp(down, &cs[*i as usize], &cs[*j as usize]));
+            indices.sort_by(|i, j| cmp(down, &cs[*i as usize], &cs[*j as usize]));
             indices
         }
         Val::I64s(ints) => {
             let mut indices: Vec<i64> = (0..ints.len() as i64).collect();
-            indices.sort_unstable_by(|i, j| cmp(down, &ints[*i as usize], &ints[*j as usize]));
+            indices.sort_by(|i, j| cmp(down, &ints[*i as usize], &ints[*j as usize]));
             indices
         }
         Val::F64s(fs) => {
             let mut indices: Vec<i64> = (0..fs.len() as i64).collect();
-            indices.sort_unstable_by(|i, j| cmp_floats(down, &fs[*i as usize], &fs[*j as usize]));
+            indices.sort_by(|i, j| cmp_floats(down, &fs[*i as usize], &fs[*j as usize]));
             indices
         }
         Val::Vals(vals) => {
