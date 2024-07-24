@@ -110,7 +110,15 @@ impl ReplSession {
         // we can run code 1 after the ) on line 3, but here we'll continue to
         // wait until a line exits on level 0.
         loop {
-            print!("  ");
+            // TODO support pasting a bunch of lines into the repl without
+            // printing the continuation prompt multiple times (or at all, if
+            // the lines close all their open parens).
+            if nesting > 0 {
+                print!("↪ ");
+            } else {
+                print!("  ");
+            }
+
             if let Err(err) = io::stdout().flush() { return Err(err.to_string()) }
             if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
             let line_start = self.tokens.len();

@@ -24,3 +24,13 @@ Get: {x GetLine->a#(a#-1)}
 
 \ x .(100 Times _{do_thing})
 Times: {|n;f| { if(y=0; x; x F Rec (y-1)) } n}
+
+\ Row lengths must match x@0#
+XposeF: {x@0#/ `{|i|x`@i Y}}
+Xpose: XposeF _{x}
+
+\ Post-multiply: kxm MulMM nxk -> nxm
+MulMM: ~{x `{|r| y XposeF _(* r \+)}}
+
+MulMV: {x MulMM [y]}
+MulVM: {[x] MulMM y}

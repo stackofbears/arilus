@@ -37,7 +37,7 @@ pub enum Noun {
 
 #[derive(Debug, Clone)]
 pub enum Predicate {
-    If2(Box<Expr>, Box<Expr>),
+    If2(Box<Expr>, Box<Expr>),  // Takes the condition as its left argument
     VerbCall(Verb, Option<SmallNoun>),
     ForwardAssignment(Pattern),
 }
@@ -48,19 +48,20 @@ pub enum Verb {
     UpperAssign(String, Box<Verb>),
     SmallVerb(SmallVerb),
 
-    // A B
+    // A B  ==  {x A B} : {x A y B}
     // RHS is only Verb instead of SmallVerb to allow (F G n) to be
     // Atop(F, Bind(G, n)); no other reason! But why can't (A B : C)
     // be Atop(A, B : C)?
     Atop(Box<Verb>, Box<Verb>),
 
-    // A b (note this includes (A (B C)))
+    // A b  ==  {x A b}
     Bind(Box<Verb>, Box<SmallNoun>),
 
-    // A B C
+    // A B C  ==  {x A B (x C)} : {x A y B (x C y)}
     Fork(Box<Verb>, Box<SmallVerb>, Box<SmallVerb>),
 
     // A : B
+    // A is monadic case, B is dyadic case.
     AmbivalentCases(Box<Verb>, Box<SmallVerb>),
 }
 
@@ -70,11 +71,20 @@ pub enum SmallNoun {
     PrimNoun(lex::PrimNoun),
     LowerName(String),
     NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
+
+    // The underscore is parsed like an adverb, but unlike other adverbs, it
+    // produces a noun - that's the whole point - so it's treated specially
+    // here.
     Underscored(Box<SmallExpr>),
     IntLiteral(i64),
     FloatLiteral(f64),
+
+    // ( "a" ) is a character literal. Two ways to make a single-character
+    // string are ( "a", ) and ( ["a"] ).
     CharLiteral(u8),
     StringLiteral(String),
+
+    // [a; b; c] or a b c
     ArrayLiteral(Vec<Expr>),
 }
 
@@ -87,6 +97,15 @@ pub enum SmallVerb {
     Adverb(PrimAdverb, Box<SmallExpr>),
 }
 
+// Explicit argument syntax:
+//   - Naming x: {|xPat| ...}
+//   - Naming x and y: {|xPat; yPat| ...}
+//
+// Note that this brings about a syntactic weirdness where a lambda can't use
+// the primitive verb | as the first statement without parenthesizing it:
+//   Valid:   ( ReturnsPlus: {+} )
+//   Invalid: ( ReturnsReverse: {|} )
+//   Valid:   ( ReturnsReverse: {(|)} )
 #[derive(Debug, Clone)]
 pub struct ExplicitArgs {
     pub x: Pattern,
@@ -96,7 +115,12 @@ pub struct ExplicitArgs {
 #[derive(Debug, Clone)]
 pub enum Pattern {
     Name(String),
+
+    // Bracketed or stranded array
     Array(Vec<Pattern>),
+
+    // Match two patterns at once, usually used to name the whole of a value
+    // while also destructuring it, as in ( name->a b c ).
     As(Box<Pattern>, Box<Pattern>),
 }
 

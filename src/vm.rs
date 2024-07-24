@@ -20,7 +20,7 @@ enum ChasedTail {
     Push(Val),
 }
 
-// Used in printing vals.
+// Used in val printing.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum PrecedenceContext {
     Toplevel,
@@ -1350,43 +1350,60 @@ fn prim_append(x: Val, y: Val) -> Result<Val, String> {
         Rc::new(xs.into_iter().chain(ys.into_iter()).collect())
     }
 
-    fn copies<'a, A: Copy>(x: &'a [A]) -> impl Iterator<Item=A> + 'a {
-        x.iter().copied()
+    fn clones<'a, A: Clone>(x: &'a [A]) -> impl ExactSizeIterator<Item=A> + 'a {
+        x.iter().cloned()
     }
 
-    fn floats<'a>(x: &'a [i64]) -> impl Iterator<Item=f64> + 'a {
+    fn floats<'a>(x: &'a [i64]) -> impl ExactSizeIterator<Item=f64> + 'a {
         x.iter().map(|i| *i as f64)
     }
 
-    let val = match (x.as_val(), y.as_val()) {
-        (Char(x), Char(y)) => U8s(Rc::new(vec![*x, *y])),
-        (Char(x), U8s(y)) => U8s(one_then_many(*x, copies(y))),
-        (U8s(x), Char(y)) => U8s(many_then_one(copies(x), *y)),
-        (U8s(x), U8s(y)) => U8s(many_then_many(copies(x), copies(y))),
+    fn push_or_clone<A: Clone>(mut x: Rc<Vec<A>>, y: A) -> Rc<Vec<A>> {
+        match Rc::get_mut(&mut x) {
+            Some(vec) => { vec.push(y); x }
+            None => many_then_one(clones(&x), y),
+        }
+    }
 
-        (Int(x), Int(y)) => I64s(Rc::new(vec![*x, *y])),
-        (Int(x), I64s(y)) => I64s(one_then_many(*x, y.iter().copied())),
-        (I64s(x), Int(y)) => I64s(many_then_one(copies(x), *y)),
-        (I64s(x), I64s(y)) => I64s(many_then_many(copies(x), copies(y))),
+    fn extend_or_clone<A: Clone, Y: IntoIterator<IntoIter: ExactSizeIterator<Item=A>>>(mut x: Rc<Vec<A>>, y: Y) -> Rc<Vec<A>> {
+        match Rc::get_mut(&mut x) {
+            Some(vec) => { vec.extend(y.into_iter()); x }
+            None => many_then_many(clones(&x), y.into_iter()),
+        }
+    }
 
-        (Float(x), Float(y)) => F64s(Rc::new(vec![*x, *y])),
-        (Float(x), F64s(y)) => F64s(one_then_many(*x, y.iter().copied())),
-        (F64s(x), Float(y)) => F64s(many_then_one(copies(x), *y)),
-        (F64s(x), F64s(y)) => F64s(many_then_many(copies(x), copies(y))),
+    let val = match (x, y) {
+        (Char(x), Char(y)) => U8s(Rc::new(vec![x, y])),
+        (Char(x), U8s(y)) => U8s(one_then_many(x, clones(&y))),
+        (U8s(x), Char(y)) => U8s(push_or_clone(x, y)),
+        (U8s(x), U8s(y)) => U8s(extend_or_clone(x, clones(&y))),
 
-        (Int(x), Float(y)) => F64s(Rc::new(vec![*x as f64, *y])),
-        (Float(x), Int(y)) => F64s(Rc::new(vec![*x, *y as f64])),
+        (Int(x), Int(y)) => I64s(Rc::new(vec![x, y])),
+        (Int(x), I64s(y)) => I64s(one_then_many(x, y.iter().copied())),
+        (I64s(x), Int(y)) => I64s(push_or_clone(x, y)),
+        (I64s(x), I64s(y)) => I64s(extend_or_clone(x, clones(&y))),
 
-        (Int(x), F64s(y)) =>  F64s(one_then_many(*x as f64, copies(y))),
-        (F64s(x), Int(y)) =>  F64s(many_then_one(copies(x), *y as f64)),
+        (Float(x), Float(y)) => F64s(Rc::new(vec![x, y])),
+        (Float(x), F64s(y)) => F64s(one_then_many(x, y.iter().copied())),
+        (F64s(x), Float(y)) => F64s(push_or_clone(x, y)),
+        (F64s(x), F64s(y)) => F64s(extend_or_clone(x, clones(&y))),
 
-        (I64s(x), Float(y)) => F64s(many_then_one(floats(x), *y)),
-        (Float(x), I64s(y)) => F64s(one_then_many(*x, floats(y))),
+        (Int(x), Float(y)) => F64s(Rc::new(vec![x as f64, y])),
+        (Float(x), Int(y)) => F64s(Rc::new(vec![x, y as f64])),
 
-        (I64s(x), F64s(y)) => F64s(many_then_many(floats(x), copies(y))),
-        (F64s(x), I64s(y)) => F64s(many_then_many(copies(x), floats(y))),
+        (Int(x), F64s(y)) =>  F64s(one_then_many(x as f64, clones(&y))),
+        (F64s(x), Int(y)) =>  F64s(push_or_clone(x, y as f64)),
 
-        _ => match (iter_val(&x), iter_val(&y)) {
+        (I64s(x), Float(y)) => F64s(many_then_one(floats(&x), y)),
+        (Float(x), I64s(y)) => F64s(one_then_many(x, floats(&y))),
+
+        (I64s(x), F64s(y)) => F64s(many_then_many(floats(&x), clones(&y))),
+        (F64s(x), I64s(y)) => F64s(extend_or_clone(x, floats(&y))),
+
+        (Vals(x), y@atom!()) => Vals(push_or_clone(x, y)),
+        (Vals(x), Vals(y)) => Vals(extend_or_clone(x, clones(&y))),
+
+        (x, y) => match (iter_val(&x), iter_val(&y)) {
             (None, None) => Vals(Rc::new(vec![x, y])),
             (Some(iter), None) => Vals(many_then_one(iter, y)),
             (None, Some(iter)) => Vals(one_then_many(x, iter)),
@@ -1491,7 +1508,7 @@ fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E
                     Some(i) => ints.push(i),
                     None => {
                         let mut fs: Vec<f64> = ints.drain(..).map(|i| i as f64).collect();
-                        fs.reserve(cap - fs.len());
+                        fs.reserve(cap.checked_sub(fs.len()).unwrap_or(1));
                         fs.push(*f);
                         list = List::F64s(fs);
                     }
@@ -1499,7 +1516,7 @@ fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E
                 _ => {
                     let mut vals: Vec<Val> =
                         ints.drain(..).map(|i| Val::Int(i)).collect();
-                    vals.reserve(cap - vals.len());
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
                     vals.push(val);
                     list = List::Vals(vals);
                 }
@@ -1510,7 +1527,7 @@ fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E
                 _ => {
                     let mut vals: Vec<Val> =
                         fs.drain(..).map(|f| Val::Float(f)).collect();
-                    vals.reserve(cap - vals.len());
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
                     vals.push(val);
                     list = List::Vals(vals);
                 }
@@ -1520,7 +1537,7 @@ fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E
                 _ => {
                     let mut vals: Vec<Val> =
                         cs.drain(..).map(|c| Val::Char(c)).collect();
-                    vals.reserve(cap - vals.len());
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
                     vals.push(val);
                     list = List::Vals(vals);
                 }

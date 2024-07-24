@@ -45,27 +45,6 @@ impl ToVal for NoValEmptyEnum {
     fn to_val(self) -> Val { unsafe { std::hint::unreachable_unchecked() } }
 }
 
-// impl ToVal for Rc<Vec<u8>> {
-//     #[inline(always)]
-//     fn to_val(self) -> Val { Val::U8s(self) }
-// }
-// impl ToVal for Rc<Vec<i64>> {
-//     #[inline(always)]
-//     fn to_val(self) -> Val { Val::I64s(self) }
-// }
-// impl ToVal for Rc<Vec<f64>> {
-//     #[inline(always)]
-//     fn to_val(self) -> Val { Val::F64s(self) }
-// }
-// impl ToVal for Rc<Vec<Val>> {
-//     #[inline(always)]
-//     fn to_val(self) -> Val { Val::Vals(self) }
-// }
-// impl<A> ToVal for Vec<A> where Rc<Vec<A>>: ToVal {
-//     #[inline(always)]
-//     fn to_val(self) -> Val { Rc::new(self).to_val() }
-// }
-
 pub trait VecToVal: Sized {
     fn vec_to_val(x: Vec<Self>) -> Val;
 }
@@ -91,11 +70,6 @@ impl VecToVal for NoValEmptyEnum {
     fn vec_to_val(_: Vec<NoValEmptyEnum>) -> Val { Val::I64s(Rc::new(vec![])) }
 }
 
-
-// impl VecToVal for A where Vec<A>: ToVal {
-//     fn to_val(x: Vec<A>) -> Val { x.to_val() }
-// }
-// other way
 impl<A> ToVal for Vec<A> where A: VecToVal {
     fn to_val(self) -> Val { <A as VecToVal>::vec_to_val(self) }
 }
@@ -105,17 +79,11 @@ pub fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
     format!("length mismatch: {xlen} vs {ylen}")
 }
 
-// impl for atoms, val, val ref
 pub trait Op2<X: Atom, Y: Atom> {
-    // TODO + vectoval?
     type Out: ToVal + VecToVal;
     fn op(x: X, y: Y) -> Res<Self::Out>;
-    // fn op_vec_bare(x: Rc<Vec<X>>, y: Y) -> Res<Vec<Self::Out>>;
-    // fn op_bare_vec(x: X, y: Rc<Vec<Y>>) -> Res<Vec<Self::Out>>;
-    // fn op_vec_vec(x: Rc<Vec<X>>, y: Rc<Vec<Y>>) -> Res<Vec<Self::Out>>;
 }
 
-// TODO valrefconsumer (doesn't take vec) superclass of val consumer (can take vec)
 pub trait AtomConsumer<A: Atom> {
     type AtomRet;
     fn eat_atom(self, a: A) -> Self::AtomRet;
@@ -123,9 +91,9 @@ pub trait AtomConsumer<A: Atom> {
     fn eat_atom_vec(self, a: Vec<A>) -> Self::AtomRet;
 }
 
-// TODO can accept any exact size iterator where Item: IsVal?
 pub trait MultiValConsumer {
     type MultiValRet;
+    // TODO accept any IntoIterator<IntoIter: ExactSizeIterator, Item: IsVal>?
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet;
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet;
 }
@@ -213,6 +181,7 @@ where Op: Op2Flippable<A, u8> +
 
 pub trait AtomOp2: AtomOp2Fixed<u8> + AtomOp2Fixed<i64> + AtomOp2Fixed<f64> + for<'a> AtomOp2Fixed<&'a Func> {}
 
+#[inline(always)]
 pub fn dispatch_to_atoms<Op: AtomOp2, XVal: IsVal, YVal: IsVal>(x: XVal, y: YVal) -> Res<Val> {
     x.dispatch(XDispatch::<Op, YVal> { flip: false, y, _dummy: PhantomData })
 }
@@ -222,12 +191,18 @@ struct XDispatch<Op, YVal>{ flip: bool, y: YVal, _dummy: PhantomData<Op> }
 
 impl<X: Atom, YVal: IsVal, Op: AtomOp2Fixed<X>> AtomConsumer<X> for XDispatch<Op, YVal> {
     type AtomRet = Res<Val>;
+
+    #[inline(always)]
     fn eat_atom(self, x: X) -> Self::AtomRet {
         self.y.dispatch(XAtom::<Op, X>::new(x, self.flip))
     }
+
+    #[inline(always)]
     fn eat_atom_slice(self, x: &[X]) -> Self::AtomRet {
         self.y.dispatch(XAtomSlice::<Op, X>::new(x, self.flip))
     }
+
+    #[inline(always)]
     fn eat_atom_vec(self, x: Vec<X>) -> Self::AtomRet {
         self.y.dispatch(XAtomVec::<Op, X>::new(x, self.flip))
     }
@@ -235,9 +210,13 @@ impl<X: Atom, YVal: IsVal, Op: AtomOp2Fixed<X>> AtomConsumer<X> for XDispatch<Op
 
 impl<Op: AtomOp2, YVal: IsVal> MultiValConsumer for XDispatch<Op, YVal> {
     type MultiValRet = Res<Val>;
+
+    #[inline(always)]
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
         self.y.dispatch(XValSlice::<Op>::new(a, self.flip))
     }
+
+    #[inline(always)]
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
         self.y.dispatch(XValVec::<Op>::new(a, self.flip))
     }
@@ -260,6 +239,7 @@ impl<Op, X: Copy> Copy for XAtom<Op, X> {}
 
 impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> {
     type AtomRet = Res<Val>;
+
     #[inline(always)]
     fn eat_atom(self, y: Y) -> Self::AtomRet {
         let val = if !self.flip {
@@ -269,7 +249,7 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> 
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         let val = if !self.flip {
             y.iter()
@@ -282,7 +262,7 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> 
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         let val = if !self.flip {
             y.into_iter()
@@ -299,12 +279,12 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> 
 
 impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtom<Op, X> {
     type MultiValRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
         let outs = a.iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
         Ok(outs.to_val())
     }
-    #[inline(always)]
+
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
         let outs = a.into_iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
         Ok(outs.to_val())
@@ -328,7 +308,7 @@ impl<'a, Op, X> XAtomSlice<'a, Op, X> {
 
 impl<'a, X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomSlice<'a, Op, X> {
     type AtomRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_atom(self, y: Y) -> Self::AtomRet {
         let val = if !self.flip {
             self.x.iter()
@@ -341,7 +321,7 @@ impl<'a, X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomSlic
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -358,7 +338,7 @@ impl<'a, X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomSlic
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -379,6 +359,7 @@ impl<'a, X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomSlic
 
 impl<'a, X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomSlice<'a, Op, X> {
     type MultiValRet = Res<Val>;
+
     fn eat_val_slice(self, y: &[Val]) -> Self::MultiValRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -388,6 +369,7 @@ impl<'a, X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomSlice<'a, Op, X
             .collect::<Res<Vec<_>>>()?.to_val();
         Ok(val)
     }
+
     fn eat_val_vec(self, y: Vec<Val>) -> Self::MultiValRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -410,7 +392,7 @@ impl<Op, X> XAtomVec<Op, X> {
 
 impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomVec<Op, X> {
     type AtomRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_atom(self, y: Y) -> Self::AtomRet {
         let val = if !self.flip {
             self.x.into_iter()
@@ -423,7 +405,7 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomVec<Op, 
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -440,7 +422,7 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomVec<Op, 
         };
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -461,6 +443,7 @@ impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomVec<Op, 
 
 impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomVec<Op, X> {
     type MultiValRet = Res<Val>;
+
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))
@@ -471,6 +454,7 @@ impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomVec<Op, X> {
             .collect::<Res<Vec<_>>>()?;
         Ok(outs.to_val())
     }
+
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))
@@ -494,6 +478,7 @@ impl<'a, Op> XValSlice<'a, Op> {
 
 impl<'a, Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValSlice<'a, Op> {
     type AtomRet = Res<Val>;
+
     fn eat_atom(self, y: Y) -> Self::AtomRet {
         let y_atom = XAtom::<Op, Y>::new(y, !self.flip);
         let outs = self.x.iter()
@@ -501,6 +486,7 @@ impl<'a, Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValSlice<'a, Op> {
             .collect::<Res<Vec<_>>>()?;
         Ok(outs.to_val())
     }
+
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -510,6 +496,7 @@ impl<'a, Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValSlice<'a, Op> {
             .collect::<Res<Vec<_>>>()?;
         Ok(outs.to_val())
     }
+
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -523,7 +510,7 @@ impl<'a, Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValSlice<'a, Op> {
 
 impl<'a, Op: AtomOp2> MultiValConsumer for XValSlice<'a, Op> {
     type MultiValRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))
@@ -536,7 +523,7 @@ impl<'a, Op: AtomOp2> MultiValConsumer for XValSlice<'a, Op> {
         }?.to_val();
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))
@@ -562,7 +549,7 @@ impl<Op> XValVec<Op> {
 
 impl<Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValVec<Op> {
     type AtomRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_atom(self, y: Y) -> Self::AtomRet {
         let x_atom = XAtom::<Op, Y>::new(y, !self.flip);
         let val = self.x.into_iter()
@@ -570,7 +557,7 @@ impl<Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValVec<Op> {
             .collect::<Res<Vec<_>>>()?.to_val();
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -581,7 +568,7 @@ impl<Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValVec<Op> {
             .collect::<Res<Vec<_>>>()?.to_val();
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
         if self.x.len() != y.len() {
             return Err(length_mismatch_error(self.x.len(), y.len()))
@@ -596,7 +583,7 @@ impl<Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValVec<Op> {
 
 impl<Op: AtomOp2> MultiValConsumer for XValVec<Op> {
     type MultiValRet = Res<Val>;
-    #[inline(always)]
+
     fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))
@@ -609,7 +596,7 @@ impl<Op: AtomOp2> MultiValConsumer for XValVec<Op> {
         }?.to_val();
         Ok(val)
     }
-    #[inline(always)]
+
     fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
         if self.x.len() != a.len() {
             return Err(length_mismatch_error(self.x.len(), a.len()))

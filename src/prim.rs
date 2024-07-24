@@ -174,9 +174,9 @@ pub fn int_mod<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
     impl_op2!(
         Mod,
         (x: i64, y: i64) -> Res<i64> { Ok(x.rem_euclid(y)) }
-        (x: i64, y: f64) -> Res<i64> { Ok(x.rem_euclid(y as i64)) }
-        (x: f64, y: i64) -> Res<i64> { Ok((x.floor() as i64).rem_euclid(y)) }
-        (x: f64, y: f64) -> Res<i64> { Ok(x.rem_euclid(y).floor() as i64) }
+        (x: i64, y: f64) -> Res<f64> { Ok((x as f64).rem_euclid(y)) }
+        (x: f64, y: i64) -> Res<f64> { Ok(x.rem_euclid(y as f64)) }
+        (x: f64, y: f64) -> Res<f64> { Ok(x.rem_euclid(y)) }
 
         (u8, u8) | (u8, i64) | (i64, u8) | (u8, f64) | (f64, u8) |
         (&Func, &Func) | (u8, &Func) | (&Func, u8) | (f64, &Func) |
