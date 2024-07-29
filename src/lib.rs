@@ -1,3 +1,5 @@
+#![feature(min_specialization)]
+
 mod bytecode;
 mod compile;
 mod lex;

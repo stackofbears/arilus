@@ -1,12 +1,303 @@
 use std::iter;
 use std::rc::Rc;
-use std::marker::PhantomData;
 
 use crate::val::*;
 
 type Res<A> = Result<A, String>;
 
-pub trait Atom: Sized + Copy {}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AtomOp2 {
+    Add,
+    Mul,
+    Sub,
+    Div,
+    IntDiv,
+    Mod,
+    Pow,
+}
+
+pub trait Op2<X, Y> {
+    type Out: ToVal + VecToVal;
+    fn op(x: X, y: Y) -> Res<Self::Out>;
+}
+
+// These should match Val::type_name
+pub trait NamedType { const TYPE_NAME: &'static str; }
+impl NamedType for u8 { const TYPE_NAME: &'static str = &"char"; }
+impl NamedType for i64 { const TYPE_NAME: &'static str = &"int"; }
+impl NamedType for f64 { const TYPE_NAME: &'static str = &"float"; }
+impl NamedType for &Func { const TYPE_NAME: &'static str = &"function"; }
+impl<A: NamedType> NamedType for Vec<A> {
+    const TYPE_NAME: &'static str = A::TYPE_NAME;
+}
+impl<A: NamedType> NamedType for &[A] {
+    const TYPE_NAME: &'static str = A::TYPE_NAME;
+}
+
+#[inline(never)]
+fn domain_error_concrete(a_type: &str, b_type: &str, detail: &str) -> String {
+    format!("domain\nUnsupported arguments: {a_type} and {b_type}{}{detail}",
+            &if detail.is_empty() { "" } else { "\n" })
+}
+
+#[cold]
+pub fn domain_error<A: NamedType, B: NamedType>(detail: &str) -> String {
+    domain_error_concrete(A::TYPE_NAME, B::TYPE_NAME, detail)
+}
+
+macro_rules! impl_op2 {
+    ($self_type:ty, ($x:ident : $x_ty:ty, $y:ident : $y_ty:ty) -> Res<$out:ty> { $($body:tt)* } $($rest:tt)*) => {
+        impl Op2<$x_ty, $y_ty> for $self_type {
+            type Out = $out;
+
+            #[inline(always)]
+            fn op($x: $x_ty, $y: $y_ty) -> Res<$out> {
+                $($body)*
+            }
+        }
+
+        impl Op2Val<$x_ty, $y_ty> for $self_type {
+            #[inline(always)]
+            fn op2val(x: $x_ty, y: $y_ty) -> Res<Val> {
+                Ok(Self::op(x, y)?.to_val())
+            }
+        }
+
+        impl<'a> Op2Val<$x_ty, &'a [$y_ty]> for $self_type {
+            fn op2val(x: $x_ty, y: &'a [$y_ty]) -> Res<Val> {
+                Ok(y.into_iter().copied().map(|y| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl Op2Val<$x_ty, Vec<$y_ty>> for $self_type {
+            fn op2val(x: $x_ty, y: Vec<$y_ty>) -> Res<Val> {
+                Ok(y.into_iter().map(|y| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl<'a> Op2Val<&'a [$x_ty], $y_ty> for $self_type {
+            fn op2val(x: &'a [$x_ty], y: $y_ty) -> Res<Val> {
+                Ok(x.into_iter().copied().map(|x| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl<'a, 'b> Op2Val<&'a [$x_ty], &'b [$y_ty]> for $self_type {
+            fn op2val(x: &'a [$x_ty], y: &'b [$y_ty]) -> Res<Val> {
+                if x.len() != y.len() { return Err(length_mismatch_error(x.len(), y.len())) }
+                Ok(iter::zip(x.iter().copied(), y.iter().copied()).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl<'a> Op2Val<&'a [$x_ty], Vec<$y_ty>> for $self_type {
+            fn op2val(x: &'a [$x_ty], y: Vec<$y_ty>) -> Res<Val> {
+                if x.len() != y.len() { return Err(length_mismatch_error(x.len(), y.len())) }
+                Ok(iter::zip(x.iter().copied(), y).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl Op2Val<Vec<$x_ty>, $y_ty> for $self_type {
+            fn op2val(x: Vec<$x_ty>, y: $y_ty) -> Res<Val> {
+                Ok(x.into_iter().map(|x| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl<'a> Op2Val<Vec<$x_ty>, &'a [$y_ty]> for $self_type {
+            fn op2val(x: Vec<$x_ty>, y: &'a [$y_ty]) -> Res<Val> {
+                if x.len() != y.len() { return Err(length_mismatch_error(x.len(), y.len())) }
+                Ok(iter::zip(x, y.iter().copied()).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl Op2Val<Vec<$x_ty>, Vec<$y_ty>> for $self_type {
+            fn op2val(x: Vec<$x_ty>, y: Vec<$y_ty>) -> Res<Val> {
+                if x.len() != y.len() { return Err(length_mismatch_error(x.len(), y.len())) }
+                Ok(iter::zip(x, y).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
+            }
+        }
+
+        impl_op2!($self_type, $($rest)*);
+    };
+
+    // $detail can be () or (literal)
+    ($self_type:ty, $(($x_ty:ty, $y_ty:ty))|+ -> domain_error $detail:tt $($rest:tt)*) => {
+        $(impl Op2<$x_ty, $y_ty> for $self_type {
+            type Out = NoValEmptyEnum;
+
+            #[cold]
+            fn op(_: $x_ty, _: $y_ty) -> Res<Self::Out> {
+                macro_rules! optional_detail {
+                    (()) => { "" };
+                    (($lit:literal)) => { $lit };
+                }
+                Err(domain_error::<$x_ty, $y_ty>(optional_detail!($detail)))
+            }
+        })+
+        impl_op2!($self_type, $($rest)*);
+    };
+
+    ($self_type:ty,) => {};
+}
+
+enum Add {}
+impl_op2!(
+    Add,
+    (x: u8, y: i64) -> Res<u8> { Ok((x as i64 + y) as u8) }
+    (x: u8, y: f64) -> Res<u8> {
+        if y.trunc() == y {
+            Ok((x as i64 + y as i64) as u8)
+        } else {
+            Err(domain_error::<u8, f64>(&"(An int-convertible float would've worked)"))
+        }
+    }
+    (x: i64, y: u8)  -> Res<u8>  { Self::op(y, x) }
+    (x: i64, y: i64) -> Res<i64> { Ok(x + y) }
+    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 + y) }
+    (x: f64, y: u8)  -> Res<u8>  { Self::op(y, x) }
+    (x: f64, y: i64) -> Res<f64> { Self::op(y, x) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x + y) }
+);
+
+enum Sub {}
+impl_op2!(
+    Sub,
+    (x: u8, y: u8) -> Res<i64> { Ok(x as i64 - y as i64) }
+    (x: u8, y: i64) -> Res<u8> { Ok((x as i64 - y) as u8) }
+    (x: u8, y: f64) -> Res<u8> {
+        if y.trunc() == y {
+            Ok((x as i64 - y as i64) as u8)
+        } else {
+            Err(domain_error::<u8, f64>(&"(An int-convertible float would've worked)"))
+        }
+    }
+    (x: i64, y: i64) -> Res<i64> { Ok(x - y) }
+    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 - y) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x - y as f64) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x - y) }
+);
+
+enum Mul {}
+impl_op2!(
+    Mul,
+    (x: i64, y: i64) -> Res<i64> { Ok(x * y) }
+    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 * y) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x * y as f64) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x * y) }
+);
+
+enum Div {}
+impl_op2!(
+    Div,
+    (x: i64, y: i64) -> Res<f64> { Ok(x as f64 / y as f64) }
+    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 / y) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x / y as f64) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x / y) }
+);
+
+enum IntDiv {}
+impl_op2!(
+    IntDiv,
+    (x: i64, y: i64) -> Res<i64> { Ok(x.div_euclid(y)) }
+    (x: i64, y: f64) -> Res<i64> { Ok(x.div_euclid(y as i64)) }
+    (x: f64, y: i64) -> Res<i64> { Ok((x.floor() as i64).div_euclid(y)) }
+    (x: f64, y: f64) -> Res<i64> { Ok(x.div_euclid(y).floor() as i64) }
+
+    (u8, u8) | (u8, i64) | (i64, u8) | (u8, f64) | (f64, u8) |
+    (&Func, &Func) | (u8, &Func) | (&Func, u8) | (f64, &Func) |
+    (&Func, f64) | (i64, &Func) | (&Func, i64) -> domain_error()
+);
+
+enum Mod {}
+impl_op2!(
+    Mod,
+    (x: i64, y: i64) -> Res<i64> { Ok(x.rem_euclid(y)) }
+    (x: i64, y: f64) -> Res<f64> { Ok((x as f64).rem_euclid(y)) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x.rem_euclid(y as f64)) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x.rem_euclid(y)) }
+);
+
+enum Pow {}
+enum Either<A, B> { Left(A), Right(B) }
+
+impl ToVal for Either<i64, f64> {
+    #[inline(always)]
+    fn to_val(self) -> Val {
+        match self {
+            Either::Left(int) => Val::Int(int),
+            Either::Right(float) => Val::Float(float),
+        }
+    }
+}
+
+impl VecToVal for Either<i64, f64> {
+    #[inline(always)]
+    fn vec_to_val(v: Vec<Self>) -> Val {
+        use Either::*;
+        let mut ints: Vec<i64> = Vec::with_capacity(v.len());
+        for i in 0..v.len() {
+            match &v[i] {
+                Left(int) => ints.push(*int),
+                Right(float) => {
+                    let mut floats: Vec<f64> = ints.drain(..).map(|int| int as f64).collect();
+                    floats.push(*float);
+                    for j in (i+1)..v.len() {
+                        floats.push(match &v[j] {
+                            Left(int) => *int as f64,
+                            Right(float) => *float,
+                        });
+                    }
+                    return Val::F64s(Rc::new(floats));
+                }
+            }
+        }
+        Val::I64s(Rc::new(ints))
+    }
+}
+
+impl_op2!(
+    Pow,
+    (x: i64, y: i64) -> Res<Either<i64, f64>> {
+        Ok(if y >= 0 {
+            Either::Left(x.pow(y as u32)) 
+        } else {
+            Either::Right((x as f64).powi(y as i32))
+        })
+    }
+    
+    (x: i64, y: f64) -> Res<f64> { Ok((x as f64).powf(y)) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x.powi(y as i32)) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x.powf(y)) }
+
+    (u8, u8) | (u8, i64) | (i64, u8) | (u8, f64) | (f64, u8) |
+    (&Func, &Func) | (u8, &Func) | (&Func, u8) | (f64, &Func) |
+    (&Func, f64) | (i64, &Func) | (&Func, i64) -> domain_error()
+);
+
+
+// TODO flip_for_error
+fn monomorph<X: NamedType, Y: NamedType>(op: AtomOp2, flip: bool, x: X, y: Y) -> Res<Val> {
+    match op {
+        AtomOp2::Add => Add::op2val(x, y),
+        AtomOp2::Mul => Mul::op2val(x, y),
+        AtomOp2::Sub    => if !flip { Sub::op2val(x, y) }    else { Sub::op2val(y, x) },
+        AtomOp2::Div    => if !flip { Div::op2val(x, y) }    else { Div::op2val(y, x) },
+        AtomOp2::IntDiv => if !flip { IntDiv::op2val(x, y) } else { IntDiv::op2val(y, x) },
+        AtomOp2::Mod    => if !flip { Mod::op2val(x, y) }    else { Mod::op2val(y, x) },
+        AtomOp2::Pow    => if !flip { Pow::op2val(x, y) }    else { Pow::op2val(y, x) },
+    }
+}
+
+pub trait Op2Val<X, Y> {
+    fn op2val(x: X, y: Y) -> Res<Val>;
+}
+impl<A, X: NamedType, Y: NamedType> Op2Val<X, Y> for A {
+    default fn op2val(_: X, _: Y) -> Res<Val> {
+        println!("xxxxx {}, {} xxxxx", std::any::type_name::<X>(), std::any::type_name::<Y>());
+        Err(domain_error_concrete(X::TYPE_NAME, Y::TYPE_NAME, &""))
+    }
+}
+
+pub trait Atom: Sized + Copy + NamedType {}
+
 impl Atom for u8 {}
 impl Atom for i64 {}
 impl Atom for f64 {}
@@ -79,49 +370,35 @@ pub fn length_mismatch_error(xlen: usize, ylen: usize) -> String {
     format!("length mismatch: {xlen} vs {ylen}")
 }
 
-pub trait Op2<X: Atom, Y: Atom> {
-    type Out: ToVal + VecToVal;
-    fn op(x: X, y: Y) -> Res<Self::Out>;
+#[cold]
+fn length_mismatch_error_flipped(xlen: usize, ylen: usize, flip: bool) -> String {
+    if !flip {
+        length_mismatch_error(xlen, ylen)
+    } else {
+        length_mismatch_error(ylen, xlen)
+    }
 }
 
 pub trait AtomConsumer<A: Atom> {
-    type AtomRet;
-    fn eat_atom(self, a: A) -> Self::AtomRet;
-    fn eat_atom_slice(self, a: &[A]) -> Self::AtomRet;
-    fn eat_atom_vec(self, a: Vec<A>) -> Self::AtomRet;
-}
-
-pub trait MultiValConsumer {
-    type MultiValRet;
-    // TODO accept any IntoIterator<IntoIter: ExactSizeIterator, Item: IsVal>?
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet;
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet;
+    fn eat_atom(self, a: A) -> Res<Val>;
+    fn eat_atom_slice(self, a: &[A]) -> Res<Val>;
+    fn eat_atom_vec(self, a: Vec<A>) -> Res<Val>;
 }
 
 pub trait ValConsumer
-where Self: AtomConsumer<u8, AtomRet=Self::Ret>,
-      Self: AtomConsumer<i64, AtomRet=Self::Ret>,
-      Self: AtomConsumer<f64, AtomRet=Self::Ret>,
-      Self: for<'a> AtomConsumer<&'a Func, AtomRet=Self::Ret>,
-      Self: MultiValConsumer<MultiValRet=Self::Ret> {
-    type Ret;
-}
-
-impl<A, Ret> ValConsumer for A
-where A: AtomConsumer<u8, AtomRet=Ret> +
-         AtomConsumer<i64, AtomRet=Ret> +
-         AtomConsumer<f64, AtomRet=Ret> +
-         for<'a> AtomConsumer<&'a Func, AtomRet=Ret> +
-         MultiValConsumer<MultiValRet=Ret> {
-    type Ret = Ret;
+where Self: AtomConsumer<u8>,
+      Self: AtomConsumer<i64>,
+      Self: AtomConsumer<f64>,
+      Self: for<'a> AtomConsumer<&'a Func> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val>;
 }
 
 pub trait IsVal {
-    fn dispatch<Ret, F: ValConsumer<Ret=Ret>>(self, f: F) -> Ret;
+    fn dispatch<F: ValConsumer>(self, f: F) -> Res<Val>;
 }
 
 impl IsVal for Val {
-    fn dispatch<Ret, F: ValConsumer>(self, f: F) -> F::Ret {
+    fn dispatch<F: ValConsumer>(self, f: F) -> Res<Val> {
         use Val::*;
         match self {
             Char(x) => f.eat_atom(x),
@@ -141,15 +418,15 @@ impl IsVal for Val {
                 Err(x) => f.eat_atom_slice(x.as_slice()),
             }
             Vals(x) => match Rc::try_unwrap(x) {
-                Ok(x) => f.eat_val_vec(x),
-                Err(x) => f.eat_val_slice(x.as_slice()),
+                Ok(x) => f.eat_vals(x.into_iter()),
+                Err(x) => f.eat_vals(x.as_slice().into_iter()),
             }
         }
     }
 }
 
 impl IsVal for &Val {
-    fn dispatch<Ret, F: ValConsumer<Ret=Ret>>(self, f: F) -> Ret {
+    fn dispatch<F: ValConsumer>(self, f: F) -> Res<Val> {
         use Val::*;
         match self {
             Char(x) => f.eat_atom(*x),
@@ -159,454 +436,207 @@ impl IsVal for &Val {
             U8s(x) => f.eat_atom_slice(x.as_slice()),
             I64s(x) => f.eat_atom_slice(x.as_slice()),
             F64s(x) => f.eat_atom_slice(x.as_slice()),
-            Vals(x) => f.eat_val_slice(x.as_slice()),
+            Vals(x) => f.eat_vals(x.as_slice().into_iter()),
         }
     }
 }
 
-pub trait Op2Flippable<X: Atom, Y: Atom>: Op2<X, Y> + Op2<Y, X> {}
-impl<Op: Op2<X, Y> + Op2<Y, X>, X: Atom, Y: Atom> Op2Flippable<X, Y> for Op {}
+// pub trait Op2Flippable<X: Atom, Y: Atom>: Op2<X, Y> + Op2<Y, X> {}
+// impl<Op: Op2<X, Y> + Op2<Y, X>, X: Atom, Y: Atom> Op2Flippable<X, Y> for Op {}
 
-pub trait AtomOp2Fixed<A: Atom>:
-    Op2Flippable<A, u8> +
-    Op2Flippable<A, i64> +
-    Op2Flippable<A, f64> +
-    for<'a> Op2Flippable<A, &'a Func> {}
+// pub trait AtomOp2Fixed<A: Atom>:
+//     Op2Flippable<A, u8> +
+//     Op2Flippable<A, i64> +
+//     Op2Flippable<A, f64> +
+//     for<'a> Op2Flippable<A, &'a Func> {}
 
-impl<A: Atom, Op> AtomOp2Fixed<A> for Op
-where Op: Op2Flippable<A, u8> +
-          Op2Flippable<A, i64> +
-          Op2Flippable<A, f64> +
-          for<'a> Op2Flippable<A, &'a Func> {}
+// impl<A: Atom, Op> AtomOp2Fixed<A> for Op
+// where Op: Op2Flippable<A, u8> +
+//           Op2Flippable<A, i64> +
+//           Op2Flippable<A, f64> +
+//           for<'a> Op2Flippable<A, &'a Func> {}
 
-pub trait AtomOp2: AtomOp2Fixed<u8> + AtomOp2Fixed<i64> + AtomOp2Fixed<f64> + for<'a> AtomOp2Fixed<&'a Func> {}
+// pub trait AtomOp2: AtomOp2Fixed<u8> + AtomOp2Fixed<i64> + AtomOp2Fixed<f64> + for<'a> AtomOp2Fixed<&'a Func> {}
 
 #[inline(always)]
-pub fn dispatch_to_atoms<Op: AtomOp2, XVal: IsVal, YVal: IsVal>(x: XVal, y: YVal) -> Res<Val> {
-    x.dispatch(XDispatch::<Op, YVal> { flip: false, y, _dummy: PhantomData })
+pub fn dispatch_to_atoms<X: IsVal, Y: IsVal>(op: AtomOp2, x: X, y: Y) -> Res<Val> {
+    y.dispatch(XVal::<X> { flip: false, op, x })
 }
 
-// Initial dispatch on x
-struct XDispatch<Op, YVal>{ flip: bool, y: YVal, _dummy: PhantomData<Op> }
-
-impl<X: Atom, YVal: IsVal, Op: AtomOp2Fixed<X>> AtomConsumer<X> for XDispatch<Op, YVal> {
-    type AtomRet = Res<Val>;
-
-    #[inline(always)]
-    fn eat_atom(self, x: X) -> Self::AtomRet {
-        self.y.dispatch(XAtom::<Op, X>::new(x, self.flip))
-    }
-
-    #[inline(always)]
-    fn eat_atom_slice(self, x: &[X]) -> Self::AtomRet {
-        self.y.dispatch(XAtomSlice::<Op, X>::new(x, self.flip))
-    }
-
-    #[inline(always)]
-    fn eat_atom_vec(self, x: Vec<X>) -> Self::AtomRet {
-        self.y.dispatch(XAtomVec::<Op, X>::new(x, self.flip))
+struct XVal<X> { flip: bool, op: AtomOp2, x: X }
+impl<X: IsVal> ValConsumer for XVal<X> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val> {
+        self.x.dispatch(XVals::<Ys>::new(ys, self.op, !self.flip))
     }
 }
 
-impl<Op: AtomOp2, YVal: IsVal> MultiValConsumer for XDispatch<Op, YVal> {
-    type MultiValRet = Res<Val>;
-
+impl<X: IsVal, Y: Atom> AtomConsumer<Y> for XVal<X> {
     #[inline(always)]
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        self.y.dispatch(XValSlice::<Op>::new(a, self.flip))
+    fn eat_atom(self, y: Y) -> Res<Val> {
+        self.x.dispatch(XAtom::<Y>::new(y, self.op, !self.flip))
     }
 
     #[inline(always)]
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        self.y.dispatch(XValVec::<Op>::new(a, self.flip))
+    fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
+        self.x.dispatch(XAtomSlice { flip: self.flip, op: self.op, x: y })
+    }
+
+    #[inline(always)]
+    fn eat_atom_vec(self, y: Vec<Y>) -> Res<Val> {
+        self.x.dispatch(XAtomVec { flip: !self.flip, op: self.op, x: y })
     }
 }
 
 // x is atom
-struct XAtom<Op, X> { flip: bool, x: X, _dummy: PhantomData<Op> }
-impl<Op, X> XAtom<Op, X> {
+#[derive(Clone, Copy)]
+struct XAtom<X> { flip: bool, op: AtomOp2, x: X }
+impl<X> XAtom<X> {
     #[inline(always)]
-    fn new(x: X, flip: bool) -> Self {
-        Self { flip, x, _dummy: PhantomData::<Op> }
+    fn new(x: X, op: AtomOp2, flip: bool) -> Self {
+        Self { flip, op, x }
     }
 }
 
-impl<Op, X: Clone> Clone for XAtom<Op, X> {
-    #[inline(always)]
-    fn clone(&self) -> Self { XAtom::new(self.x.clone(), self.flip) }
-}
-impl<Op, X: Copy> Copy for XAtom<Op, X> {}
-
-impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtom<Op, X> {
-    type AtomRet = Res<Val>;
-
-    #[inline(always)]
-    fn eat_atom(self, y: Y) -> Self::AtomRet {
-        let val = if !self.flip {
-            Op::op(self.x, y)?.to_val()
-        } else {
-            Op::op(y, self.x)?.to_val()
-        };
-        Ok(val)
-    }
-
-    fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
-        let val = if !self.flip {
-            y.iter()
-                .map(#[inline(always)] |y| Op::op(self.x, *y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            y.iter()
-                .map(#[inline(always)] |y| Op::op(*y, self.x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-
-    fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
-        let val = if !self.flip {
-            y.into_iter()
-                .map(#[inline(always)] |y| Op::op(self.x, y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            y.into_iter()
-                .map(#[inline(always)] |y| Op::op(y, self.x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
+impl<X: Atom> ValConsumer for XAtom<X> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(mut self, ys: Ys) -> Res<Val> {
+        self.flip = !self.flip;
+        let vec = ys.map(|y| y.dispatch(self)).collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
     }
 }
 
-impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtom<Op, X> {
-    type MultiValRet = Res<Val>;
-
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        let outs = a.iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
-        Ok(outs.to_val())
+impl<X: Atom, Y: Atom> AtomConsumer<Y> for XAtom<X> {
+    #[inline(always)]
+    fn eat_atom(self, y: Y) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
     }
 
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        let outs = a.into_iter().map(|y| y.dispatch(self)).collect::<Res<Vec<Val>>>()?;
-        Ok(outs.to_val())
+    #[inline(always)]
+    fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
+    }
+
+    #[inline(always)]
+    fn eat_atom_vec(self, y: Vec<Y>) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
+    }
+}
+
+// x is Vec<atom>
+struct XAtomVec<X> { flip: bool, op: AtomOp2, x: Vec<X> }
+impl<X: Atom> ValConsumer for XAtomVec<X> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val> {
+        if self.x.len() != ys.len() {
+            return Err(length_mismatch_error_flipped(self.x.len(), ys.len(), self.flip))
+        }
+
+        let vec = iter::zip(self.x, ys)
+            .map(#[inline(always)] |(x, y)| y.dispatch(XAtom::<X>::new(x, self.op, self.flip)))
+            .collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
+    }
+}
+
+impl<X: Atom, Y: Atom> AtomConsumer<Y> for XAtomVec<X> {
+    #[inline(always)]
+    fn eat_atom(self, y: Y) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
+    }
+
+    #[inline(always)]
+    fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
+    }
+
+    #[inline(always)]
+    fn eat_atom_vec(self, y: Vec<Y>) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
     }
 }
 
 // x is &[atom]
-struct XAtomSlice<'a, Op, X> { flip: bool, x: &'a [X], _dummy: PhantomData<Op> }
-impl<'a, Op, X: Clone> Clone for XAtomSlice<'a, Op, X> {
-    #[inline(always)]
-    fn clone(&self) -> Self { XAtomSlice::new(self.x, self.flip) }
-}
-impl<'a, Op, X: Copy> Copy for XAtomSlice<'a, Op, X> {}
-
-impl<'a, Op, X> XAtomSlice<'a, Op, X> {
-    #[inline(always)]
-    fn new(x: &'a [X], flip: bool) -> Self {
-        Self { flip, x, _dummy: PhantomData::<Op>}
-    }
-}
-
-impl<'a, X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomSlice<'a, Op, X> {
-    type AtomRet = Res<Val>;
-
-    fn eat_atom(self, y: Y) -> Self::AtomRet {
-        let val = if !self.flip {
-            self.x.iter()
-                .map(|x| Op::op(*x, y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            self.x.iter()
-                .map(|x| Op::op(y, *x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-
-    fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
+struct XAtomSlice<'a, X> { flip: bool, op: AtomOp2, x: &'a [X] }
+impl<'a, X: Atom> ValConsumer for XAtomSlice<'a, X> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val> {
+        if self.x.len() != ys.len() {
+            return Err(length_mismatch_error_flipped(self.x.len(), ys.len(), self.flip))
         }
-        let zipped = iter::zip(self.x, y);
-        let val = if !self.flip {
-            zipped
-                .map(|(x, y)| Op::op(*x, *y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            zipped
-                .map(|(x, y)| Op::op(*y, *x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
 
-    fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let zipped = iter::zip(self.x, y);
-        let val = if !self.flip {
-            zipped
-                .map(|(x, y)| Op::op(*x, y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            zipped
-                .map(|(x, y)| Op::op(y, *x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-}
-
-impl<'a, X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomSlice<'a, Op, X> {
-    type MultiValRet = Res<Val>;
-
-    fn eat_val_slice(self, y: &[Val]) -> Self::MultiValRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let val = iter::zip(self.x, y)
-            .map(|(x, y)| y.dispatch(XAtom::<Op, X>::new(*x, self.flip)))
-            .collect::<Res<Vec<_>>>()?.to_val();
-        Ok(val)
-    }
-
-    fn eat_val_vec(self, y: Vec<Val>) -> Self::MultiValRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let val = iter::zip(self.x, y)
-            .map(|(x, y)| y.dispatch(XAtom::<Op, X>::new(*x, self.flip)))
-            .collect::<Res<Vec<_>>>()?.to_val();
-        Ok(val)
-    }
-}
-
-// x is vec<atom>
-struct XAtomVec<Op, X> { flip: bool, x: Vec<X>, _dummy: PhantomData<Op> }
-impl<Op, X> XAtomVec<Op, X> {
-    #[inline(always)]
-    fn new(x: Vec<X>, flip: bool) -> Self {
-        Self { flip, x, _dummy: PhantomData::<Op> }
-    }
-}
-
-impl<X: Atom, Y: Atom, Op: Op2Flippable<X, Y>> AtomConsumer<Y> for XAtomVec<Op, X> {
-    type AtomRet = Res<Val>;
-
-    fn eat_atom(self, y: Y) -> Self::AtomRet {
-        let val = if !self.flip {
-            self.x.into_iter()
-                .map(|x| Op::op(x, y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            self.x.into_iter()
-                .map(|x| Op::op(y, x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-
-    fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let zipped = iter::zip(self.x, y);
-        let val = if !self.flip {
-            zipped
-                .map(|(x, y)| Op::op(x, *y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            zipped
-                .map(|(x, y)| Op::op(*y, x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-
-    fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let zipped = iter::zip(self.x, y);
-        let val = if !self.flip {
-            zipped
-                .map(|(x, y)| Op::op(x, y))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        } else {
-            zipped
-                .map(|(x, y)| Op::op(y, x))
-                .collect::<Res<Vec<_>>>()?.to_val()
-        };
-        Ok(val)
-    }
-}
-
-impl<X: Atom, Op: AtomOp2Fixed<X>> MultiValConsumer for XAtomVec<Op, X> {
-    type MultiValRet = Res<Val>;
-
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
-        }
-        let flip = self.flip;
-        let outs = iter::zip(self.x, a)
-            .map(|(x, y)| y.dispatch(XAtom::<Op, X>::new(x, flip)))
+        let vec = iter::zip(self.x.iter().copied(), ys)
+            .map(#[inline(always)] |(x, y)| y.dispatch(XAtom::<X>::new(x, self.op, self.flip)))
             .collect::<Res<Vec<_>>>()?;
-        Ok(outs.to_val())
-    }
-
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
-        }
-        let flip = self.flip;
-        let outs = iter::zip(self.x, a)
-            .map(|(x, y)| y.dispatch(XAtom::<Op, X>::new(x, flip)))
-            .collect::<Res<Vec<_>>>()?;
-        Ok(outs.to_val())
+        Ok(vec.to_val())
     }
 }
 
-// x is &[val]
-struct XValSlice<'a, Op> { flip: bool, x: &'a [Val], _dummy: PhantomData<Op> }
-impl<'a, Op> XValSlice<'a, Op> {
+impl<'a, X: Atom, Y: Atom> AtomConsumer<Y> for XAtomSlice<'a, X> {
     #[inline(always)]
-    fn new(x: &'a [Val], flip: bool) -> Self {
-        Self { flip, x, _dummy: PhantomData::<Op> }
-    }
-}
-
-impl<'a, Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValSlice<'a, Op> {
-    type AtomRet = Res<Val>;
-
-    fn eat_atom(self, y: Y) -> Self::AtomRet {
-        let y_atom = XAtom::<Op, Y>::new(y, !self.flip);
-        let outs = self.x.iter()
-            .map(|x| x.dispatch(y_atom))
-            .collect::<Res<Vec<_>>>()?;
-        Ok(outs.to_val())
+    fn eat_atom(self, y: Y) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
     }
 
-    fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let outs = iter::zip(self.x, y)
-            .map(|(x, y)| x.dispatch(XAtom::<Op, Y>::new(*y, !self.flip)))
-            .collect::<Res<Vec<_>>>()?;
-        Ok(outs.to_val())
-    }
-
-    fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let outs = iter::zip(self.x, y)
-            .map(|(x, y)| x.dispatch(XAtom::<Op, Y>::new(y, !self.flip)))
-            .collect::<Res<Vec<_>>>()?;
-        Ok(outs.to_val())
-    }
-}
-
-impl<'a, Op: AtomOp2> MultiValConsumer for XValSlice<'a, Op> {
-    type MultiValRet = Res<Val>;
-
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
-        }
-        let zipped = iter::zip(self.x, a);
-        let val = if !self.flip {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(x, y)).collect::<Res<Vec<_>>>()
-        } else {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(y, x)).collect::<Res<Vec<_>>>()
-        }?.to_val();
-        Ok(val)
-    }
-
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
-        }
-        let zipped = iter::zip(self.x, a);
-        let val = if !self.flip {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(x, y)).collect::<Res<Vec<_>>>()
-        } else {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(y, x)).collect::<Res<Vec<_>>>()
-        }?.to_val();
-        Ok(val)
-    }
-}
-
-// x is vec<val>
-struct XValVec<Op> { flip: bool, x: Vec<Val>, _dummy: PhantomData<Op> }
-impl<Op> XValVec<Op> {
     #[inline(always)]
-    fn new(x: Vec<Val>, flip: bool) -> Self {
-        Self { flip, x, _dummy: PhantomData::<Op> }
+    fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
+    }
+
+    #[inline(always)]
+    fn eat_atom_vec(self, y: Vec<Y>) -> Res<Val> {
+        monomorph(self.op, self.flip, self.x, y)
     }
 }
 
-impl<Op: AtomOp2Fixed<Y>, Y: Atom> AtomConsumer<Y> for XValVec<Op> {
-    type AtomRet = Res<Val>;
-
-    fn eat_atom(self, y: Y) -> Self::AtomRet {
-        let x_atom = XAtom::<Op, Y>::new(y, !self.flip);
-        let val = self.x.into_iter()
-            .map(|y| y.dispatch(x_atom))
-            .collect::<Res<Vec<_>>>()?.to_val();
-        Ok(val)
-    }
-
-    fn eat_atom_slice(self, y: &[Y]) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let flip = !self.flip;
-        let val = iter::zip(self.x, y)
-            .map(|(x, y)| x.dispatch(XAtom::<Op, Y>::new(*y, flip)))
-            .collect::<Res<Vec<_>>>()?.to_val();
-        Ok(val)
-    }
-
-    fn eat_atom_vec(self, y: Vec<Y>) -> Self::AtomRet {
-        if self.x.len() != y.len() {
-            return Err(length_mismatch_error(self.x.len(), y.len()))
-        }
-        let flip = !self.flip;
-        let val = iter::zip(self.x, y)
-            .map(|(x, y)| x.dispatch(XAtom::<Op, Y>::new(y, flip)))
-            .collect::<Res<Vec<_>>>()?.to_val();
-        Ok(val)
+// x is Vec<Val>::IntoIter or &[Val]::IntoIter
+struct XVals<Xs> { flip: bool, op: AtomOp2, x: Xs }
+impl<Xs> XVals<Xs> { 
+    #[inline(always)]
+    fn new(x: Xs, op: AtomOp2, flip: bool) -> Self {
+        Self { flip, op, x }
     }
 }
 
-impl<Op: AtomOp2> MultiValConsumer for XValVec<Op> {
-    type MultiValRet = Res<Val>;
-
-    fn eat_val_slice(self, a: &[Val]) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
+impl<Xs: ExactSizeIterator<Item: IsVal>> ValConsumer for XVals<Xs> {
+    fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val> {
+        if self.x.len() != ys.len() {
+            return Err(length_mismatch_error_flipped(self.x.len(), ys.len(), self.flip))
         }
-        let zipped = iter::zip(self.x, a);
-        let val = if !self.flip {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(x, y)).collect::<Res<Vec<_>>>()
-        } else {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(y, x)).collect::<Res<Vec<_>>>()
-        }?.to_val();
-        Ok(val)
+
+        let vec = iter::zip(self.x, ys)
+            .map(#[inline(always)] |(x, y)|
+                 y.dispatch(XVal::<Xs::Item> { flip: self.flip, op: self.op, x })
+            ).collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
+    }
+}
+
+impl<Xs: ExactSizeIterator<Item: IsVal>, Y: Atom> AtomConsumer<Y> for XVals<Xs> {
+    fn eat_atom(self, y: Y) -> Res<Val> {
+        let x_atom = XAtom::<Y>::new(y, self.op, !self.flip);
+        let vec = self.x.into_iter()
+            .map(#[inline(always)] |y| y.dispatch(x_atom))
+            .collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
     }
 
-    fn eat_val_vec(self, a: Vec<Val>) -> Self::MultiValRet {
-        if self.x.len() != a.len() {
-            return Err(length_mismatch_error(self.x.len(), a.len()))
+    fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
+        if self.x.len() != y.len() {
+            return Err(length_mismatch_error_flipped(self.x.len(), y.len(), self.flip))
         }
-        let zipped = iter::zip(self.x, a);
-        let val = if !self.flip {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(x, y)).collect::<Res<Vec<_>>>()
-        } else {
-            zipped.map(|(x, y)| dispatch_to_atoms::<Op, _, _>(y, x)).collect::<Res<Vec<_>>>()
-        }?.to_val();
-        Ok(val)
+
+        let vec = iter::zip(self.x, y)
+            .map(|(x, y)| x.dispatch(XAtom::<Y>::new(*y, self.op, !self.flip)))
+            .collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
+    }
+
+    fn eat_atom_vec(self, y: Vec<Y>) -> Res<Val> {
+        if self.x.len() != y.len() {
+            return Err(length_mismatch_error(self.x.len(), y.len()))
+        }
+
+        let vec = iter::zip(self.x, y)
+            .map(|(x, y)| x.dispatch(XAtom::<Y>::new(y, self.op, !self.flip)))
+            .collect::<Res<Vec<_>>>()?;
+        Ok(vec.to_val())
     }
 }
