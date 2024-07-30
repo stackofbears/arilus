@@ -13,8 +13,8 @@ pub fn parse(tokens: &[Token]) -> Many<Expr> {
     let mut parser = Parser::new(tokens);
     let parsed = parser.parse_exprs()?;
     if parser.token_index < parser.tokens.len() - 1 {
-        return err!("Unexpected `{}'; expected `;', newline, or end of input",
-                    parser.tokens[parser.token_index]);
+        return cold_err!("Unexpected `{}'; expected `;', newline, or end of input",
+                         parser.tokens[parser.token_index]);
     }
     Ok(parsed)
 }
@@ -172,7 +172,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume(&mut self, tok: &Token) -> bool {
-        if self.peek() == Some(tok) { self.skip(); true }
+        if likely(self.peek() == Some(tok)) { self.skip(); true }
         else { false }
     }
     
@@ -286,10 +286,10 @@ impl<'a> Parser<'a> {
                 self.consume_or_fail(&Token::LParen)?;
                 let mut exprs = self.parse_exprs()?;
                 if exprs.len() < 3 {
-                    return err!("Not enough arguments to `if'; expected 3")
+                    return cold_err!("Not enough arguments to `if'; expected 3")
                 }
                 if exprs.len() > 3 {
-                    return err!("Too many arguments to `if'; expected 3")
+                    return cold_err!("Too many arguments to `if'; expected 3")
                 }
                 self.consume_or_fail(&Token::RParen)?;
                 
@@ -376,10 +376,10 @@ impl<'a> Parser<'a> {
                 self.consume_or_fail(&Token::LParen)?;
                 let mut exprs = self.parse_exprs()?;
                 if exprs.len() < 2 {
-                    return err!("Not enough arguments to `if'; expected 2")
+                    return cold_err!("Not enough arguments to `if'; expected 2")
                 }
                 if exprs.len() > 2 {
-                    return err!("Too many arguments to `if'; expected 2")
+                    return cold_err!("Too many arguments to `if'; expected 2")
                 }
                 self.consume_or_fail(&Token::RParen)?;
                 
@@ -405,7 +405,7 @@ impl<'a> Parser<'a> {
                     Some(rhs) => UpperAssign(name, Box::new(rhs)),
                     None => return Err(self.expected(&"RHS of verb assignment")),
                 }
-                _ => return err!("Invalid verb assignment target: {small_verb:?}"),
+                _ => return cold_err!("Invalid verb assignment target: {small_verb:?}"),
             }
         } else {
             SmallVerb(small_verb)

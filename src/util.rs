@@ -12,7 +12,40 @@ macro_rules! err {
 }
 pub(crate) use err;
 
+macro_rules! cold_err {
+    ($($arg:tt)*) => { cold(err!($($arg)*)) };
+}
+pub(crate) use cold_err;
+
 pub fn float_as_int(f: f64) -> Option<i64> {
     let trunc = f.trunc();
     if trunc == f { Some(trunc as i64) } else { None }
+}
+
+#[inline]
+#[cold]
+pub fn cold<A>(a: A) -> A { a }
+
+#[inline]
+pub fn likely(b: bool) -> bool {
+    if !b { cold(()) }
+    b
+}
+
+#[inline]
+pub fn unlikely(b: bool) -> bool {
+    if b { cold(()) }
+    b
+}
+
+#[cold]
+pub fn length_mismatch_error(xlen: usize, ylen: usize) -> Result<(), String> {
+    // TODO include name/position of verb
+    cold_err!("length mismatch: {xlen} vs {ylen}")
+}
+
+#[inline]
+pub fn match_lengths(xlen: usize, ylen: usize) -> Result<(), String> {
+    if xlen != ylen { length_mismatch_error(xlen, ylen) }
+    else { Ok(()) }
 }

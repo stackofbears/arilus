@@ -213,28 +213,28 @@ impl Mem {
                 Splat { count } => {
                     // TODO repetition
                     match self.pop().as_val() {
-                        a@atom!() => return err!("Array unpacking failed; expected {count} elements, got atom {:?}", a),
+                        a@atom!() => return cold_err!("Array unpacking failed; expected {count} elements, got atom {:?}", a),
                         Val::U8s(cs) => {
                             if cs.len() != count {
-                                return err!("Array unpacking failed; expected {count} elements, got {}", cs.len())
+                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", cs.len())
                             }
                             self.stack.extend(cs.iter().rev().map(|c| Val::Char(*c)))
                         }
                         Val::I64s(is) => {
                             if is.len() != count {
-                                return err!("Array unpacking failed; expected {count} elements, got {}", is.len())
+                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", is.len())
                             }
                             self.stack.extend(is.iter().rev().map(|i| Val::Int(*i)))
                         }
                         Val::F64s(fs) =>  {
                             if fs.len() != count {
-                                return err!("Array unpacking failed; expected {count} elements, got {}", fs.len())
+                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", fs.len())
                             }
                             self.stack.extend(fs.iter().rev().map(|f| Val::Float(*f)))
                         }
                         Val::Vals(vs) => {
                             if vs.len() != count {
-                                return err!("Array unpacking failed; expected {count} elements, got {}", vs.len())
+                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", vs.len())
                             }
                             self.stack.extend(vs.iter().rev().map(|v| v.clone()))
                         }
@@ -626,7 +626,7 @@ impl Mem {
                 _ => todo!("{x:?} {v:?}")
             }
         };
-        result.map_err(|err| format!("Error in `{v}': {err}"))
+        result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
 
     fn call_prim_dyad(&mut self, v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
@@ -662,14 +662,14 @@ impl Mem {
                 _ => todo!("{x:?} {v:?} {y:?}"),
             },
         };
-        result.map_err(|err| format!("Error in `{v}': {err}"))
+        result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
 
     // TODO output formatting (take indent as arg)
     fn prim_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
         macro_rules! write_or {
             ($($arg:tt)*) => {
-                write!($($arg)*).map_err(|err| err.to_string())
+                write!($($arg)*).map_err(|err| cold(err.to_string()))
             };
         }
 
@@ -690,7 +690,7 @@ impl Mem {
             Val::Float(float) => write_or!(out, "{float}")?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
                 Ok(s) => write_or!(out, "{s}")?,
-                Err(err) => return Err(err.to_string()),
+                Err(err) => return cold(Err(err.to_string())),
             },
             Val::I64s(is) => {
                 if is.is_empty() {
@@ -793,7 +793,7 @@ impl Mem {
     fn prim_debug_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
         macro_rules! write_or {
             ($($arg:tt)*) => {
-                write!($($arg)*).map_err(|err| err.to_string())
+                write!($($arg)*).map_err(|err| cold(err.to_string()))
             };
         }
 
@@ -801,7 +801,7 @@ impl Mem {
             Val::Char(c) => write_or!(out, "{:?}", char::from_u32(*c as u32).unwrap())?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
                 Ok(s) => write_or!(out, "{s:?}")?,
-                Err(err) => return Err(err.to_string()),
+                Err(err) => return cold(Err(err.to_string())),
             },
             _ => self.prim_fmt(prec, x, out)?,
         }
@@ -845,8 +845,8 @@ impl Mem {
                 return Ok(())
             }
         }
-        err!("domain\nx is not an explicit function, so it has no bytecode. x is: {}",
-             self.prim_to_debug_string(x)?)
+        cold_err!("domain\nx is not an explicit function, so it has no bytecode. x is: {}",
+                  self.prim_to_debug_string(x)?)
     }
 
     fn fold_val(&mut self, f: Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
@@ -854,7 +854,7 @@ impl Mem {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
                 Some(first) => (first, 1),
-                None => return err!("Error: fold with no input"),
+                None => return cold_err!("Error: fold with no input"),
             }
         };
 
@@ -867,6 +867,7 @@ impl Mem {
 
     // TODO index by float when int-convertible.
     fn prim_index(&mut self, x: &Val, y: &Val) -> Result<Val, String> {
+        #[cold]
         fn oob(i: i64, len: usize) -> String {
             format!("index out of bounds\nRequested index {i}, but length is {len}")
         }
@@ -909,7 +910,7 @@ impl Mem {
 fn prim_get_line() -> Result<Val, String> {
     let mut line = String::new();
     if let Err(err) = std::io::stdin().read_line(&mut line) {
-        return Err(err.to_string())
+        return Err(cold(err.to_string()))
     }
     Ok(Val::U8s(Rc::new(line.into_bytes())))
 }
@@ -931,7 +932,7 @@ fn prim_show(x: Val) -> Result<Val, String> {
         Val::I64s(is) => Val::Vals(Rc::new(map_rc(is, |i| as_bytes(*i)))),
         Val::F64s(fs) => Val::Vals(Rc::new(map_rc(fs, |f| as_bytes(*f)))),
         Val::Vals(vs) => Val::Vals(Rc::new(traverse_rc(vs, |v| prim_show(v.clone()))?)),
-        _ => return err!("domain\nUnable to show {x:?}"), //TODO actually we can!
+        _ => return cold_err!("domain\nUnable to show {x:?}"), //TODO actually we can!
     };
     Ok(ret)
 }
@@ -942,7 +943,7 @@ fn prim_exit(x: &Val) -> Result<Val, String> {
     match x.as_val() {
         Val::Int(i) => exit(*i as i32),
         Val::Float(f) if *f == f.trunc() => exit(*f as i32),
-        bad => return err!("domain\nExpected integer exit code, got {bad:?}"),
+        bad => return cold_err!("domain\nExpected integer exit code, got {bad:?}"),
     }
 }
 
@@ -1027,7 +1028,7 @@ fn prim_where(x: &Val) -> Result<Val, String> {
         Vals(xs) => Val::Vals(
             Rc::new(traverse(&**xs, |val| prim_where(val))?)
         ),
-        _ => return err!("domain\nExpected integers, got {x:?}"),
+        _ => return cold_err!("domain\nExpected integers, got {x:?}"),
     };
     Ok(val)
 }
@@ -1096,12 +1097,12 @@ fn prim_read_file(x: &Val) -> Result<Val, String> {
         match x {
             Val::Char(c) => { byte[0] = *c; &byte }
             Val::U8s(cs) => cs,
-            _ => return err!("expected string filepath, got {x:?}"),
+            _ => return cold_err!("expected string filepath, got {x:?}"),
         }
     ).map_err(|err| err.to_string())?;
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(Val::U8s(Rc::new(contents.into_bytes()))),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(cold(err.to_string())),
     }
 }
 
@@ -1125,7 +1126,7 @@ fn prim_reverse(x: Val) -> Val {
 fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
     let count = match y {
         &Val::Int(i) => i,
-        _ => return err!("Invalid right argument {y:?}"),
+        _ => return cold_err!("Invalid right argument {y:?}"),
     };
 
     fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Rc<Vec<A>> {
@@ -1153,6 +1154,7 @@ fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
 
 fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
     use Val::*;
+    #[cold]
     fn unexpected_y(y: &Val) -> String {
         format!("domain\nExpected non-negative integer, got {y:?}")
     }
@@ -1169,7 +1171,7 @@ fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
     fn replicate_each<A: Clone, Y: ExactSizeIterator<Item=usize>>(
         xs: &[A], ys: Y, count: usize
     ) -> Result<Vec<A>, String> {
-        match_length(xs.len(), ys.len())?;
+        match_lengths(xs.len(), ys.len())?;
         let mut vec = Vec::with_capacity(count);
         for (x, y) in xs.iter().zip(ys) {
             vec.extend(replicate(x.clone(), y))
@@ -1465,7 +1467,7 @@ fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E
 
     let mut list = match it.next() {
         None => return Ok(Val::I64s(Rc::new(vec![]))),
-        Some(Err(err)) => return Err(err),
+        Some(Err(err)) => return cold(Err(err)),
         Some(Ok(rc)) => match rc.as_val() {
             Val::Char(c) => {
                 let mut vec = Vec::with_capacity(cap);
@@ -1571,7 +1573,7 @@ fn replicate<A: Clone>(a: A, n: usize) -> impl Iterator<Item=A> {
 fn replicate_with_float<A: Clone>(a: A, f: f64) -> Result<impl Iterator<Item=A>, String> {
     match float_as_int(f) {
         Some(n) => replicate_with_i64(a, n),
-        _ => err!("domain\nExpected non-negative integer, got {f}"),
+        _ => cold_err!("domain\nExpected non-negative integer, got {f}"),
     }
 }
 
@@ -1579,7 +1581,7 @@ fn replicate_with_i64<A: Clone>(a: A, n: i64) -> Result<impl Iterator<Item=A>, S
     if n >= 0 {
         Ok(replicate(a, n as usize))
     } else {
-        err!("domain\nExpected non-negative integer, got {n}")
+        cold_err!("domain\nExpected non-negative integer, got {n}")
     }
 }
 
@@ -1651,14 +1653,8 @@ fn iter_val(x: &Val) -> Option<ValIter> {
 fn zip_vals(x: &Val, y: &Val) -> Option<Result<ZippedVals, String>> {
     match (x.len(), y.len()) {
         (None, None) => return None,
-        (Some(xlen), Some(ylen)) => if let Err(err) = match_length(xlen, ylen) { return Some(Err(err)) },
+        (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Some(Err(err)) },
         _ => (),
     }
     Some(Ok(ZippedVals { x: x.clone(), y: y.clone(), i: 0 }))
-}
-
-fn match_length(xlen: usize, ylen: usize) -> Result<(), String> {
-    if xlen == ylen { return Ok(()); }
-    // TODO include name/position of verb
-    err!("length mismatch: {xlen} vs {ylen}")
 }

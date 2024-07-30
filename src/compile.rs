@@ -139,7 +139,7 @@ impl Compiler {
 
 
     fn parse_file(&self, filepath: &str) -> Result<Vec<Expr>, String> {
-        let file_contents = fs::read_to_string(filepath).map_err(|err| err.to_string())?;
+        let file_contents = fs::read_to_string(filepath).map_err(|err| cold(err.to_string()))?;
         let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
         parse(&tokens)
     }
@@ -306,7 +306,7 @@ impl Compiler {
             SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
             &SmallVerb::PrimVerb(prim) => {
                 if prim == PrimVerb::Rec && self.scopes.len() < 2 {
-                    return err!("Can't use `Rec` outside of an explicit definition")
+                    return cold_err!("Can't use `Rec` outside of an explicit definition")
                 }
                 self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(prim) })
             }
@@ -509,7 +509,7 @@ impl Compiler {
         if let Some(var) = self.get_local_scope().get(name) {
             return Ok(*var);
         }
-        err!("Undefined name: `{name}'")
+        cold_err!("Undefined name: `{name}'")
     }
 
     fn compile_small_noun(&mut self, small_noun: &SmallNoun) -> Result<(), String> {
@@ -521,7 +521,7 @@ impl Compiler {
                 let verb = match prim {
                     lex::PrimNoun::Rec => {
                         if self.scopes.len() < 2 {
-                            return err!("Can't use `rec` outside of an explicit definition")
+                            return cold_err!("Can't use `rec` outside of an explicit definition")
                         }
                         PrimVerb::Rec
                     }

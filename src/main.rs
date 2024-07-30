@@ -55,6 +55,8 @@ use std::{
     mem::swap,
 };
 
+use crate::util::{cold, err};
+
 fn main() -> io::Result<()> {
     // Read command line
     //   No options? Start repl (one-line tokenize, parse -> if in delayed spot (fn def, branch, line continuation, nested in parens) then wait for more, else run)
@@ -66,7 +68,7 @@ fn main() -> io::Result<()> {
     if let Err(s) = match &args[..] {
         [_] => run_repl(),
         [_, file] => go(&fs::read_to_string(&file)?),
-        _ => Err("Too many command-line options".to_string()),
+        _ => err!("Too many command-line options"),
     } {
         eprintln!("{s}");
     }
@@ -121,12 +123,13 @@ impl ReplSession {
                 print!("  ");
             }
 
-            if let Err(err) = io::stdout().flush() { return Err(err.to_string()) }
-            if let Err(err) = io::stdin().read_line(&mut self.line) { return Err(err.to_string()) }
+            if let Err(err) = io::stdout().flush() { cold(()); return Err(err.to_string()) }
+            if let Err(err) = io::stdin().read_line(&mut self.line) { cold(()); return Err(err.to_string()) }
             let line_start = self.tokens.len();
 
             // TODO use line length to guess token count
             if let err@Err(_) = self.compiler.lexer.tokenize(&self.line, &mut self.tokens) {
+                cold(());
                 self.tokens.truncate(token_start);
                 self.line.clear();
                 return err
@@ -172,6 +175,7 @@ fn run_repl() -> Result<(), String> {
     let mut session = ReplSession::new();
     loop {
         if let Err(err) = session.run_line() {
+            cold(());
             eprintln!("{}", err)
         }
     }
