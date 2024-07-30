@@ -1,3 +1,4 @@
+#![feature(iterator_try_reduce)]
 #![feature(min_specialization)]
 
 mod bytecode;

@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     cmp::Ordering,
+    mem,
     rc::Rc,
     fmt::Write,
 };
@@ -118,12 +119,18 @@ impl Mem {
                             ip += 1;
                             let mut closure_data = Vec::with_capacity(*num_closure_vars);
                             for _ in 0..*num_closure_vars {
-                                if let PushVar { src } = self.code[ip] {
-                                    ip += 1;
-                                    // TODO use e.g. List::I64s if closure vals are all ints
-                                    closure_data.push(self.load(src));
-                                } else {
-                                    panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}", self.code[ip]);
+                                match self.code[ip] {
+                                    PushVar { src } => {
+                                        ip += 1;
+                                        // TODO use e.g. List::I64s if closure vals are all ints
+                                        closure_data.push(self.load(src));
+                                    }
+                                    PushVarLastUse { src } => {
+                                        ip += 1;
+                                        closure_data.push(self.consuming_load(src));
+                                    }
+                                    _ => panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}",
+                                                self.code[ip]),
                                 }
                             }
                             closure_data
@@ -148,6 +155,10 @@ impl Mem {
                 PushLiteralFloat(value) => self.push(Val::Float(value)),
                 PushVar { src } => {
                     let val = self.load(src);
+                    self.push(val);
+                }
+                PushVarLastUse { src } => {
+                    let val = self.consuming_load(src);
                     self.push(val);
                 }
                 PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) } => {
@@ -359,7 +370,6 @@ impl Mem {
         self.stack_frames.last_mut().unwrap()
     }
 
-
     fn load(&mut self, var: Var) -> Val {
         // TODO do all local/closure vars point to non-lists (instead to slices)?
         let frame = self.current_frame();
@@ -367,6 +377,20 @@ impl Mem {
             Place::Local => self.locals_stack[frame.locals_start + var.slot].clone(),
             Place::ClosureEnv => frame.closure_env.borrow()[var.slot].clone(),
         }
+    }
+
+    fn consuming_load(&mut self, var: Var) -> Val {
+        let mut ret = Val::Int(0);  // TODO
+        let frame = self.current_frame_mut();
+        match var.place {
+            Place::Local => {
+                let absolute_slot = frame.locals_start + var.slot;
+                mem::swap(&mut ret, &mut self.locals_stack[absolute_slot])
+            }
+            Place::ClosureEnv =>
+                mem::swap(&mut ret, &mut frame.closure_env.borrow_mut()[var.slot]),
+        }
+        ret
     }
 
     fn store(&mut self, dst: Var, val: Val) {
@@ -544,12 +568,7 @@ impl Mem {
                 None => self.call_val(operand, x, None)?,
             },
             SingleQuote => match maybe_y {
-                None => match iter_val(&x) {
-                    None => self.call_val(operand, x, None)?,
-                    Some(iter) => collect_list(
-                        iter.map(|val| self.call_val(operand.clone(), val, None))
-                    )?,
-                }
+                None => for_each(self, operand, x)?,
                 Some(y) => match zip_vals(&x, &y) {
                     None => self.call_val(operand, x, Some(y))?,
                     Some(iter) => collect_list(
@@ -558,12 +577,7 @@ impl Mem {
                 }
             }
             Backtick => match maybe_y {
-                None => match iter_val(&x) {
-                    None => self.call_val(operand, x, None)?,
-                    Some(iter) => collect_list(
-                        iter.map(|val| self.call_val(operand.clone(), val, None))
-                    )?,
-                }
+                None => for_each(self, operand, x)?,
                 Some(y) => match iter_val(&x) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
                     Some(iter) => collect_list(
@@ -597,7 +611,7 @@ impl Mem {
     fn call_prim_monad(&mut self, v: PrimFunc, x: Val) -> Result<Val, String> {
         use PrimVerb::*;
         let result = match v {
-            PrimFunc::Sum => self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, None), // TODO prim::sum(x, None),
+            PrimFunc::Sum => prim::sum(x, None), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, None), // TODO prim::sum(x, None),
             PrimFunc::Verb(verb) => match verb {
                 P | Q => Ok(x),
                 Show => prim_show(x),
@@ -632,7 +646,7 @@ impl Mem {
     fn call_prim_dyad(&mut self, v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
         use PrimVerb::*;
         let result = match v {
-            PrimFunc::Sum => self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
+            PrimFunc::Sum => prim::sum(x, Some(y)), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
             PrimFunc::Verb(verb) => match verb {
                 P => Ok(x),
                 Q => Ok(y),
@@ -1452,110 +1466,6 @@ fn prim_match(x: &Val, y: &Val) -> Result<Val, String> {
     Ok(Val::Int((x == y) as i64))
 }
 
-fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E> {
-    enum List {
-        U8s(Vec<u8>),
-        I64s(Vec<i64>),
-        F64s(Vec<f64>),
-        Vals(Vec<Val>),
-    }
-
-    let cap = match it.size_hint() {
-        (lower, None) => lower,
-        (_, Some(upper)) => upper,
-    };
-
-    let mut list = match it.next() {
-        None => return Ok(Val::I64s(Rc::new(vec![]))),
-        Some(Err(err)) => return cold(Err(err)),
-        Some(Ok(rc)) => match rc.as_val() {
-            Val::Char(c) => {
-                let mut vec = Vec::with_capacity(cap);
-                vec.push(*c);
-                List::U8s(vec)
-            }
-            Val::Int(i) => {
-                let mut vec = Vec::with_capacity(cap);
-                vec.push(*i);
-                List::I64s(vec)
-            }
-            // TODO should we do this, or just go floats?
-            Val::Float(f) => match float_as_int(*f) {
-                None => {
-                    let mut vec = Vec::with_capacity(cap);
-                    vec.push(*f);
-                    List::F64s(vec)
-                }
-                Some(i) => {
-                    let mut vec = Vec::with_capacity(cap);
-                    vec.push(i);
-                    List::I64s(vec)
-                }
-            },
-            _ => {
-                let mut vec = Vec::with_capacity(cap);
-                vec.push(rc);
-                List::Vals(vec)
-            }
-        }
-    };
-
-    // TODO optimize
-    for val_or in it {
-        let val = val_or?;
-        match &mut list {
-            List::I64s(ints) => match val.as_val() {
-                Val::Int(i) => ints.push(*i),
-                Val::Float(f) => match float_as_int(*f) {
-                    Some(i) => ints.push(i),
-                    None => {
-                        let mut fs: Vec<f64> = ints.drain(..).map(|i| i as f64).collect();
-                        fs.reserve(cap.checked_sub(fs.len()).unwrap_or(1));
-                        fs.push(*f);
-                        list = List::F64s(fs);
-                    }
-                }
-                _ => {
-                    let mut vals: Vec<Val> =
-                        ints.drain(..).map(|i| Val::Int(i)).collect();
-                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
-                    vals.push(val);
-                    list = List::Vals(vals);
-                }
-            },
-            List::F64s(fs) => match val.as_val() {
-                Val::Float(f) => fs.push(*f),
-                Val::Int(i) => fs.push(*i as f64),
-                _ => {
-                    let mut vals: Vec<Val> =
-                        fs.drain(..).map(|f| Val::Float(f)).collect();
-                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
-                    vals.push(val);
-                    list = List::Vals(vals);
-                }
-            },
-            List::U8s(cs) => match val.as_val() {
-                Val::Char(c) => cs.push(*c),
-                _ => {
-                    let mut vals: Vec<Val> =
-                        cs.drain(..).map(|c| Val::Char(c)).collect();
-                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
-                    vals.push(val);
-                    list = List::Vals(vals);
-                }
-            },
-            List::Vals(vals) => vals.push(val),
-        }
-    }
-
-    Ok(match list {
-        List::U8s(cs) => Val::U8s(Rc::new(cs)),
-        List::I64s(ints) => Val::I64s(Rc::new(ints)),
-        List::F64s(fs) => Val::F64s(Rc::new(fs)),
-        List::Vals(vals) => Val::Vals(Rc::new(vals)),
-    })
-}
-
 fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A>>(x: I, y: &A) -> i64 {
     let mut i = 0i64;
     let mut iter = x.into_iter();
@@ -1643,6 +1553,22 @@ impl Iterator for ZippedVals {
         self.i += 1;
         Some((x_val, y_val))
     }
+}
+
+// TODO dyadic
+fn for_each(mem: &mut Mem, f: Val, x: Val) -> Result<Val, String> {
+    use crate::ops::{SingleValConsumer, IsVal};
+
+    struct ForEach<'a> { mem: &'a mut Mem, f: Val }
+    impl<'a> SingleValConsumer for ForEach<'a> {
+        fn eat_val(&mut self, val: Val) -> Result<Val, String> {
+            self.mem.call_val(self.f.clone(), val, None)
+        }
+        fn eat_val_ref(&mut self, val: &Val) -> Result<Val, String> {
+            self.mem.call_val(self.f.clone(), val.clone(), None)
+        }
+    }
+    x.dispatch_for_each(ForEach { mem, f })
 }
 
 fn iter_val(x: &Val) -> Option<ValIter> {

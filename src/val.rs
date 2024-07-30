@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::lex::*;
-use crate::util;
+use crate::util::{cold, float_as_int};
 use crate::bytecode::PrimFunc;
 
 // Maybe we go back to moving lists to the heap when they're sliced (and in
@@ -192,7 +192,7 @@ impl PartialEq<i64> for Val {
     fn eq(&self, other: &i64) -> bool {
         match self {
             Val::Int(i) => i == other,
-            Val::Float(f) => util::float_as_int(*f) == Some(*other),
+            Val::Float(f) => float_as_int(*f) == Some(*other),
             _ => false,
         }
     }
@@ -317,5 +317,109 @@ pub fn index_or_cycle_val(val: &Val, i: usize) -> Option<Val> {
         I64s(is) => Val::Int(*is.get(i)?),
         F64s(fs) => Val::Float(*fs.get(i)?),
         Vals(vs) => vs.get(i)?.clone(),
+    })
+}
+
+pub fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Val, E> {
+    enum List {
+        U8s(Vec<u8>),
+        I64s(Vec<i64>),
+        F64s(Vec<f64>),
+        Vals(Vec<Val>),
+    }
+
+    let cap = match it.size_hint() {
+        (lower, None) => lower,
+        (_, Some(upper)) => upper,
+    };
+
+    let mut list = match it.next() {
+        None => return Ok(Val::I64s(Rc::new(vec![]))),
+        Some(Err(err)) => return cold(Err(err)),
+        Some(Ok(rc)) => match rc.as_val() {
+            Val::Char(c) => {
+                let mut vec = Vec::with_capacity(cap);
+                vec.push(*c);
+                List::U8s(vec)
+            }
+            Val::Int(i) => {
+                let mut vec = Vec::with_capacity(cap);
+                vec.push(*i);
+                List::I64s(vec)
+            }
+            // TODO should we do this, or just go floats?
+            Val::Float(f) => match float_as_int(*f) {
+                None => {
+                    let mut vec = Vec::with_capacity(cap);
+                    vec.push(*f);
+                    List::F64s(vec)
+                }
+                Some(i) => {
+                    let mut vec = Vec::with_capacity(cap);
+                    vec.push(i);
+                    List::I64s(vec)
+                }
+            },
+            _ => {
+                let mut vec = Vec::with_capacity(cap);
+                vec.push(rc);
+                List::Vals(vec)
+            }
+        }
+    };
+
+    // TODO optimize
+    for val_or in it {
+        let val = val_or?;
+        match &mut list {
+            List::I64s(ints) => match val.as_val() {
+                Val::Int(i) => ints.push(*i),
+                Val::Float(f) => match float_as_int(*f) {
+                    Some(i) => ints.push(i),
+                    None => {
+                        let mut fs: Vec<f64> = ints.drain(..).map(|i| i as f64).collect();
+                        fs.reserve(cap.checked_sub(fs.len()).unwrap_or(1));
+                        fs.push(*f);
+                        list = List::F64s(fs);
+                    }
+                }
+                _ => {
+                    let mut vals: Vec<Val> =
+                        ints.drain(..).map(|i| Val::Int(i)).collect();
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
+                    vals.push(val);
+                    list = List::Vals(vals);
+                }
+            },
+            List::F64s(fs) => match val.as_val() {
+                Val::Float(f) => fs.push(*f),
+                Val::Int(i) => fs.push(*i as f64),
+                _ => {
+                    let mut vals: Vec<Val> =
+                        fs.drain(..).map(|f| Val::Float(f)).collect();
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
+                    vals.push(val);
+                    list = List::Vals(vals);
+                }
+            },
+            List::U8s(cs) => match val.as_val() {
+                Val::Char(c) => cs.push(*c),
+                _ => {
+                    let mut vals: Vec<Val> =
+                        cs.drain(..).map(|c| Val::Char(c)).collect();
+                    vals.reserve(cap.checked_sub(vals.len()).unwrap_or(1));
+                    vals.push(val);
+                    list = List::Vals(vals);
+                }
+            },
+            List::Vals(vals) => vals.push(val),
+        }
+    }
+
+    Ok(match list {
+        List::U8s(cs) => Val::U8s(Rc::new(cs)),
+        List::I64s(ints) => Val::I64s(Rc::new(ints)),
+        List::F64s(fs) => Val::F64s(Rc::new(fs)),
+        List::Vals(vals) => Val::Vals(Rc::new(vals)),
     })
 }

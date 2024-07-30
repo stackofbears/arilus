@@ -26,6 +26,7 @@ pub enum Instr {
     PushLiteralInteger(i64),
     PushLiteralFloat(f64),
     PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
+    PushVarLastUse { src: Var },  // Like PushVar, but this is the last possible use of this Var, so it can be moved out of the locals or closure environment. If this Var was the unique reference to its underlying array, then the array's storage may be reused.
     PushPrimFunc { prim: PrimFunc },  // Pushes `prim` onto stack.
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
     Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
@@ -78,6 +79,7 @@ impl fmt::Display for Instr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Instr::PushVar { src } => write!(f, "PushVar({src})"),
+            Instr::PushVarLastUse { src } => write!(f, "PushVarLastUse({src})"),
             Instr::StoreTo { dst } => write!(f, "StoreTo({dst})"),
             Instr::CallPrimFunc1 { prim } => write!(f, "CallPrimFunc1({prim})"),
             Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),

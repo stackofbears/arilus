@@ -340,6 +340,7 @@ impl Compiler {
                 self.code[make_func_index] = Instr::MakeFunc { num_instructions };
 
                 let final_scope = self.scopes.pop().unwrap();
+                self.mark_last_local_uses(make_func_index, next_local_slot(&final_scope));
 
                 // Tell the outer scope how to populate the closure environment.
                 let mut closure_vars: Vec<(&String, &Var)> =
@@ -591,6 +592,52 @@ impl Compiler {
     fn cull_locals_at_and_above(&mut self, too_high: usize) {
         let scope = self.scopes.last_mut().unwrap();
         scope.retain(|_, var| var.place == Place::ClosureEnv || var.slot < too_high);
+    }
+
+    // We may need to take special care to make sure this works for imperative
+    // loops if we add those.
+    fn mark_last_local_uses(&mut self, make_func_index: usize, num_local_vars_in_scope: usize) {
+        let mut inner_scope_skip_up = Vec::new();
+        let mut i = make_func_index + 1;
+        while i < self.code.len() {
+            if let Instr::MakeFunc { num_instructions } = self.code[i] {
+                inner_scope_skip_up.push(i);
+                i += num_instructions;  // This points i at Return.
+            }
+            i += 1;
+        }
+        
+        let mut else_branch_last_uses = vec![];
+        let mut last_use_seen = vec![false; num_local_vars_in_scope];
+        let mut i = self.code.len() - 1;
+        while i > make_func_index {
+            match self.code[i] {
+                Instr::StoreTo { dst: Var { place: Place::Local, slot } } => last_use_seen[slot] = false,
+                Instr::PushVar { src: src@Var { place: Place::Local, slot } } if !last_use_seen[slot] => {
+                    self.code[i] = Instr::PushVarLastUse { src };
+                    last_use_seen[slot] = true;
+                }
+                Instr::JumpRelative { offset } if offset > 0 => {
+                    let mut last_uses_in_else = vec![];
+                    for j in (i+1)..(i+offset as usize) {
+                        if let Instr::PushVarLastUse { src: Var { slot, .. } } = self.code[j] {
+                            last_use_seen[slot] = false;
+                            last_uses_in_else.push(slot);
+                        }
+                    }
+                    else_branch_last_uses.push(last_uses_in_else);
+                }
+                Instr::JumpRelativeUnless{ offset } if offset > 0 => {
+                    let last_uses_in_else = else_branch_last_uses.pop().unwrap();
+                    for slot in last_uses_in_else {
+                        last_use_seen[slot] = true;
+                    }
+                }
+                Instr::MakeClosure{..} => i = inner_scope_skip_up.pop().unwrap(),
+                _ => (),
+            }
+            i -= 1;
+        }
     }
 }
 

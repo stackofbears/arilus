@@ -1,3 +1,4 @@
+#![feature(iterator_try_reduce)]
 #![feature(min_specialization)]
 
 // mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); error messages (incl. argument errors for commutative primitives, which may output argument info in the wrong order)
