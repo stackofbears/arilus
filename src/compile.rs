@@ -607,21 +607,34 @@ impl Compiler {
             i += 1;
         }
         
+        fn get(v: &mut Vec<bool>, slot: usize) -> bool {
+            if slot >= v.len() {
+                v.resize(slot + 1, false);
+            }
+            v[slot]
+        }
+        fn set(v: &mut Vec<bool>, slot: usize, val: bool) {
+            if slot >= v.len() {
+                v.resize(slot + 1, false);
+            }
+            v[slot] = val;
+        }
+
         let mut else_branch_last_uses = vec![];
         let mut last_use_seen = vec![false; num_local_vars_in_scope];
         let mut i = self.code.len() - 1;
         while i > make_func_index {
             match self.code[i] {
-                Instr::StoreTo { dst: Var { place: Place::Local, slot } } => last_use_seen[slot] = false,
-                Instr::PushVar { src: src@Var { place: Place::Local, slot } } if !last_use_seen[slot] => {
+                Instr::StoreTo { dst: Var { place: Place::Local, slot } } => set(&mut last_use_seen, slot, false),
+                Instr::PushVar { src: src@Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
                     self.code[i] = Instr::PushVarLastUse { src };
-                    last_use_seen[slot] = true;
+                    set(&mut last_use_seen, slot, true);
                 }
                 Instr::JumpRelative { offset } if offset > 0 => {
                     let mut last_uses_in_else = vec![];
                     for j in (i+1)..(i+offset as usize) {
                         if let Instr::PushVarLastUse { src: Var { slot, .. } } = self.code[j] {
-                            last_use_seen[slot] = false;
+                            set(&mut last_use_seen, slot, false);
                             last_uses_in_else.push(slot);
                         }
                     }
@@ -630,7 +643,7 @@ impl Compiler {
                 Instr::JumpRelativeUnless{ offset } if offset > 0 => {
                     let last_uses_in_else = else_branch_last_uses.pop().unwrap();
                     for slot in last_uses_in_else {
-                        last_use_seen[slot] = true;
+                        set(&mut last_use_seen, slot, true);
                     }
                 }
                 Instr::MakeClosure{..} => i = inner_scope_skip_up.pop().unwrap(),
