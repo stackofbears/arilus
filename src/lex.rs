@@ -34,13 +34,13 @@ impl Lexer {
         use Token::*;
         let full_text_len = text.len();
         'next_token: loop {
-            // The first character in the input is considered to be "after
-            // whitespace". If it's '[', it should start an array literal, not
-            // an arg list.
-            let is_after_whitespace = text.len() == full_text_len || {
+            let is_after_whitespace = {
                 let len = text.len();
                 text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
-                len != text.len() || tokens.last().is_some_and(|t| matches!(t, Newline))
+                // The first character in the input is considered to be "after
+                // whitespace". If it's '[', it should start an array literal,
+                // not an arg list.
+                len == full_text_len || len != text.len() || tokens.last().is_some_and(|t| matches!(t, Newline))
             };
             if text.is_empty() { break }
 

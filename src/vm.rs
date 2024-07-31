@@ -1663,8 +1663,8 @@ fn prim_negate(x: Val) -> Result<Val, String> {
             Err(x) => F64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
         }
         Vals(x) => match Rc::try_unwrap(x) {
-            Ok(x) => Vals(Rc::new(x.into_iter().map(prim_negate).collect())),
-            Err(x) => Vals(Rc::new(x.as_slice().iter().map(|x| prim_negate(*x)).collect())),
+            Ok(x) => Vals(Rc::new(x.into_iter().map(prim_negate).collect::<Result<_, _>>()?)),
+            Err(x) => Vals(Rc::new(x.as_slice().iter().cloned().map(prim_negate).collect::<Result<_, _>>()?)),
         }
         x => return cold_err!("domain\nUnsupported argument: {}\nExpected a numeric value",
                               x.type_name()),

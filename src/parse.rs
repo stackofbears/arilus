@@ -534,7 +534,7 @@ impl<'a> Parser<'a> {
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {
         let mut small_verb = match self.peek() {
             Some(Token::UpperName(name)) => {
-                let mut upper_name = UpperName(name.clone());
+                let upper_name = UpperName(name.clone());
                 self.skip();
                 upper_name
             }

@@ -592,7 +592,13 @@ impl Compiler {
                 }
                 self.code.push(Instr::CollectToArray { num_elems: exprs.len() });
             }
-            Indexed(indices) => 
+            Indexed(small_noun, args) => {
+                self.compile_small_noun(&*small_noun)?;
+                for expr in args {
+                    self.compile_expr(expr)?;
+                }
+                self.code.push(Instr::CallN { num_args: args.len() });
+            }
         }
         Ok(())
     }

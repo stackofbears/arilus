@@ -124,8 +124,8 @@ impl ReplSession {
                 print!("  ");
             }
 
-            if let Err(err) = io::stdout().flush() { cold(()); return Err(err.to_string()) }
-            if let Err(err) = io::stdin().read_line(&mut self.line) { cold(()); return Err(err.to_string()) }
+            if let Err(err) = io::stdout().flush() { return cold(Err(err.to_string())) }
+            if let Err(err) = io::stdin().read_line(&mut self.line) { return cold(Err(err.to_string())) }
             let line_start = self.tokens.len();
 
             // TODO use line length to guess token count
