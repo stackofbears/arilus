@@ -201,6 +201,14 @@ impl Mem {
                         self.push(result);
                     }
                 }
+                CallN { num_args } => {
+                    // TODO - drain to locals stack?
+                    let args = self.stack.drain((self.stack.len() - num_args)..);
+                    self.locals_stack.extend(args);
+                    let f = self.pop();
+                    let result = self.index_or_call_from_locals(f, num_args)?;
+                    self.push(result);
+                }
                 CallPrimFunc1 { prim } => {
                     let x = self.pop();
                     let result = self.call_prim_monad(prim, x)?;
@@ -614,6 +622,7 @@ impl Mem {
             PrimFunc::Sum => prim::sum(x, None), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, None), // TODO prim::sum(x, None),
             PrimFunc::Verb(verb) => match verb {
                 P | Q => Ok(x),
+                Minus => prim_negate(x),
                 Show => prim_show(x),
                 GetLine => prim_get_line(),
                 Print => self.prim_to_string(&x)
@@ -879,6 +888,50 @@ impl Mem {
         Ok(seed)
     }
 
+    fn index_or_call_from_locals(&mut self, x: Val, num_args: usize) -> Result<Val, String> {
+        use Val::*;
+        match x {
+            Function(f) => match &*f {
+                &Func::Explicit { ref closure_env, code_index } => {
+                    let frame = StackFrame {
+                        code_index,
+                        closure_env: closure_env.clone(),
+                        locals_start: self.locals_stack.len() - num_args,
+                    };
+                    self.stack_frames.push(frame);
+                    // TODO arity mismatch (too few args, too many args).  If
+                    // this returns an array on arity args, the (num_args-arity)
+                    // args can be used to index the array and so forth.
+                    //
+                    // This is a problem because explicits truncate the locals
+                    // stack on Return. Can this be helped if function locals
+                    // are on the stack in opposite order? (can't add new ones
+                    // during execution, but first ones can be popped off, also
+                    // don't need to track locals start)
+                    self.execute(code_index)?;
+                    Ok(self.pop())
+                }
+                _ => todo!(),
+            }
+            _ => {
+                let result = self.progressive_index_from_locals(x, num_args);
+                self.locals_stack.truncate(self.locals_stack.len() - num_args);
+                result
+            }
+        }
+    }
+
+    fn progressive_index_from_locals(&mut self, x: Val, num_args: usize) -> Result<Val, String> {
+        if num_args == 0 { return Ok(x) }
+        for_each_atom_retaining_shape(
+            &self.locals_stack[self.locals_stack.len() - num_args].clone(),
+            |i| {
+                let elem = self.prim_index(&x, i)?;
+                self.progressive_index_from_locals(elem, num_args - 1)
+            }
+        )
+    }
+
     // TODO index by float when int-convertible.
     fn prim_index(&mut self, x: &Val, y: &Val) -> Result<Val, String> {
         #[cold]
@@ -916,6 +969,17 @@ impl Mem {
             _ => return self.call_val(x.clone(), y.clone(), None),
         };
         Ok(val)
+    }
+}
+
+fn for_each_atom_retaining_shape<F>(x: &Val, mut f: F) -> Result<Val, String>
+where F: FnMut(&Val) -> Result<Val, String> {
+    match x {
+        atom!() => f(x),
+        Val::U8s(x) => collect_list(x.as_slice().iter().map(|x| f(&Val::Char(*x)))),
+        Val::I64s(x) => collect_list(x.as_slice().iter().map(|x| f(&Val::Int(*x)))),
+        Val::F64s(x) => collect_list(x.as_slice().iter().map(|x| f(&Val::Float(*x)))),
+        Val::Vals(x) => collect_list(x.as_slice().iter().map(f)),
     }
 }
 
@@ -1583,4 +1647,26 @@ fn zip_vals(x: &Val, y: &Val) -> Option<Result<ZippedVals, String>> {
         _ => (),
     }
     Some(Ok(ZippedVals { x: x.clone(), y: y.clone(), i: 0 }))
+}
+
+fn prim_negate(x: Val) -> Result<Val, String> {
+    use Val::*;
+    Ok(match x {
+        Int(x) => Int(-x),
+        Float(x) => Float(-x),
+        I64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => I64s(Rc::new(x.into_iter().map(|x| -x).collect())),
+            Err(x) => I64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
+        }
+        F64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => F64s(Rc::new(x.into_iter().map(|x| -x).collect())),
+            Err(x) => F64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
+        }
+        Vals(x) => match Rc::try_unwrap(x) {
+            Ok(x) => Vals(Rc::new(x.into_iter().map(prim_negate).collect())),
+            Err(x) => Vals(Rc::new(x.as_slice().iter().map(|x| prim_negate(*x)).collect())),
+        }
+        x => return cold_err!("domain\nUnsupported argument: {}\nExpected a numeric value",
+                              x.type_name()),
+    })
 }

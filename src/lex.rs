@@ -32,8 +32,12 @@ impl Lexer {
     // TODO better error than String
     pub fn tokenize(&self, mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
         use Token::*;
+        let full_text_len = text.len();
         'next_token: loop {
-            let is_after_whitespace = {
+            // The first character in the input is considered to be "after
+            // whitespace". If it's '[', it should start an array literal, not
+            // an arg list.
+            let is_after_whitespace = text.len() == full_text_len || {
                 let len = text.len();
                 text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
                 len != text.len() || tokens.last().is_some_and(|t| matches!(t, Newline))
@@ -52,11 +56,11 @@ impl Lexer {
             for (expected, token) in &self.literal_symbol_tokens {
                 if let Some(rest) = text.strip_prefix(expected) {
                     text = rest;
-                    if matches!(token, Colon) && is_after_whitespace {
-                        tokens.push(ColonAfterWhitespace)
-                    } else {
-                        tokens.push(token.clone());
-                    }
+                    tokens.push(match token {
+                        Colon if is_after_whitespace => ColonAfterWhitespace,
+                        LBracket {..} => LBracket { after_whitespace: is_after_whitespace },
+                        _ => token.clone(),
+                    });
                     continue 'next_token;
                 }
             }
@@ -221,7 +225,7 @@ pub enum Token {
 
     LParen,  // (
     RParen,  // )
-    LBracket,  // [
+    LBracket { after_whitespace: bool },  // [
     RBracket,  // ]
     LBrace,  // {
     RBrace,  // }
@@ -334,7 +338,11 @@ impl Display for Token {
             Underscore => f.write_str("_"),
             LParen => f.write_str("("),
             RParen => f.write_str(")"),
-            LBracket => f.write_str("["),
+            LBracket { after_whitespace } => if *after_whitespace {
+                f.write_str(" [")
+            } else {
+                f.write_str("[")
+            },
             RBracket => f.write_str("]"),
             LBrace => f.write_str("{"),
             RBrace => f.write_str("}"),
@@ -456,7 +464,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
     let mut ret: Vec<_> = [
         Colon,
         LBrace,
-        LBracket,
+        LBracket { after_whitespace: false },
         LParen,
         RBrace,
         RBracket,

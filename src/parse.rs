@@ -86,6 +86,9 @@ pub enum SmallNoun {
 
     // [a; b; c] or a b c
     ArrayLiteral(Vec<Expr>),
+
+    // a[i1; i2;...; iN]
+    Indexed(Box<SmallNoun>, Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +97,8 @@ pub enum SmallVerb {
     VerbBlock(Vec<Expr>, Box<Verb>),  // parenthesized
     PrimVerb(lex::PrimVerb),
     Lambda(Option<ExplicitArgs>, Vec<Expr>),
-    Adverb(PrimAdverb, Box<SmallExpr>),
+    PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
+    UserAdverbCall(Box<SmallVerb>, Vec<Expr>),
 }
 
 // Explicit argument syntax:
@@ -279,7 +283,7 @@ impl<'a> Parser<'a> {
 
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
-        let small_noun = match self.peek() {
+        let mut small_noun = match self.peek() {
             Some(&Token::IfLower) => {
                 self.skip();
 
@@ -351,7 +355,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Some(Token::LBracket) => {
+            Some(Token::LBracket{..}) => {
                 self.skip();
                 let elems = self.parse_exprs()?;
                 self.consume_or_fail(&Token::RBracket)?;
@@ -359,6 +363,11 @@ impl<'a> Parser<'a> {
             }
             _ => return Ok(None),
         };
+
+        while let Some(indices) = self.parse_bracketed_args()? {
+            small_noun = Indexed(Box::new(small_noun), indices);
+        }
+
         Ok(Some(small_noun))
     }
 
@@ -444,7 +453,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 Ok(Some(pat))
             }
-            Some(Token::LBracket) => {
+            Some(Token::LBracket{..}) => {
                 self.skip();
                 let names = self.parse_pattern_list()?;
                 self.consume_or_fail(&Token::RBracket)?;
@@ -523,9 +532,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {
-        let small_verb = match self.peek() {
+        let mut small_verb = match self.peek() {
             Some(Token::UpperName(name)) => {
-                let upper_name = UpperName(name.clone());
+                let mut upper_name = UpperName(name.clone());
                 self.skip();
                 upper_name
             }
@@ -536,11 +545,10 @@ impl<'a> Parser<'a> {
                 if exprs.is_empty() {  // TODO remove to enable () parse
                     return Err(self.expected(&"expression"))
                 }
-                if self.consume(&Token::RBrace) {
-                    Lambda(maybe_explicit_args, exprs)
-                } else {
+                if !self.consume(&Token::RBrace) {
                     return Err(self.expected("`;', newline, or `}}'"))
                 }
+                Lambda(maybe_explicit_args, exprs)
             }
             Some(Token::PrimVerb(prim_verb)) => {
                 let prim = PrimVerb(*prim_verb);
@@ -553,7 +561,7 @@ impl<'a> Parser<'a> {
                 // .((func...) y), a monadic invocation of a .-derived verb
                 // whose operand is a stranded array of two elements
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
-                    Some(adverb_operand) => Adverb(prim_adverb, Box::new(adverb_operand)),
+                    Some(adverb_operand) => PrimAdverbCall(prim_adverb, Box::new(adverb_operand)),
                     None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
                 }
             }
@@ -579,7 +587,23 @@ impl<'a> Parser<'a> {
             _ => return Ok(None),
         };
 
+        if matches!(small_verb, UpperName(_) | Lambda(_, _) | VerbBlock(_, _)) {
+            while let Some(args) = self.parse_bracketed_args()? {
+                small_verb = UserAdverbCall(Box::new(small_verb), args);
+            }
+        }
+
         Ok(Some(small_verb))
+    }
+
+    fn parse_bracketed_args(&mut self) -> Parsed<Vec<Expr>> {
+        if self.consume(&Token::LBracket{after_whitespace: false}) {
+            let args = self.parse_exprs()?;
+            self.consume_or_fail(&Token::RBracket)?;
+            Ok(Some(args))
+        } else {
+            Ok(None)
+        }
     }
 
     fn parse_small_expr(&mut self, stranding_allowed: bool) -> Parsed<SmallExpr> {

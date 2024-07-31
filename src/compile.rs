@@ -355,7 +355,7 @@ impl Compiler {
                     }
                 }
             }
-            SmallVerb::Adverb(prim, small_expr_box) => {
+            SmallVerb::PrimAdverbCall(prim, small_expr_box) => {
                 match small_expr_box.as_ref() {
                     SmallExpr::Verb(small_verb) => {
                         self.compile_small_verb(small_verb)?;
@@ -368,6 +368,13 @@ impl Compiler {
                         self.code.push(Instr::CallPrimAdverb { prim: *prim });
                     }
                 }
+            }
+            SmallVerb::UserAdverbCall(small_verb, exprs) => {
+                self.compile_small_verb(small_verb)?;
+                for expr in exprs {
+                    self.compile_expr(expr)?;
+                }
+                self.code.push(Instr::CallN { num_args: exprs.len() });
             }
         }
         Ok(())
@@ -585,6 +592,7 @@ impl Compiler {
                 }
                 self.code.push(Instr::CollectToArray { num_elems: exprs.len() });
             }
+            Indexed(indices) => 
         }
         Ok(())
     }
@@ -719,7 +727,7 @@ fn form_primitive_from_small_verb(small_verb: &SmallVerb) -> Option<PrimFunc> {
         &SmallVerb::PrimVerb(prim) if prim != PrimVerb::Rec =>
             Some(PrimFunc::Verb(prim)),
 
-        SmallVerb::Adverb(PrimAdverb::Backslash, expr_box) => match expr_box.as_ref() {
+        SmallVerb::PrimAdverbCall(PrimAdverb::Backslash, expr_box) => match expr_box.as_ref() {
             SmallExpr::Verb(SmallVerb::PrimVerb(PrimVerb::Plus)) => Some(PrimFunc::Sum),
             _ => None,
         }

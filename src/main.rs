@@ -187,7 +187,7 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
     let mut level = 0;
     for token in tokens {
         match token {
-            LParen | LBracket | LBrace => level += 1,
+            LParen | LBracket{..} | LBrace => level += 1,
             RParen | RBracket | RBrace => level -= 1,
             _ => (),
         }
