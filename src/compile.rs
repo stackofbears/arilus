@@ -310,11 +310,44 @@ impl Compiler {
                 }
                 self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(prim) })
             }
+            fn comp_direct_names(scope: &mut HashMap<String, Var>, pat: &Pattern, var: Var) {
+                match pat {
+                    Pattern::Name(name) => scope.insert(name.clone(), var),
+                    As(p1, p2) => {
+                        populate_direct_names(scope, &*p1, var);
+                    }
+            }
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
                 // TODO alloc locals?
 
                 let mut scope = HashMap::new();
+                match explicit_args {
+                    None => {
+                        scope.insert("x".to_string(), local_var(0));
+                        scope.insert("y".to_string(), local_var(1));
+                        self.scopes.push(scope);
+                    }
+                    Some(ExplicitArgs { x, y }) => {
+                        populate_direct_names(&mut scope, x, local_var(0));
+                        match x {
+                            Pattern::Name(x_name) => scope.insert(x_name.clone(), local_var(0)),
+                            As(p1, p2) => {
+                                if let Pattern::
+
+                        self.scopes.push(scope);
+                        if y.is_some() {
+                            self.code.push(Instr::PushVar { src: local_var(1) });
+                        }
+                        self.code.push(Instr::PushVar { src: local_var(0) });
+                        self.compile_unpacking_assignment(x, false);
+
+                        if let Some(y_pat) = y {
+                            self.compile_unpacking_assignment(y_pat, false);
+                        }                    
+                    }
+                }
+
                 if let None = explicit_args {
                     scope.insert("x".to_string(), local_var(0));
                     scope.insert("y".to_string(), local_var(1));  // Might not be used!

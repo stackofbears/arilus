@@ -202,7 +202,6 @@ impl Mem {
                     }
                 }
                 CallN { num_args } => {
-                    // TODO - drain to locals stack?
                     let args = self.stack.drain((self.stack.len() - num_args)..);
                     self.locals_stack.extend(args);
                     let f = self.pop();
