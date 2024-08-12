@@ -88,7 +88,7 @@ impl ReplSession {
     fn new() -> Self {
         let mut mem = vm::Mem::new();
         let print_and_pop_result = vec![
-            bytecode::Instr::CallPrimFunc1 { prim: bytecode::PrimFunc::Verb(lex::PrimVerb::DebugPrint) },
+            bytecode::Instr::CallPrimFunc1 { prim: bytecode::PrimFunc::DebugPrint },
             bytecode::Instr::Pop,
         ];
         mem.code = print_and_pop_result;
@@ -154,7 +154,7 @@ impl ReplSession {
                                      ));
         if !is_assignment {
             self.compiler.code.push(bytecode::Instr::CallPrimFunc1 {
-                prim: bytecode::PrimFunc::Verb(lex::PrimVerb::DebugPrint)
+                prim: bytecode::PrimFunc::DebugPrint
             });
         }
         self.compiler.code.push(bytecode::Instr::Pop);

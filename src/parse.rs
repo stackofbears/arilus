@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use crate::bytecode::PrimFunc;
 use crate::lex::{self, *};
 use crate::util::*;
 
@@ -68,7 +71,7 @@ pub enum Verb {
 #[derive(Debug, Clone)]
 pub enum SmallNoun {
     If3(Box<Expr>, Box<Expr>, Box<Expr>),
-    PrimNoun(lex::PrimNoun),
+    PrimNoun(PrimFunc),
     LowerName(String),
     NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
 
@@ -95,7 +98,7 @@ pub enum SmallNoun {
 pub enum SmallVerb {
     UpperName(String),
     VerbBlock(Vec<Expr>, Box<Verb>),  // parenthesized
-    PrimVerb(lex::PrimVerb),
+    PrimVerb(PrimFunc),
     Lambda(Option<ExplicitArgs>, Vec<Expr>),
     PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
     UserAdverbCall(Box<SmallVerb>, Vec<Expr>),
@@ -137,6 +140,7 @@ pub enum SmallExpr {
 struct Parser<'a> {
     tokens: &'a [Token],
     token_index: usize,
+    primitive_identifiers: HashMap<&'static str, PrimFunc>,
 }
 
 use Noun::*;
@@ -146,7 +150,9 @@ use crate::parse::SmallVerb::*;
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Parser { tokens, token_index: 0 }
+        Parser { tokens,
+                 token_index: 0,
+                 primitive_identifiers: make_primitive_identifier_map() }
     }
 
     fn peek(&self) -> Option<&Token> { self.tokens.get(self.token_index) }
@@ -155,7 +161,10 @@ impl<'a> Parser<'a> {
     fn expected(&self, expected: &str) -> String {
         match self.peek() {
             Some(Token::Newline) => format!("Unexpected newline; expected {expected}"),
-            Some(bad) => format!("Unexpected `{bad}'; expected {expected}"),
+            Some(Token::UpperName(name) |
+                 Token::LowerName(name)) if self.primitive_identifiers.contains_key(name.as_str()) =>
+                format!("Unexpected primitive `{name}'; expected {expected}"),
+            Some(bad) => format!("Unexpected primitive `{bad}'; expected {expected}"),
             None => format!("Unexpected end of input; expected {expected}"),
         }
     }
@@ -284,6 +293,7 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let mut small_noun = match self.peek() {
+            Some(Token::C0Lower) => SmallNoun::CharLiteral(0),
             Some(&Token::IfLower) => {
                 self.skip();
 
@@ -309,14 +319,15 @@ impl<'a> Parser<'a> {
                     None => return Err(self.expected(&format!("operand for `_'"))),
                 }
             }
-            Some(&Token::PrimNoun(prim)) => {
-                self.skip();
-                PrimNoun(prim)
-            }
             Some(Token::LowerName(name)) => {
-                let name_clone = name.clone();
-                self.skip();
-                LowerName(name_clone)
+                if let Some(&prim) = self.primitive_identifiers.get(name.as_str()) {
+                    self.skip();
+                    PrimNoun(prim)
+                } else {
+                    let name_clone = name.clone();
+                    self.skip();
+                    LowerName(name_clone)
+                }
             }
             Some(&Token::IntLit(int)) => {
                 self.skip();
@@ -449,6 +460,9 @@ impl<'a> Parser<'a> {
         // TODO UpperName?
         match self.peek() {
             Some(Token::LowerName(name)) => {
+                if self.primitive_identifiers.contains_key(name.as_str()) {
+                    return Err(self.expected(&"pattern"))
+                }
                 let pat = Pattern::Name(name.clone());
                 self.skip();
                 Ok(Some(pat))
@@ -533,10 +547,19 @@ impl<'a> Parser<'a> {
 
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {
         let mut small_verb = match self.peek() {
+            Some(Token::C0Upper) => SmallVerb::PrimAdverbCall(
+                PrimAdverb::Dot,
+                Box::new(SmallExpr::Noun(SmallNoun::CharLiteral(0)))
+            ),
             Some(Token::UpperName(name)) => {
-                let upper_name = UpperName(name.clone());
-                self.skip();
-                upper_name
+                if let Some(&prim) = self.primitive_identifiers.get(name.as_str()) {
+                    self.skip();
+                    PrimVerb(prim)
+                } else {
+                    let upper_name = name.clone();
+                    self.skip();
+                    UpperName(upper_name)
+                }
             }
             Some(Token::LBrace) => {
                 self.skip();
@@ -550,10 +573,9 @@ impl<'a> Parser<'a> {
                 }
                 Lambda(maybe_explicit_args, exprs)
             }
-            Some(Token::PrimVerb(prim_verb)) => {
-                let prim = PrimVerb(*prim_verb);
+            Some(&Token::PrimVerb(prim_verb)) => {
                 self.skip();
-                prim
+                SmallVerb::PrimVerb(PrimFunc::Verb(prim_verb))
             }
             Some(&Token::PrimAdverb(prim_adverb)) => {
                 self.skip();
@@ -622,4 +644,146 @@ impl<'a> Parser<'a> {
         };
         Ok(Some(small_expr))
     }
+}
+
+fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
+    use PrimFunc::*;
+    HashMap::from([ 
+        ("Ints", Ints),
+        ("ints", Ints),
+        ("Rev", Rev),
+        ("rev", Rev),
+        ("Where", Where),
+        ("where", Where),
+        ("Nub", Nub),
+        ("nub", Nub),
+        ("Identity", Identity),
+        ("identity", Identity),
+        ("Asc", Asc),
+        ("asc", Asc),
+        ("Desc", Desc),
+        ("desc", Desc),
+        ("Sort", Sort),
+        ("sort", Sort),
+        ("SortDesc", SortDesc),
+        ("sortDesc", SortDesc),
+        ("Inits", Inits),
+        ("inits", Inits),
+        ("Tails", Tails),
+        ("tails", Tails),
+        ("Not", Not),
+        ("not", Not),
+        ("Ravel", Ravel),
+        ("ravel", Ravel),
+        ("Floor", Floor),
+        ("floor", Floor),
+        ("Ceil", Ceil),
+        ("ceil", Ceil),
+        ("Length", Length),
+        ("length", Length),
+        ("Exit", Exit),
+        ("exit", Exit),
+        ("Show", Show),
+        ("show", Show),
+        ("Print", Print),
+        ("print", Print),
+        ("GetLine", GetLine),
+        ("getLine", GetLine),
+        ("ReadFile", ReadFile),
+        ("readFile", ReadFile),
+        ("Rand", Rand),
+        ("rand", Rand),
+        ("Type", Type),
+        ("type", Type),
+        ("PrintBytecode", PrintBytecode),
+        ("printBytecode", PrintBytecode),
+        ("Take", Take),
+        ("take", Take),
+        ("Drop", Drop),
+        ("drop", Drop),
+        ("Rot", Rot),
+        ("rot", Rot),
+        ("Find", Find),
+        ("find", Find),
+        ("FindAll", FindAll),
+        ("findAll", FindAll),
+        ("FindSubseq", FindSubseq),
+        ("findSubseq", FindSubseq),
+        ("In", In),
+        ("in", In),
+        ("Copy", Copy),
+        ("copy", Copy),
+        ("IdentityLeft", IdentityLeft),
+        ("identityLeft", IdentityLeft),
+        ("IdentityRight", IdentityRight),
+        ("identityRight", IdentityRight),
+        ("ShiftLeft", ShiftLeft),
+        ("shiftLeft", ShiftLeft),
+        ("ShiftRight", ShiftRight),
+        ("shiftRight", ShiftRight),
+        ("And", And),
+        ("and", And),
+        ("Or", Or),
+        ("or", Or),
+        ("Equal", Equal),
+        ("equal", Equal),
+        ("NotEqual", NotEqual),
+        ("notEqual", NotEqual),
+        ("Match", Match),
+        ("match", Match),
+        ("NotMatch", NotMatch),
+        ("notMatch", NotMatch),
+        ("GreaterThan", GreaterThan),
+        ("greaterThan", GreaterThan),
+        ("GreaterThanEqual", GreaterThanEqual),
+        ("greaterThanEqual", GreaterThanEqual),
+        ("LessThan", LessThan),
+        ("lessThan", LessThan),
+        ("LessThanEqual", LessThanEqual),
+        ("lessThanEqual", LessThanEqual),
+        ("Index", Index),
+        ("index", Index),
+        ("Pick", Pick),
+        ("pick", Pick),
+        ("Append", Append),
+        ("append", Append),
+        ("Cons", Cons),
+        ("cons", Cons),
+        ("Snoc", Snoc),
+        ("snoc", Snoc),
+        ("Cut", Cut),
+        ("cut", Cut),
+        ("Add", Add),
+        ("add", Add),
+        ("Sub", Sub),
+        ("sub", Sub),
+        ("Neg", Neg),
+        ("neg", Neg),
+        ("Abs", Abs),
+        ("abs", Abs),
+        ("Mul", Mul),
+        ("mul", Mul),
+        ("Div", Div),
+        ("div", Div),
+        ("IntDiv", IntDiv),
+        ("intDiv", IntDiv),
+        ("Mod", Mod),
+        ("mod", Mod),
+        ("Pow", Pow),
+        ("pow", Pow),
+        ("Log", Log),
+        ("log", Log),
+        ("Min", Min),
+        ("min", Min),
+        ("Max", Max),
+        ("max", Max),
+        ("Windows", Windows),
+        ("windows", Windows),
+        ("Chunks", Chunks),
+        ("chunks", Chunks),
+        ("GroupBy", GroupBy),
+        ("groupBy", GroupBy),
+        ("SendToIndex", SendToIndex),
+        ("sendToIndex", SendToIndex),
+    ])
 }

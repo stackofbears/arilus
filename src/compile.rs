@@ -8,9 +8,6 @@ use crate::lex::{self, *};
 use crate::parse::*;
 use crate::util::*;
 
-#[derive(Clone, Copy)]
-enum Arity { One, Two }
-
 // TODO better error than string
 pub fn compile(lexer: Lexer, exprs: &[Expr]) -> Result<Vec<Instr>, String> {
     let mut compiler = Compiler::new(lexer);
@@ -226,37 +223,40 @@ impl Compiler {
         }
     }
 
-    fn compile_verb(&mut self, verb: &Verb, arity: Option<Arity>) -> Result<(), String> {
+    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>) -> Result<(), String> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs, None)?;
                 let dst = self.fetch_var_in_current_scope(name);
                 self.code.push(Instr::StoreTo { dst });
             }
-            Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb)?,
+            Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity)?,
             Verb::AmbivalentCases(monadic, dyadic) => match arity {
-                Some(Arity::One) => self.compile_verb(&*monadic, arity)?,
-                Some(Arity::Two) => self.compile_verb(&*monadic, arity)?,
+                Some(1) => self.compile_verb(&*monadic, arity)?,
+                Some(2) => self.compile_small_verb(&*dyadic, arity)?,
                 None => {
-                    self.compile_verb(monadic, Some(Arity::One))?;
-                    self.compile_small_verb(dyadic)?;
+                    self.compile_verb(monadic, Some(1))?;
+                    self.compile_small_verb(dyadic, Some(2))?;
                     self.code.push(Instr::CollectVerbAlternatives);
                 }
+                _ => todo!("Compile AmbivalentCases at arities other than 1 and 2"),
             },
+            // TODO trains should compile to functions that take N args and
+            // splat them to the leaf verbs.
             Verb::Atop(f, g) => {
                 self.compile_verb(f.as_ref(), arity)?;
-                self.compile_verb(g.as_ref(), Some(Arity::One))?;
+                self.compile_verb(g.as_ref(), Some(1))?;
                 self.code.push(Instr::MakeAtopFunc);
             }
             Verb::Bind(f, y) => {
-                self.compile_verb(f.as_ref(), Some(Arity::Two))?;
+                self.compile_verb(f.as_ref(), Some(2))?;
                 self.compile_small_noun(y.as_ref())?;
                 self.code.push(Instr::MakeBoundFunc);
             }
             Verb::Fork(f, h, g) => {
                 self.compile_verb(f.as_ref(), arity)?;
-                self.compile_small_verb(h.as_ref())?;
-                self.compile_small_verb(g.as_ref())?;
+                self.compile_small_verb(h.as_ref(), Some(2))?;
+                self.compile_small_verb(g.as_ref(), arity)?;
                 self.code.push(Instr::MakeForkFunc);
             }
         }
@@ -285,8 +285,8 @@ impl Compiler {
     }
 
     // TODO compile_small_verb should expect an arity (may be decided by a particular adverb)
-    fn compile_small_verb(&mut self, small_verb: &SmallVerb) -> Result<(), String> {
-        if let Some(prim) = form_primitive_from_small_verb(small_verb) {
+    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>) -> Result<(), String> {
+        if let Some(prim) = form_prim_func_from_small_verb(small_verb, arity) {
             self.code.push(Instr::PushPrimFunc { prim });
             return Ok(());
         }
@@ -303,12 +303,11 @@ impl Compiler {
                 }
                 self.compile_verb(&*verb, None)?;
             }
-            SmallVerb::PrimVerb(PrimVerb::C0) => self.code.push(Instr::LiteralBytes { bytes: [0; 8] }),
             &SmallVerb::PrimVerb(prim) => {
-                if prim == PrimVerb::Rec && self.scopes.len() < 2 {
+                if prim == PrimFunc::Verb(PrimVerb::Rec) && self.scopes.len() < 2 {
                     return cold_err!("Can't use `Rec` outside of an explicit definition")
                 }
-                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(prim) })
+                self.code.push(Instr::PushPrimFunc { prim })
             }
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
@@ -358,7 +357,7 @@ impl Compiler {
             SmallVerb::PrimAdverbCall(prim, small_expr_box) => {
                 match small_expr_box.as_ref() {
                     SmallExpr::Verb(small_verb) => {
-                        self.compile_small_verb(small_verb)?;
+                        self.compile_small_verb(small_verb, get_prim_adverb_operand_arity(*prim, arity))?;
                         if !matches!(prim, PrimAdverb::Dot) {
                             self.code.push(Instr::CallPrimAdverb { prim: *prim });
                         }
@@ -370,7 +369,8 @@ impl Compiler {
                 }
             }
             SmallVerb::UserAdverbCall(small_verb, exprs) => {
-                self.compile_small_verb(small_verb)?;
+
+                self.compile_small_verb(small_verb, None)?;
                 for expr in exprs {
                     self.compile_expr(expr)?;
                 }
@@ -417,13 +417,13 @@ impl Compiler {
     fn compile_predicate(&mut self, predicate: &Predicate) -> Result<(), String> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
-                let prim_func = form_primitive_from_verb(verb);
+                let prim_func = form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
                 if prim_func.is_none() {
                     match verb {
-                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimVerb::Rec)) =>
+                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimFunc::Verb(PrimVerb::Rec))) =>
                                 self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) }),
                         _ => {
-                            let arity = if maybe_y_arg.is_some() { Arity::Two } else { Arity::One };
+                            let arity = 1 + maybe_y_arg.is_some() as usize;
                             self.compile_verb(verb, Some(arity))?;
                         }
                     }
@@ -525,28 +525,11 @@ impl Compiler {
         // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
         match small_noun {
-            PrimNoun(prim) => {
-                let verb = match prim {
-                    lex::PrimNoun::Rec => {
-                        if self.scopes.len() < 2 {
-                            return cold_err!("Can't use `rec` outside of an explicit definition")
-                        }
-                        PrimVerb::Rec
-                    }
-                    lex::PrimNoun::Exit => PrimVerb::Exit,
-                    lex::PrimNoun::Show => PrimVerb::Show,
-                    lex::PrimNoun::Print => PrimVerb::Print,
-                    lex::PrimNoun::GetLine => PrimVerb::GetLine,
-                    lex::PrimNoun::ReadFile => PrimVerb::ReadFile,
-                    lex::PrimNoun::Rand => PrimVerb::Rand,
-                    lex::PrimNoun::Type => PrimVerb::Type,
-                    lex::PrimNoun::PrintBytecode => PrimVerb::PrintBytecode,
-                    lex::PrimNoun::C0 => {
-                        self.code.push(Instr::LiteralBytes { bytes: [0; 8] });
-                        return Ok(())
-                    }
-                };
-                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(verb) });
+            &PrimNoun(prim) => {
+                if prim == PrimFunc::Verb(PrimVerb::Rec) && self.scopes.len() < 2 {
+                    return cold_err!("Can't use `rec` outside of an explicit definition")
+                }
+                self.code.push(Instr::PushPrimFunc { prim });
             }
             If3(cond, then, else_) => {
                 self.compile_expr(&*cond)?;
@@ -565,7 +548,7 @@ impl Compiler {
             }
             Underscored(small_expr) => {
                 match small_expr.as_ref() {
-                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb)?,
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None)?,
                     SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
                 }
             }
@@ -731,26 +714,63 @@ fn pattern_to_small_noun(pat: &Pattern) -> SmallNoun {
     }
 }
 
-fn form_primitive_from_verb(verb: &Verb) -> Option<PrimFunc> {
+fn form_prim_func_from_verb(verb: &Verb, arity: Option<usize>) -> Option<PrimFunc> {
     match verb {
-        Verb::SmallVerb(small_verb) => form_primitive_from_small_verb(small_verb),
+        Verb::SmallVerb(small_verb) => form_prim_func_from_small_verb(small_verb, arity),
         _ => None,
     }
 }
 
-fn form_primitive_from_small_verb(small_verb: &SmallVerb) -> Option<PrimFunc> {
+// Applying an adverb may result in a primitive.
+fn form_prim_func_from_small_verb(small_verb: &SmallVerb, arity: Option<usize>) -> Option<PrimFunc> {
+    use PrimFunc::*;
+
     match small_verb {
         // Rec is special-cased because we can't just compile it into a call to
         // a prim verb; the bytecode interpreter would panic if we attempted to
         // run CallPrimFuncX with it.
-        &SmallVerb::PrimVerb(prim) if prim != PrimVerb::Rec =>
-            Some(PrimFunc::Verb(prim)),
-
+        &SmallVerb::PrimVerb(Verb(prim)) if prim != PrimVerb::Rec => Some(match prim {
+            PrimVerb::Comma if arity == Some(1) => Ravel,
+            PrimVerb::Comma if arity == Some(2) => Append,
+            PrimVerb::Minus if arity == Some(1) => Neg,
+            PrimVerb::Minus if arity == Some(2) => Sub,
+            PrimVerb::Hash if arity == Some(1) => Length,
+            PrimVerb::Hash if arity == Some(2) => Take,
+            PrimVerb::Slash if arity == Some(1) => Ints,
+            PrimVerb::Slash if arity == Some(2) => Div,
+            PrimVerb::Caret if arity == Some(1) => Inits,
+            PrimVerb::Caret if arity == Some(2) => Pow,
+            PrimVerb::Pipe if arity == Some(1) => Rev,
+            PrimVerb::Bang if arity == Some(1) => Not,
+            PrimVerb::Dollar if arity == Some(1) => Tails,
+            PrimVerb::LessThan if arity == Some(1) => Sort,
+            PrimVerb::LessThan if arity == Some(2) => LessThan,
+            PrimVerb::GreaterThan if arity == Some(1) => SortDesc,
+            PrimVerb::GreaterThan if arity == Some(2) => GreaterThan,
+            PrimVerb::LessThanColon if arity == Some(1) => Asc,
+            PrimVerb::LessThanColon if arity == Some(2) => Min,
+            PrimVerb::GreaterThanColon if arity == Some(1) => Desc,
+            PrimVerb::GreaterThanColon if arity == Some(2) => Max,
+            PrimVerb::Question if arity == Some(1) => Where,
+            PrimVerb::Question if arity == Some(2) => Find,
+            PrimVerb::P | PrimVerb::Q if arity == Some(1) => Identity,
+            PrimVerb::P if arity == Some(2) => IdentityLeft,
+            PrimVerb::Q if arity == Some(2) => IdentityRight,
+            _ => Verb(prim),
+        }),
         SmallVerb::PrimAdverbCall(PrimAdverb::Backslash, expr_box) => match expr_box.as_ref() {
-            SmallExpr::Verb(SmallVerb::PrimVerb(PrimVerb::Plus)) => Some(PrimFunc::Sum),
+            SmallExpr::Verb(SmallVerb::PrimVerb(Verb(PrimVerb::Plus) | PrimFunc::Add)) => Some(PrimFunc::Sum),
             _ => None,
         }
-
         _ => None,
+    }
+}
+
+fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<usize>) -> Option<usize> {
+    use PrimAdverb::*;
+    match adverb {
+        AtColon => Some(1),
+        Tilde | Backslash => Some(2),
+        Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
     }
 }

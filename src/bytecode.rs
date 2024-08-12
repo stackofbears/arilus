@@ -109,8 +109,80 @@ impl fmt::Display for Var {
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimFunc {
+    // Built-in verbs, possibly with monadic and dyadic cases.
     Verb(PrimVerb),
-    Sum
+    
+    // Derived functions recognized from patterns in the code (e.g. a certain
+    // application of an adverb).
+    Sum,
+    
+    // Primitive identifier functions with fixed arity.
+    // Monadic
+    Ints,
+    Rev,
+    Where,
+    Nub,
+    Identity,
+    Asc,
+    Desc,
+    Sort,
+    SortDesc,
+    Inits,
+    Tails,
+    Not,
+    Ravel,
+    Floor, Ceil,
+    Length,
+    Exit,
+    Show,
+    Print,
+    GetLine,
+    ReadFile,
+    Rand,
+    Type,
+    PrintBytecode,
+
+    // Dyadic
+    Take,
+    Drop,
+    Rot,
+    Find,
+    FindAll,
+    FindSubseq,
+    In,
+    Copy,
+    IdentityLeft,
+    IdentityRight,
+    ShiftLeft,
+    ShiftRight,
+    And,
+    Or,
+    Equal,
+    NotEqual,
+    Match,
+    NotMatch,
+    GreaterThan,
+    GreaterThanEqual,
+    LessThan,
+    LessThanEqual,
+    Index,
+    Pick,
+    Append,
+    Cons,
+    Snoc,
+    Cut,
+    Add, Sub, Neg, Abs, Mul, Div, IntDiv, Mod, Pow, Log,
+    Min, Max,
+    Windows, Chunks,
+    GroupBy,
+    SendToIndex,
+
+    // Invisible primitives. This is actually controlled by their absence from
+    // make_primitive_identifier_map in parsing.
+
+    // Currently used only for repl display, but this could be exposed once it
+    // prints in valid syntax (instead of Rust Debug).
+    DebugPrint,
 }
 
 impl std::fmt::Display for PrimFunc {
@@ -118,6 +190,7 @@ impl std::fmt::Display for PrimFunc {
         match self {
             PrimFunc::Verb(prim_verb) => prim_verb.fmt(f),
             PrimFunc::Sum => f.write_str("\\+"),
+            _ => fmt::Debug::fmt(self, f),
         }
     }
 }
