@@ -616,73 +616,73 @@ impl Mem {
     }
 
     fn call_prim_monad(&mut self, v: PrimFunc, x: Val) -> Result<Val, String> {
-        use PrimVerb::*;
+        use PrimFunc::*;
         let result = match v {
-            PrimFunc::Sum => prim::sum(x, None), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, None), // TODO prim::sum(x, None),
-            PrimFunc::Verb(verb) => match verb {
-                P | Q => Ok(x),
-                Minus => prim_negate(x),
-                Show => prim_show(x),
-                GetLine => prim_get_line(),
-                Print => self.prim_to_string(&x)
-                    .inspect(|s| println!("{s}"))
-                    .map(|_| x),
-                DebugPrint => self.prim_to_debug_string(&x)
-                    .inspect(|s| println!("{s}"))
-                    .map(|_| x),
-                PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
-                ReadFile => prim_read_file(x.as_val()),
-                Hash => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
-                Slash => Ok(iota(&x)),
-                Pipe => Ok(prim_reverse(x)),
-                Comma => Ok(prim_ravel(&x)),
-                Caret => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
-                Dollar => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
-                Question => prim_where(&x),
-                LessThan => Ok(prim_sort(x, false)),
-                GreaterThan => Ok(prim_sort(x, true)),
-                LessThanColon => Ok(prim_grade(&x, false)),
-                GreaterThanColon => Ok(prim_grade(&x, true)),
-                Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
-                Exit => prim_exit(&x),
-                _ => todo!("{x:?} {v:?}")
-            }
+            IdentityLeft | Verb(PrimVerb::P) | IdentityRight | Verb(PrimVerb::Q) => Ok(x),
+            Neg | Verb(PrimVerb::Minus) => prim_negate(x),
+            Show => prim_show(x),
+            GetLine => prim_get_line(),
+            Print => self.prim_to_string(&x)
+                .inspect(|s| println!("{s}"))
+                .map(|_| x),
+            DebugPrint => self.prim_to_debug_string(&x)
+                .inspect(|s| println!("{s}"))
+                .map(|_| x),
+            PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
+            ReadFile => prim_read_file(x.as_val()),
+            Length | Verb(PrimVerb::Hash) => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
+            Ints | Verb(PrimVerb::Slash) => Ok(iota(&x)),
+            Rev | Verb(PrimVerb::Pipe) => Ok(prim_reverse(x)),
+            Ravel | Verb(PrimVerb::Comma) => Ok(prim_ravel(&x)),
+            Inits | Verb(PrimVerb::Caret) => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
+            Tails | Verb(PrimVerb::Dollar) => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
+            Where | Verb(PrimVerb::Question) => prim_where(&x),
+            Sort | Verb(PrimVerb::LessThan) => Ok(prim_sort(x, false)),
+            SortDesc | Verb(PrimVerb::GreaterThan) => Ok(prim_sort(x, true)),
+            Asc | Verb(PrimVerb::LessThanColon) => Ok(prim_grade(&x, false)),
+            Desc | Verb(PrimVerb::GreaterThanColon) => Ok(prim_grade(&x, true)),
+            Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
+            Exit => prim_exit(&x),
+
+            Sum => prim::sum(x, None),
+
+            _ => todo!("{x:?} {v:?}")
         };
         result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
 
     fn call_prim_dyad(&mut self, v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
-        use PrimVerb::*;
+        use PrimFunc::*;
         let result = match v {
-            PrimFunc::Sum => prim::sum(x, Some(y)), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
-            PrimFunc::Verb(verb) => match verb {
-                P => Ok(x),
-                Q => Ok(y),
-                Plus => prim::add(x, y),
-                Minus => prim::subtract(x, y),
-                Asterisk => prim::multiply(x, y),
-                Slash => prim::divide(x, y),
-                DoubleSlash => prim::int_divide(x, y),
-                Percent => prim::int_mod(x, y),
-                Caret => prim::pow(x, y),
-                Hash => prim_take(x, &y),
-                HashColon => prim_copy(&x, &y),
-                Comma => prim_append(x, y),
-                DoubleEquals => prim_match(&x, &y),
-                // TODO take Val instead of &
-                Equals => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
-                EqualBang => prim_compare(&x, &y, |ord| ord != Ordering::Equal),
-                GreaterThan => prim_compare(&x, &y, |ord| ord > Ordering::Equal),
-                GreaterThanEquals => prim_compare(&x, &y, |ord| ord >= Ordering::Equal),
-                LessThan => prim_compare(&x, &y, |ord| ord < Ordering::Equal),
-                LessThanEquals => prim_compare(&x, &y, |ord| ord <= Ordering::Equal),
-                LessThanColon => prim_choose_atoms(&x, &y, Val::le),
-                GreaterThanColon => prim_choose_atoms(&x, &y, Val::ge),
-                At => self.prim_index(&x, &y),
-                Question => Ok(Val::Int(prim_find(x.as_val(), y.as_val()))),
-                QuestionColon => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
-                _ => todo!("{x:?} {v:?} {y:?}"),
-            },
+            IdentityLeft | Verb(PrimVerb::P) => Ok(x),
+            IdentityRight | Verb(PrimVerb::Q) => Ok(y),
+            Add | Verb(PrimVerb::Plus) => prim::add(x, y),
+            Sub | Verb(PrimVerb::Minus) => prim::subtract(x, y),
+            Mul | Verb(PrimVerb::Asterisk) => prim::multiply(x, y),
+            Div | Verb(PrimVerb::Slash) => prim::divide(x, y),
+            IntDiv | Verb(PrimVerb::DoubleSlash) => prim::int_divide(x, y),
+            Mod | Verb(PrimVerb::Percent) => prim::int_mod(x, y),
+            Pow | Verb(PrimVerb::Caret) => prim::pow(x, y),
+            Take | Verb(PrimVerb::Hash) => prim_take(x, &y),
+            Copy | Verb(PrimVerb::HashColon) => prim_copy(&x, &y),
+            Append | Verb(PrimVerb::Comma) => prim_append(x, y),
+            Match | Verb(PrimVerb::DoubleEquals) => prim_match(&x, &y),
+            // TODO take Val instead of &
+            Equal | Verb(PrimVerb::Equals) => prim_compare(&x, &y, |ord| ord == Ordering::Equal),
+            NotEqual | Verb(PrimVerb::EqualBang) => prim_compare(&x, &y, |ord| ord != Ordering::Equal),
+            GreaterThan | Verb(PrimVerb::GreaterThan) => prim_compare(&x, &y, |ord| ord > Ordering::Equal),
+            GreaterThanEqual | Verb(PrimVerb::GreaterThanEquals) => prim_compare(&x, &y, |ord| ord >= Ordering::Equal),
+            LessThan | Verb(PrimVerb::LessThan) => prim_compare(&x, &y, |ord| ord < Ordering::Equal),
+            LessThanEqual | Verb(PrimVerb::LessThanEquals) => prim_compare(&x, &y, |ord| ord <= Ordering::Equal),
+            Min | Verb(PrimVerb::LessThanColon) => prim_choose_atoms(&x, &y, Val::le),
+            Max | Verb(PrimVerb::GreaterThanColon) => prim_choose_atoms(&x, &y, Val::ge),
+            Index | Verb(PrimVerb::At) => self.prim_index(&x, &y),
+            Find | Verb(PrimVerb::Question) => Ok(Val::Int(prim_find(x.as_val(), y.as_val()))),
+            FindSubseq | Verb(PrimVerb::QuestionColon) => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
+
+            Sum => prim::sum(x, Some(y)), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
+
+            _ => todo!("{x:?} {v:?} {y:?}"),
         };
         result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
@@ -697,9 +697,8 @@ impl Mem {
 
         use PrecedenceContext::*;
 
-        fn parenthesized_if<F: FnOnce(&mut String) -> Result<(), String>>(
-            cond: bool, out: &mut String, f: F
-        ) -> Result<(), String> {
+        fn parenthesized_if<F>(cond: bool, out: &mut String, f: F) -> Result<(), String>
+        where F: FnOnce(&mut String) -> Result<(), String> {
             if cond { write_or!(out, "(")?; }
             f(out)?;
             if cond { write_or!(out, ")")?; }

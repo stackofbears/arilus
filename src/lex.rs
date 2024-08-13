@@ -233,8 +233,9 @@ pub enum Token {
     ColonAfterWhitespace, // : preceded by whitespace
     Semicolon, // ;
     Newline,  // \n
+    C0Lower,  // c0
+    C0Upper,  // C0
 
-    PrimNoun(PrimNoun),
     PrimVerb(PrimVerb),
     PrimAdverb(PrimAdverb),
 
@@ -243,20 +244,6 @@ pub enum Token {
     StrLit(String),
     UpperName(String),  // The stored string is in lowercase
     LowerName(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrimNoun {
-    Exit,
-    Show,
-    Print,
-    GetLine,
-    ReadFile,
-    Rand,
-    Rec,
-    Type,
-    PrintBytecode,
-    C0,  // The null character
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,26 +278,12 @@ pub enum PrimVerb {
     QuestionColon,  // ?:
     Ampersand, // &
 
-    Exit,
-    Show,
-    Print,
-    GetLine,
-    ReadFile,
-    Rand,
     Rec,
-    Type,
-    PrintBytecode,
-    C0,
-
-    P,  // P
-    Q,  // Q
+    P,
+    Q,
 
     // Hidden primitives below; these have no string representation and
     // shouldn't be in the token enum. TODO move these to compilation.
-
-    // Currently used only for repl display, but this could be exposed once it
-    // prints in valid syntax (instead of Rust Debug).
-    DebugPrint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,6 +323,8 @@ impl Display for Token {
             ColonAfterWhitespace => f.write_str(" : "),
             Semicolon => f.write_str(";"),
             Newline => f.write_str("\n"),
+            C0Lower => f.write_str("c0"),
+            C0Upper => f.write_str("C0"),
             UpperName(name) => {
                 for c in char::from_u32(name.as_bytes()[0] as u32).unwrap().to_uppercase() {
                     std::fmt::Write::write_char(f, c)?;
@@ -357,32 +332,12 @@ impl Display for Token {
                 f.write_str(&name[1..])
             }
             LowerName(name) => f.write_str(name),
-            PrimNoun(prim) => Display::fmt(prim, f),
             PrimVerb(prim) => Display::fmt(prim, f),
             PrimAdverb(prim) => Display::fmt(prim, f),
             IntLit(i) => Display::fmt(i, f),
             FloatLit(float) => Display::fmt(float, f),
             StrLit(lit) => std::fmt::Debug::fmt(lit, f),
         }
-    }
-}
-
-impl Display for PrimNoun {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        let s: &str = match self {
-            PrimNoun::Exit => "exit",
-            PrimNoun::Show => "show",
-            PrimNoun::Print => "print",
-            PrimNoun::GetLine => "getLine",
-            PrimNoun::ReadFile => "readFile",
-            PrimNoun::Rand => "rand",
-            PrimNoun::Rec => "rec",
-            PrimNoun::Type => "type",
-            PrimNoun::PrintBytecode => "printBytecode",
-            PrimNoun::C0 => "c0",
-        };
-
-        f.write_str(s)
     }
 }
 
@@ -418,20 +373,9 @@ impl Display for PrimVerb {
             Question => "?",
             QuestionColon => "?:",
             Ampersand => "&",
-
-            Exit => "Exit",
-            Show => "Show",
-            Print => "Print",
-            GetLine => "GetLine",
-            ReadFile => "ReadFile",
-            Rand => "Rand",
             Rec => "Rec",
-            Type => "Type",
-            PrintBytecode => "PrintBytecode",
-            C0 => "C0",
             P => "P",
             Q => "Q",
-            DebugPrint => "DebugPrint",
         };
 
         f.write_str(s)
@@ -520,47 +464,15 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
         Token::Load,
-
+        Token::C0Lower,
+        Token::C0Upper,
         Token::IfUpper,
         Token::IfLower,
-
         Token::Underscore,
-
         Token::PrimVerb(PrimVerb::P),
-        Token::PrimAdverb(PrimAdverb::P),
-
         Token::PrimVerb(PrimVerb::Q),
+        Token::PrimAdverb(PrimAdverb::P),
         Token::PrimAdverb(PrimAdverb::Q),
-
-        Token::PrimNoun(PrimNoun::Exit),
-        Token::PrimVerb(PrimVerb::Exit),
-
-        Token::PrimNoun(PrimNoun::Show),
-        Token::PrimVerb(PrimVerb::Show),
-
-        Token::PrimNoun(PrimNoun::Print),
-        Token::PrimVerb(PrimVerb::Print),
-
-        Token::PrimNoun(PrimNoun::GetLine),
-        Token::PrimVerb(PrimVerb::GetLine),
-
-        Token::PrimNoun(PrimNoun::ReadFile),
-        Token::PrimVerb(PrimVerb::ReadFile),
-
-        Token::PrimNoun(PrimNoun::Rand),
-        Token::PrimVerb(PrimVerb::Rand),
-
-        Token::PrimNoun(PrimNoun::Rec),
-        Token::PrimVerb(PrimVerb::Rec),
-
-        Token::PrimNoun(PrimNoun::Type),
-        Token::PrimVerb(PrimVerb::Type),
-
-        Token::PrimNoun(PrimNoun::PrintBytecode),
-        Token::PrimVerb(PrimVerb::PrintBytecode),
-
-        Token::PrimNoun(PrimNoun::C0),
-        Token::PrimVerb(PrimVerb::C0),
     ].iter().map(|t| (t.to_string(), t.clone())).collect()
 }
 
