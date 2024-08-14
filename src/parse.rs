@@ -164,7 +164,7 @@ impl<'a> Parser<'a> {
             Some(Token::UpperName(name) |
                  Token::LowerName(name)) if self.primitive_identifiers.contains_key(name.as_str()) =>
                 format!("Unexpected primitive `{name}'; expected {expected}"),
-            Some(bad) => format!("Unexpected primitive `{bad}'; expected {expected}"),
+            Some(bad) => format!("Unexpected `{bad}'; expected {expected}"),
             None => format!("Unexpected end of input; expected {expected}"),
         }
     }
