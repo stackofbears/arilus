@@ -309,13 +309,6 @@ impl Compiler {
                 }
                 self.code.push(Instr::PushPrimFunc { prim })
             }
-            fn comp_direct_names(scope: &mut HashMap<String, Var>, pat: &Pattern, var: Var) {
-                match pat {
-                    Pattern::Name(name) => scope.insert(name.clone(), var),
-                    As(p1, p2) => {
-                        populate_direct_names(scope, &*p1, var);
-                    }
-            }
             SmallVerb::Lambda(explicit_args, exprs) => {
                 let make_func_index = self.push(Instr::Nop);
                 // TODO alloc locals?
@@ -328,40 +321,57 @@ impl Compiler {
                         self.scopes.push(scope);
                     }
                     Some(ExplicitArgs { x, y }) => {
+                        fn populate_direct_names(scope: &mut HashMap<String, Var>, pat: &Pattern, var: Var) {
+                            match pat {
+                                Pattern::Name(name) => { scope.insert(name.clone(), var); },
+                                Pattern::As(p1, p2) => {
+                                    populate_direct_names(scope, &*p1, var);
+                                    populate_direct_names(scope, &*p2, var);
+                                }
+                                Pattern::Array(_) => (),
+                            }
+                        }
+                        fn pattern_unpacks(pat: &Pattern) -> bool {
+                            match pat {
+                                Pattern::Array(_) => true,
+                                Pattern::Name(_) => false,
+                                Pattern::As(p1, p2) => pattern_unpacks(&*p1) || pattern_unpacks(&*p2)
+                            }
+                        }
+                        
+                        // By doing this first, we can avoid redundantly pushing
+                        // the args (locals 0 and 1) when the explicit argument
+                        // list is just used to name the args without applying
+                        // patterns.
                         populate_direct_names(&mut scope, x, local_var(0));
-                        match x {
-                            Pattern::Name(x_name) => scope.insert(x_name.clone(), local_var(0)),
-                            As(p1, p2) => {
-                                if let Pattern::
-
+                        if let Some(y) = y {
+                            populate_direct_names(&mut scope, y, local_var(1));
+                        }
                         self.scopes.push(scope);
-                        if y.is_some() {
+                        
+                        // We need to push y before unpacking x because y may no
+                        // longer be local 1 after x is finished unpacking;
+                        // e.g. in F:{|a b;c d| ...}, unpacking x will put a in
+                        // local 0 and b in local 1; but then we've lost access
+                        // to the original y argument!
+                        //
+                        // Note that F:{|a b;c| ...} would be fine regardless or
+                        // order because c takes up local 1 before unpacking
+                        // even happens.
+                        let y_unpacks = y.as_ref().is_some_and(pattern_unpacks);
+                        if y.is_some() && y_unpacks {
                             self.code.push(Instr::PushVar { src: local_var(1) });
                         }
-                        self.code.push(Instr::PushVar { src: local_var(0) });
-                        self.compile_unpacking_assignment(x, false);
 
-                        if let Some(y_pat) = y {
-                            self.compile_unpacking_assignment(y_pat, false);
-                        }                    
-                    }
-                }
+                        if pattern_unpacks(x) {
+                            self.code.push(Instr::PushVar { src: local_var(0) });
+                            self.compile_unpacking_assignment(x, false);
+                        }
 
-                if let None = explicit_args {
-                    scope.insert("x".to_string(), local_var(0));
-                    scope.insert("y".to_string(), local_var(1));  // Might not be used!
-                }
-                self.scopes.push(scope);
-
-                if let Some(ExplicitArgs { x, y }) = explicit_args {
-                    if y.is_some() {
-                        self.code.push(Instr::PushVar { src: local_var(1) });
-                    }
-                    self.code.push(Instr::PushVar { src: local_var(0) });
-                    self.compile_unpacking_assignment(x, false);
-
-                    if let Some(y_pat) = y {
-                        self.compile_unpacking_assignment(y_pat, false);
+                        match y {
+                            Some(y) if y_unpacks => self.compile_unpacking_assignment(y, false),
+                            _ => (),
+                        }
                     }
                 }
 
