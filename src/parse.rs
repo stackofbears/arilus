@@ -114,10 +114,7 @@ pub enum SmallVerb {
 //   Invalid: ( ReturnsReverse: {|} )
 //   Valid:   ( ReturnsReverse: {(|)} )
 #[derive(Debug, Clone)]
-pub struct ExplicitArgs {
-    pub x: Pattern,
-    pub y: Option<Pattern>,
-}
+pub struct ExplicitArgs(pub Vec<Pattern>);
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -519,30 +516,10 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_newlines();
-        let x = match self.parse_pattern()? {
-            Some(pat) => pat,
-            None => return Err(self.expected(&"pattern for explicit left argument")),
-        };
-
-        let y = {
-            let y_required = self.consume(&Token::Semicolon);
-            let y_allowed = y_required | self.skip_newlines();
-
-            if y_allowed {
-                match self.parse_pattern()? {
-                    Some(pat) => Some(pat),
-                    None if y_required => return Err(self.expected(&"pattern for explicit right argument")),
-                    None => None,
-                }
-            } else {
-                None
-            }
-        };
-
-        self.skip_newlines();
+        let patterns = self.parse_pattern_list()?;
         self.consume_or_fail(&Token::PrimVerb(lex::PrimVerb::Pipe))?;
 
-        Ok(Some(ExplicitArgs { x, y }))
+        Ok(Some(ExplicitArgs(patterns)))
     }
 
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {

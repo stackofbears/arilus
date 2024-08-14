@@ -320,7 +320,7 @@ impl Compiler {
                         scope.insert("y".to_string(), local_var(1));
                         self.scopes.push(scope);
                     }
-                    Some(ExplicitArgs { x, y }) => {
+                    Some(ExplicitArgs(patterns)) => {
                         fn populate_direct_names(scope: &mut HashMap<String, Var>, pat: &Pattern, var: Var) {
                             match pat {
                                 Pattern::Name(name) => { scope.insert(name.clone(), var); },
@@ -340,37 +340,19 @@ impl Compiler {
                         }
                         
                         // By doing this first, we can avoid redundantly pushing
-                        // the args (locals 0 and 1) when the explicit argument
-                        // list is just used to name the args without applying
-                        // patterns.
-                        populate_direct_names(&mut scope, x, local_var(0));
-                        if let Some(y) = y {
-                            populate_direct_names(&mut scope, y, local_var(1));
+                        // the args when the explicit argument list is just used
+                        // to name the args without applying complex patterns.
+                        for (i, pat) in patterns.iter().enumerate().rev() {
+                            let var = local_var(i);
+                            populate_direct_names(&mut scope, pat, var);
+                            if pattern_unpacks(pat) {
+                                self.code.push(Instr::PushVar { src: var });
+                            }
                         }
                         self.scopes.push(scope);
-                        
-                        // We need to push y before unpacking x because y may no
-                        // longer be local 1 after x is finished unpacking;
-                        // e.g. in F:{|a b;c d| ...}, unpacking x will put a in
-                        // local 0 and b in local 1; but then we've lost access
-                        // to the original y argument!
-                        //
-                        // Note that F:{|a b;c| ...} would be fine regardless or
-                        // order because c takes up local 1 before unpacking
-                        // even happens.
-                        let y_unpacks = y.as_ref().is_some_and(pattern_unpacks);
-                        if y.is_some() && y_unpacks {
-                            self.code.push(Instr::PushVar { src: local_var(1) });
-                        }
 
-                        if pattern_unpacks(x) {
-                            self.code.push(Instr::PushVar { src: local_var(0) });
-                            self.compile_unpacking_assignment(x, false);
-                        }
-
-                        match y {
-                            Some(y) if y_unpacks => self.compile_unpacking_assignment(y, false),
-                            _ => (),
+                        for pat in patterns.iter().filter(|pat| pattern_unpacks(pat)) {
+                            self.compile_unpacking_assignment(pat, false);
                         }
                     }
                 }
