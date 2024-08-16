@@ -175,6 +175,7 @@ pub enum PrimFunc {
     Min, Max,
     Windows, Chunks,
     GroupBy,
+    GroupIndices,
     SendToIndex,
 
     // Invisible primitives. This is actually controlled by their absence from

@@ -643,6 +643,7 @@ impl Mem {
             Asc | Verb(PrimVerb::LessThanColon) => Ok(prim_grade(&x, false)),
             Desc | Verb(PrimVerb::GreaterThanColon) => Ok(prim_grade(&x, true)),
             Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
+            GroupIndices => prim::group_indices(x),
             Exit => prim_exit(&x),
 
             Sum => prim::sum(x, None),
