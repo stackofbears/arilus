@@ -170,8 +170,6 @@ impl Mem {
                     })));
                 }
                 PushPrimFunc { prim } => self.push(Val::Function(Rc::new(Func::Prim(prim)))),
-
-                // TODO eliminate tail calls for call instructions.
                 Call1 => {
                     let func = self.pop();
                     let x = self.pop();
@@ -377,6 +375,12 @@ impl Mem {
         self.stack_frames.last_mut().unwrap()
     }
 
+    fn pop_locals(&mut self) {
+        let frame = self.current_frame_mut();
+        let locals_start = frame.locals_start;
+        self.locals_stack.truncate(locals_start);
+    }
+
     fn load(&mut self, var: Var) -> Val {
         // TODO do all local/closure vars point to non-lists (instead to slices)?
         let frame = self.current_frame();
@@ -420,11 +424,16 @@ impl Mem {
         matches!(self.code.get(ip), Some(Instr::Return))
     }
 
-    fn chase_tail(&mut self, mut func: Val, mut x: Val, mut y: Option<Val>) -> Result<ChasedTail, String> {
+    fn chase_tail(&mut self, mut calling: Val, mut x: Val, mut y: Option<Val>) -> Result<ChasedTail, String> {
+        // We know this is a tail call, so we can pop the current locals. Even
+        // if we end up running a primitive here and Return runs for the current
+        // explicit, it'll just re-truncate locals_stack to the same.
+        self.pop_locals();
+
         loop {
-            let function = match &func {
+            let function = match &calling {
                 Val::Function(rc) => &**rc,
-                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?)),
+                _ => return Ok(ChasedTail::Push(self.call_val(calling, x, y)?)),
             };
 
             match function {
@@ -432,74 +441,72 @@ impl Mem {
                     let frame = self.current_frame_mut();
                     frame.code_index = *code_index;
                     frame.closure_env = closure_env.clone();
-                    let locals_start = frame.locals_start;
-                    self.locals_stack.truncate(locals_start);
                     self.locals_stack.push(x);
                     self.locals_stack.push(y.unwrap_or_else(|| Val::Int(0)));
                     return Ok(ChasedTail::GoTo(*code_index));
                 }
                 Func::Ambivalent(monad, dyad) =>
-                    func = if y.is_none() { monad.clone() } else { dyad.clone() },
+                    calling = if y.is_none() { monad.clone() } else { dyad.clone() },
                 Func::Atop { f_func, g_func } => {
                     x = self.call_val(f_func.clone(), x, None)?;
-                    func = g_func.clone();
+                    calling = g_func.clone();
                 }
                 Func::Bound { func: bound_func, y: bound_y } => {
                     y = Some(bound_y.clone());
-                    func = bound_func.clone();
+                    calling = bound_func.clone();
                 }
                 Func::Fork { f_func, h_func, g_func } => {
                     let new_x = self.call_val(f_func.clone(), x.clone(), y.clone())?;
                     let new_y = Some(self.call_val(g_func.clone(), x, y)?);
                     x = new_x;
                     y = new_y;
-                    func = h_func.clone();
+                    calling = h_func.clone();
                 }
                 Func::Prim(PrimFunc::Verb(PrimVerb::At)) if x.is_func() && y.is_some() => {
-                    func = x;
+                    calling = x;
                     x = y.unwrap();
                     y = None;
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::P, operand } => {
-                    func = operand.clone();
+                    calling = operand.clone();
                     y = None;
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::Q, operand } => {
-                    func = operand.clone();
+                    calling = operand.clone();
                     if let Some(y_val) = y.take() {
                         x = y_val;
                     }
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::AtColon, operand } => {
                     let index = self.call_val(operand.clone(), x.clone(), None)?;
-                    func = self.prim_index(&y.expect("TODO: monadic @:v"), &index)?;
+                    calling = self.prim_index(&y.expect("TODO: monadic @:v"), &index)?;
                     y = None;
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::Dot, operand } => func = operand.clone(),
+                Func::AdverbDerived { adverb: PrimAdverb::Dot, operand } => calling = operand.clone(),
                 Func::AdverbDerived { adverb: PrimAdverb::Tilde, operand } => {
                     match &mut y {
                         Some(y_val) => std::mem::swap(&mut x, y_val),
                         None => y = Some(x.clone()),
                     }
-                    func = operand.clone();
+                    calling = operand.clone();
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::Backslash, operand } => {
                     match y {
                         Some(y_val) if x.len().unwrap_or(1) == 1 => {
-                            func = operand.clone();
+                            calling = operand.clone();
                             // Remember, the fold seed becomes the first x argument to the operand.
                             y = Some(index_or_cycle_val(&x, 0).unwrap());
                             x = y_val;
                         }
                         None if x.len().unwrap_or(2) == 2 => {
-                            func = operand.clone();
+                            calling = operand.clone();
                             y = Some(index_or_cycle_val(&x, 1).unwrap());
                             x = index_or_cycle_val(&x, 0).unwrap();
                         }
                         _ => return Ok(ChasedTail::Push(self.fold_val(operand.clone(), x, y)?)),
                     }
                 }
-                _ => return Ok(ChasedTail::Push(self.call_val(func, x, y)?)),
+                _ => return Ok(ChasedTail::Push(self.call_val(calling, x, y)?)),
             }
         }
     }
