@@ -649,6 +649,8 @@ impl<'a> Parser<'a> {
 fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
     use PrimFunc::*;
     HashMap::from([ 
+        ("Rec", Rec),
+        ("rec", Rec),
         ("Ints", Ints),
         ("ints", Ints),
         ("Rev", Rev),

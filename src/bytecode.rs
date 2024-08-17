@@ -116,6 +116,9 @@ pub enum PrimFunc {
     // application of an adverb).
     Sum,
     
+    // Rec stands for the innermost explicit function.
+    Rec,
+
     // Primitive identifier functions with fixed arity.
     // Monadic
     Ints,
