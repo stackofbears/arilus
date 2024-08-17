@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::ops::{self, IsVal, Op2Val, AtomOp2, dispatch_to_atoms};
 use crate::val::*;
-use crate::util::{cold, err, cold_err};
+use crate::util::{cold, err, cold_err, float_as_int};
 
 type Res<A> = Result<A, String>;
 
@@ -161,5 +161,45 @@ pub fn sum(x: Val, y: Option<Val>) -> Res<Val> {
                 }
             }
         }
+    }
+}
+
+pub fn group_indices(x: Val) -> Res<Val> {
+    match x {
+        Val::Float(f) => match float_as_int(f) {
+            Some(i) => group_indices(Val::Int(i)),
+            _ => cold_err!("domain\nExpected non-negative integers, got {f}"),
+        }
+        Val::Int(i) => {
+            if i < 0 { return Ok(Val::I64s(Rc::new(vec![]))) }
+            let mut v = Vec::with_capacity(i as usize + 1);
+            v.resize(i as usize, Val::I64s(Rc::new(vec![])));
+            v.push(Val::I64s(Rc::new(vec![0])));
+            Ok(Val::Vals(Rc::new(v)))
+        }
+        Val::I64s(is) => {
+            let result_len = match is.iter().max() {
+                None => 0,
+                Some(&max) => if max < 0 { 0 } else { (max + 1) as usize },
+            };
+            let mut vs = vec![vec![]; result_len];
+            for (xi, ri) in is.iter().enumerate() {
+                if *ri >= 0 { vs[*ri as usize].push(xi as i64) }
+            }
+            let result = vs.into_iter().map(|v| Val::I64s(Rc::new(v))).collect();
+            Ok(Val::Vals(Rc::new(result)))
+        }
+        Val::F64s(fs) => {
+            let is = fs.iter().map(|f| match float_as_int(*f) {
+                Some(i) => Ok(i),
+                _ => cold_err!("domain\nExpected non-negative integers, got {f}"),
+            }).collect::<Res<_>>()?;
+            group_indices(Val::I64s(Rc::new(is)))
+        }
+        Val::Vals(x) => Ok(match Rc::try_unwrap(x) {
+            Ok(x) => Val::Vals(Rc::new(x.into_iter().map(group_indices).collect::<Res<_>>()?)),
+            Err(x) => Val::Vals(Rc::new(x.iter().cloned().map(group_indices).collect::<Res<_>>()?)),
+        }),
+        _ => cold_err!("domain\nExpected non-negative integers, got {x:?}"),
     }
 }
