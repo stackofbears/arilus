@@ -161,7 +161,7 @@ impl Mem {
                     let val = self.consuming_load(src);
                     self.push(val);
                 }
-                PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) } => {
+                PushPrimFunc { prim: PrimFunc::Rec } => {
                     let frame = self.current_frame();
                     // TODO can we copy the actual function that was called instead?
                     self.push(Val::Function(Rc::new(Func::Explicit {

@@ -304,7 +304,7 @@ impl Compiler {
                 self.compile_verb(&*verb, None)?;
             }
             &SmallVerb::PrimVerb(prim) => {
-                if prim == PrimFunc::Verb(PrimVerb::Rec) && self.scopes.len() < 2 {
+                if prim == PrimFunc::Rec && self.scopes.len() < 2 {
                     return cold_err!("Can't use `Rec` outside of an explicit definition")
                 }
                 self.code.push(Instr::PushPrimFunc { prim })
@@ -420,8 +420,8 @@ impl Compiler {
                 let prim_func = form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
                 if prim_func.is_none() {
                     match verb {
-                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimFunc::Verb(PrimVerb::Rec))) =>
-                                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Verb(PrimVerb::Rec) }),
+                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimFunc::Rec)) =>
+                                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Rec }),
                         _ => {
                             let arity = 1 + maybe_y_arg.is_some() as usize;
                             self.compile_verb(verb, Some(arity))?;
@@ -526,7 +526,7 @@ impl Compiler {
         use SmallNoun::*;
         match small_noun {
             &PrimNoun(prim) => {
-                if prim == PrimFunc::Verb(PrimVerb::Rec) && self.scopes.len() < 2 {
+                if prim == PrimFunc::Rec && self.scopes.len() < 2 {
                     return cold_err!("Can't use `rec` outside of an explicit definition")
                 }
                 self.code.push(Instr::PushPrimFunc { prim });
@@ -724,12 +724,8 @@ fn form_prim_func_from_verb(verb: &Verb, arity: Option<usize>) -> Option<PrimFun
 // Applying an adverb may result in a primitive.
 fn form_prim_func_from_small_verb(small_verb: &SmallVerb, arity: Option<usize>) -> Option<PrimFunc> {
     use PrimFunc::*;
-
     match small_verb {
-        // Rec is special-cased because we can't just compile it into a call to
-        // a prim verb; the bytecode interpreter would panic if we attempted to
-        // run CallPrimFuncX with it.
-        &SmallVerb::PrimVerb(Verb(prim)) if prim != PrimVerb::Rec => Some(match prim {
+        &SmallVerb::PrimVerb(Verb(prim)) => Some(match prim {
             PrimVerb::Comma if arity == Some(1) => Ravel,
             PrimVerb::Comma if arity == Some(2) => Append,
             PrimVerb::Minus if arity == Some(1) => Neg,
@@ -758,6 +754,10 @@ fn form_prim_func_from_small_verb(small_verb: &SmallVerb, arity: Option<usize>) 
             PrimVerb::Q if arity == Some(2) => IdentityRight,
             _ => Verb(prim),
         }),
+        // Rec is special-cased because we can't just compile it into a call to
+        // a prim verb; the bytecode interpreter would panic if we attempted to
+        // run CallPrimFuncX with it.
+        &SmallVerb::PrimVerb(prim_func) if prim_func != Rec => Some(prim_func),
         SmallVerb::PrimAdverbCall(PrimAdverb::Backslash, expr_box) => match expr_box.as_ref() {
             SmallExpr::Verb(SmallVerb::PrimVerb(Verb(PrimVerb::Plus) | PrimFunc::Add)) => Some(PrimFunc::Sum),
             _ => None,

@@ -278,7 +278,6 @@ pub enum PrimVerb {
     QuestionColon,  // ?:
     Ampersand, // &
 
-    Rec,
     P,
     Q,
 
@@ -373,7 +372,6 @@ impl Display for PrimVerb {
             Question => "?",
             QuestionColon => "?:",
             Ampersand => "&",
-            Rec => "Rec",
             P => "P",
             Q => "Q",
         };
@@ -463,11 +461,11 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
 
 fn literal_identifier_tokens() -> HashMap<String, Token> {
     [
-        Token::Load,
         Token::C0Lower,
         Token::C0Upper,
         Token::IfUpper,
         Token::IfLower,
+        Token::Load,
         Token::Underscore,
         Token::PrimVerb(PrimVerb::P),
         Token::PrimVerb(PrimVerb::Q),
