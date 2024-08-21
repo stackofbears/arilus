@@ -40,9 +40,86 @@ enum PrecedenceContext {
 }
 
 #[derive(Debug)]
+enum Args {
+    One(Val),
+    // x, y
+    Two(Val, Val),
+    // In reverse order.
+    Many(Vec<Val>),
+}
+
+impl Args {
+    fn len(&self) -> usize {
+        match self {
+            Args::One(_) => 1,
+            Args::Two(_, _) => 2,
+            Args::Many(vec) => vec.len(),
+        }
+    }                
+
+    fn pop(&mut self) -> Option<Val> {
+        use Args::*;
+        let this = mem::replace(self, Many(vec![]));
+        match this {
+            One(one) => Some(one),
+            Two(one, two) => {
+                *self = One(one);
+                Some(two)
+            }
+            Many(mut vals) => {
+                let val = vals.pop();
+                *self = if vals.len() == 2 {
+                    let two = unsafe { vals.pop().unwrap_unchecked() };
+                    let one = unsafe { vals.pop().unwrap_unchecked() };
+                    Two(one, two)
+                } else {
+                    Many(vals)
+                };
+                val
+            }
+        }
+    }
+
+    fn from_iter<T: IntoIterator<Item=Val, IntoIter: DoubleEndedIterator>>(iter: T) -> Self {
+        let mut iter = iter.into_iter().rev();
+        match iter.next() {
+            None => Args::Many(vec![]),
+            Some(one) => match iter.next() {
+                None => Args::One(one),
+                Some(two) => match iter.next() {
+                    None => Args::Two(two, one),  // Re-reverse
+                    Some(three) => {
+                        let mut many = vec![one, two, three];
+                        many.extend(iter);
+                        Args::Many(many)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct StackFrame {
     // The first instruction of this function.
     code_index: usize,
+
+    // The index of the next header to try if this one fails, or None if there
+    // are no headers left to try.
+    next_header: Option<usize>,
+
+    // The arguments this function was called with, needed if we fall back to a
+    // previous case.
+    //
+    // We store these separately instead of just tracking the arity and reusing
+    // them from the locals stack because headers may trigger the last use of an
+    // argument variable (PushVarLastUse), which pulls it from the locals stack
+    // to enable in-place updates. Keeping them here ensures that there's at
+    // least one remaining reference to each argument, so the function can't
+    // mutate arguments in the header before the next case gets to see them. For
+    // the same reason, we need to drop these after the header's passed, so the
+    // function body can update them in place.
+    saved_args: Args,
 
     closure_env: Rc<RefCell<Vec<Val>>>,
 
@@ -71,7 +148,9 @@ impl Mem {
             locals_stack: vec![],  // TODO stdlib?
             stack_frames: vec![StackFrame {
                 closure_env: Rc::new(RefCell::new(vec![])),
+                next_header: None,
                 locals_start: 0,
+                saved_args: Args::Many(vec![]),
                 code_index: usize::MAX,
             }],
         }
@@ -143,6 +222,14 @@ impl Mem {
                         closure_env: Rc::new(RefCell::new(closure_data)),
                     })));
                 }
+                Header { next_case_offset } => {
+                    self.current_frame_mut().next_header = Some((ip as i64 + next_case_offset) as usize);
+                }
+                HeaderPassed => {
+                    let frame = self.current_frame_mut();
+                    frame.next_header = None;
+                    frame.saved_args = Args::Many(vec![]);
+                }
                 Return => {
                     let frame = self.stack_frames.pop().unwrap();
                     self.locals_stack.truncate(frame.locals_start);
@@ -175,7 +262,7 @@ impl Mem {
                     let x = self.pop();
 
                     if self.is_tail_call(ip) {
-                        match self.chase_tail(func, x, None)? {
+                        match self.set_up_tail_call(func, x, None)? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
                         }
@@ -190,7 +277,7 @@ impl Mem {
                     let x = self.pop();
 
                     if self.is_tail_call(ip) {
-                        match self.chase_tail(func, x, Some(y))? {
+                        match self.set_up_tail_call(func, x, Some(y))? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
                         }
@@ -200,10 +287,9 @@ impl Mem {
                     }
                 }
                 CallN { num_args } => {
-                    let args = self.stack.drain((self.stack.len() - num_args)..);
-                    self.locals_stack.extend(args);
+                    let args = Args::from_iter(self.stack.drain((self.stack.len() - num_args)..));
                     let f = self.pop();
-                    let result = self.index_or_call_from_locals(f, num_args)?;
+                    let result = self.index_or_call(f, args)?;
                     self.push(result);
                 }
                 CallPrimFunc1 { prim } => {
@@ -215,7 +301,7 @@ impl Mem {
                     let y = self.pop();
                     let x = self.pop();
                     if prim == PrimFunc::Verb(PrimVerb::At) && x.is_func() && self.is_tail_call(ip) {
-                        match self.chase_tail(x, y, None)? {
+                        match self.set_up_tail_call(x, y, None)? {
                             ChasedTail::GoTo(code_index) => ip = code_index,
                             ChasedTail::Push(result) => self.push(result),
                         }
@@ -225,75 +311,84 @@ impl Mem {
                     }
                 }
                 Pop => { self.pop(); }
-                StoreTo { dst } => self.store(dst, self.stack.last().unwrap().clone()),
+                StoreTo { dst } => {
+                    self.store(dst, self.stack.last().unwrap().clone())
+                }
                 Splat { count } => {
-                    // TODO repetition
-                    match self.pop().as_val() {
-                        a@atom!() => return cold_err!("Array unpacking failed; expected {count} elements, got atom {:?}", a),
+                    let actual_count = match self.pop() {
+                        atom!() => None,
                         Val::U8s(cs) => {
-                            if cs.len() != count {
-                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", cs.len())
+                            if cs.len() == count {
+                                self.stack.extend(cs.iter().rev().map(|c| Val::Char(*c)))
                             }
-                            self.stack.extend(cs.iter().rev().map(|c| Val::Char(*c)))
+                            Some(cs.len())
                         }
                         Val::I64s(is) => {
-                            if is.len() != count {
-                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", is.len())
+                            if is.len() == count {
+                                self.stack.extend(is.iter().rev().map(|i| Val::Int(*i)))
                             }
-                            self.stack.extend(is.iter().rev().map(|i| Val::Int(*i)))
+                            Some(is.len())
                         }
                         Val::F64s(fs) =>  {
-                            if fs.len() != count {
-                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", fs.len())
+                            if fs.len() == count {
+                                self.stack.extend(fs.iter().rev().map(|f| Val::Float(*f)))
                             }
-                            self.stack.extend(fs.iter().rev().map(|f| Val::Float(*f)))
+                            Some(fs.len())
                         }
                         Val::Vals(vs) => {
-                            if vs.len() != count {
-                                return cold_err!("Array unpacking failed; expected {count} elements, got {}", vs.len())
+                            if vs.len() == count {
+                                self.stack.extend(vs.iter().rev().cloned())
                             }
-                            self.stack.extend(vs.iter().rev().map(|v| v.clone()))
+                            Some(vs.len())
+                        }
+                    };
+
+                    let failed = is_none_or(&actual_count, |actual| *actual != count);
+                    if failed {
+                        let frame = self.current_frame();
+                        match frame.next_header {
+                            // This is the function's last (or only) case, and/or we're not in a
+                            // header, so throw an error.
+                            None => match actual_count {
+                                None => return cold_err!("Array unpacking failed; expected {count} elements, got atom."),
+                                Some(actual) => return cold_err!("Array unpacking failed; expected {count} elements, got {actual}"),
+                            }
+
+                            // There's another case to try.
+                            Some(next_header_index) => {
+                                self.locals_stack.truncate(frame.locals_start);
+                                ip = next_header_index;
+                            }
                         }
                     }
+                }
+                SplatArgs { count } => {
+                    let mut frame = self.stack_frames.pop().unwrap();
+                    // TODO remove cloning and unsave args on last/only case
+                    match &frame.saved_args {
+                        Args::One(x) if count == 1 => {
+                            self.stack.push(x.clone());
+                        }
+                        Args::Two(x, y) if count == 2 => {
+                            self.stack.push(y.clone());
+                            self.stack.push(x.clone());
+                        }
+                        Args::Many(many) if count == many.len() => {
+                            self.stack.extend(many.iter().cloned());
+                        }
+                        _ => match frame.next_header.take() {
+                            // This is the function's last (or only) case, so throw an error.
+                            None => return cold_err!("Arity mismatch; expected {count} args, got {}", frame.saved_args.len()),
+
+                            // There's another case to try.
+                            Some(next_header_index) => ip = next_header_index,
+                        }
+                    }
+                    self.stack_frames.push(frame);
                 }
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
-
-                    fn apply_adverb(adverb: PrimAdverb, operand: Val) -> Val {
-                        if adverb == PrimAdverb::P {
-                            if let Val::Function(rc) = &operand {
-                                if let Func::Ambivalent(monad, _) = &**rc {
-                                    return monad.clone()
-                                }
-                            }
-                        }
-                        Val::Function(Rc::new(Func::AdverbDerived { adverb, operand }))
-                    }
-
-                    self.push(apply_adverb(adverb, operand));
-                }
-                CollectVerbAlternatives => {
-                    fn get_dyad_case(val: Val) -> Val {
-                        if let Val::Function(rc) = &val {
-                            if let Func::Ambivalent(_, inner_dyad) = &**rc {
-                                return inner_dyad.clone()
-                            }
-                        }
-                        val
-                    }
-                    let dyad_case = get_dyad_case(self.pop());
-
-                    fn get_monad_case(val: Val) -> Val {
-                        if let Val::Function(rc) = &val {
-                            if let Func::Ambivalent(inner_monad, _) = &**rc {
-                                return inner_monad.clone()
-                            }
-                        }
-                        val
-                    }
-                    let monad_case = get_monad_case(self.pop());
-
-                    self.push(Val::Function(Rc::new(Func::Ambivalent(monad_case, dyad_case))));
+                    self.push(Val::Function(Rc::new(Func::AdverbDerived { adverb, operand })));
                 }
                 MakeAtopFunc => {
                     let g_func = self.pop();
@@ -424,10 +519,12 @@ impl Mem {
         matches!(self.code.get(ip), Some(Instr::Return))
     }
 
-    fn chase_tail(&mut self, mut calling: Val, mut x: Val, mut y: Option<Val>) -> Result<ChasedTail, String> {
+    // Prepare to tail call `calling`. This will either execute a primitive or
+    // set up the current stack frame and return the code index to jump to.
+    fn set_up_tail_call(&mut self, mut calling: Val, mut x: Val, mut y: Option<Val>) -> Result<ChasedTail, String> {
         // We know this is a tail call, so we can pop the current locals. Even
-        // if we end up running a primitive here and Return runs for the current
-        // explicit, it'll just re-truncate locals_stack to the same.
+        // if we end up calling a primitive here and Return runs for the current
+        // explicit, it'll just re-truncate locals_stack to the same length.
         self.pop_locals();
 
         loop {
@@ -440,13 +537,11 @@ impl Mem {
                 Func::Explicit{code_index, closure_env} => {
                     let frame = self.current_frame_mut();
                     frame.code_index = *code_index;
+                    frame.next_header = None;
+                    frame.saved_args = match y { None => Args::One(x), Some(y) => Args::Two(x, y) };
                     frame.closure_env = closure_env.clone();
-                    self.locals_stack.push(x);
-                    self.locals_stack.push(y.unwrap_or_else(|| Val::Int(0)));
                     return Ok(ChasedTail::GoTo(*code_index));
                 }
-                Func::Ambivalent(monad, dyad) =>
-                    calling = if y.is_none() { monad.clone() } else { dyad.clone() },
                 Func::Atop { f_func, g_func } => {
                     x = self.call_val(f_func.clone(), x, None)?;
                     calling = g_func.clone();
@@ -515,34 +610,26 @@ impl Mem {
     // function, run the function; otherwise, `val` is treated as a constant
     // function and this call results in `val`.
     fn call_val(&mut self, val: Val, x: Val, y: Option<Val>) -> Result<Val, String> {
-        let result = match val.as_val() {
+        let result = match val {
             Val::Char(_) | Val::Int(_) | Val::Float(_) |
             Val::U8s(_) | Val::I64s(_) | Val::F64s(_) | Val::Vals(_) => val,
-            Val::Function(func) => match &**func {
+            Val::Function(func) => match &*func {
                 &Func::Explicit { ref closure_env, code_index } => {
                     let frame = StackFrame {
                         code_index,
+                        next_header: None,
+                        // TODO: 
+                        saved_args: match y { None => Args::One(x), Some(y) => Args::Two(x, y) },
                         closure_env: closure_env.clone(),
                         locals_start: self.locals_stack.len(),
                     };
                     self.stack_frames.push(frame);
-                    self.locals_stack.push(x);
-
-                    // TODO functions can access this y when they shouldn't be able to
-                    //
-                    //     F:{y}
-                    //     []F
-                    //   0
-                    //
-                    // functions that mention y should always be called dyadically?
-                    self.locals_stack.push(y.unwrap_or(Val::Int(0)));
                     self.execute(code_index)?;
                     self.pop()
                 }
                 Func::AdverbDerived { adverb, operand } =>
                     self.call_prim_adverb(*adverb, operand.clone(), x, y)?,
-                Func::Ambivalent(monad, dyad) =>
-                    self.call_val(if y.is_some() { dyad } else { monad }.clone(), x, y)?,
+
                 Func::Atop { f_func, g_func } => {
                     let f_result = self.call_val(f_func.clone(), x, y)?;
                     self.call_val(g_func.clone(), f_result, None)?
@@ -553,6 +640,8 @@ impl Mem {
                     let g_result = self.call_val(g_func.clone(), x, y)?;
                     self.call_val(h_func.clone(), f_result, Some(g_result))?
                 }
+
+                // TODO fall back to next case for primitives on domain error etc?
                 &Func::Prim(prim) => if let Some(y) = y {
                     self.call_prim_dyad(prim, x, y)?
                 } else {
@@ -801,14 +890,6 @@ impl Mem {
                         Ok(())
                     }
                 )?,
-                Func::Ambivalent(monad, dyad) => parenthesized_if(
-                    prec >= ConjunctionLeftOperand, out, |out| {
-                        self.prim_fmt(ConjunctionLeftOperand, monad.as_val(), out)?;
-                        write_or!(out, " : ")?;
-                        self.prim_fmt(AdverbOperand, dyad.as_val(), out)?;
-                        Ok(())
-                    }
-                )?,
                 Func::Explicit { .. } => {
                     // map code index -> tokens?
                     write_or!(out, "{{explicit func}}")?
@@ -894,15 +975,17 @@ impl Mem {
         Ok(seed)
     }
 
-    fn index_or_call_from_locals(&mut self, x: Val, num_args: usize) -> Result<Val, String> {
+    fn index_or_call(&mut self, x: Val, args: Args) -> Result<Val, String> {
         use Val::*;
         match x {
             Function(f) => match &*f {
                 &Func::Explicit { ref closure_env, code_index } => {
                     let frame = StackFrame {
                         code_index,
+                        next_header: None,
+                        saved_args: args,
                         closure_env: closure_env.clone(),
-                        locals_start: self.locals_stack.len() - num_args,
+                        locals_start: self.locals_stack.len(),
                     };
                     self.stack_frames.push(frame);
                     // TODO arity mismatch (too few args, too many args).  If
@@ -917,25 +1000,36 @@ impl Mem {
                     self.execute(code_index)?;
                     Ok(self.pop())
                 }
+
                 _ => todo!(),
             }
             _ => {
-                let result = self.progressive_index_from_locals(x, num_args);
-                self.locals_stack.truncate(self.locals_stack.len() - num_args);
-                result
+                let arg_vec;
+                let arg_slice: &[Val] = match args {
+                    Args::One(one) => &[one],
+                    Args::Two(one, two) => &[two, one],
+                    Args::Many(many) => {
+                        arg_vec = many;
+                        &arg_vec[..]
+                    }
+                };
+                self.progressive_index(x, arg_slice)
             }
         }
     }
 
-    fn progressive_index_from_locals(&mut self, x: Val, num_args: usize) -> Result<Val, String> {
-        if num_args == 0 { return Ok(x) }
-        for_each_atom_retaining_shape(
-            &self.locals_stack[self.locals_stack.len() - num_args].clone(),
-            |i| {
-                let elem = self.prim_index(&x, i)?;
-                self.progressive_index_from_locals(elem, num_args - 1)
-            }
-        )
+    // `args` should be in reverse argument order
+    fn progressive_index(&mut self, x: Val, args: &[Val]) -> Result<Val, String> {
+        match args.last() {
+            None => return Ok(x),
+            Some(arg) => for_each_atom_retaining_shape(
+                arg,
+                |i| {
+                    let elem = self.prim_index(&x, i)?;
+                    self.progressive_index(elem, args)
+                }
+            ),
+        }
     }
 
     // TODO index by float when int-convertible.

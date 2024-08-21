@@ -98,9 +98,6 @@ pub enum Func {
         operand: Val,
     },
 
-    // First element is the monadic case, second is the dyadic case
-    Ambivalent(Val, Val),
-
     // TODO this can probably just be a closure
     Atop { f_func: Val, g_func: Val },
     Bound { func: Val, y: Val },
@@ -229,16 +226,15 @@ impl Ord for Val {
                 Function(rc) => match &**rc {
                     Prim(_) => 3,
                     AdverbDerived {..} => 4,
-                    Ambivalent {..} => 5,
-                    Atop{..} => 6,
-                    Bound{..} => 7,
-                    Fork{..} => 8,
-                    Explicit {..} => 9,
+                    Atop{..} => 5,
+                    Bound{..} => 6,
+                    Fork{..} => 7,
+                    Explicit {..} => 8,
                 }
-                U8s(_) => 10,
-                I64s(_) => 11,
-                F64s(_) => 12,
-                Vals(_) => 13,
+                U8s(_) => 9,
+                I64s(_) => 10,
+                F64s(_) => 11,
+                Vals(_) => 12,
             }
         }
 
@@ -273,9 +269,6 @@ impl Ord for Val {
                 // between explicit and primitive functions
                 (Explicit{code_index: x, ..}, Explicit{code_index: y, ..}) => x.cmp(y),
                 (AdverbDerived{operand: x, ..}, AdverbDerived{operand: y, ..}) => x.cmp(y),
-
-                (Ambivalent(x_monad, x_dyad), Ambivalent(y_monad, y_dyad)) =>
-                    x_monad.cmp(y_monad).then_with(|| x_dyad.cmp(y_dyad)),
 
                 (Atop { f_func: x_f_func, g_func: x_g_func },
                  Atop { f_func: y_f_func, g_func: y_g_func }) =>

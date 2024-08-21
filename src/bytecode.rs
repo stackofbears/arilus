@@ -20,6 +20,8 @@ pub enum Instr {
     Dup,  // Duplicates the top stack element.
     MakeClosure { num_closure_vars: usize },  // Immediately follows the Return instruction of a MakeFunc. Followed by `num_closure_vars` PushVar instructions which form the closure environment. Pops the top value of the stack, which must be an explicit function, and pushes a function with the closure environment formed by those PushVar instructions. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions, including Return).
+    Header { next_case_offset: i64 },  // Begin executing a function header. If it fails before running HeaderPassed, jump to (ip + `next_case_offset`), where `ip` points to the instruction after this Header instruction.
+    HeaderPassed,  // Indicates that the current function call's arguments conform to the function's header. Splat failures after this will be errors instead of resulting in falling back to the next function case.
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
     JumpRelative { offset: i64 },  // Add `offset` to ip.
     JumpRelativeUnless { offset: i64 },  // Pops the top of the stack, then adds `offset` to `ip`, unless the popped value is falsy (its first atom is 0).
@@ -54,10 +56,10 @@ pub enum Instr {
     // topmost val there.
     Splat { count: usize },
 
-    // Pops the top two elements of the stack (D on top, M second), which must
-    // be functions, and pushes a new verb where the monadic case is M and the
-    // dyadic case is D.
-    CollectVerbAlternatives,
+    // Like Splat, but pushes all args onto the expression stack, first arg
+    // last. Only allowed in a function's header (i.e., between MakeFunc and
+    // HeaderPassed).
+    SplatArgs { count: usize },
 
     // Pops the top two elements of the stack (G on top, F second), both functions,
     // and pushes a new function equivalent to {x F G} : {x F y G}.
@@ -76,7 +78,7 @@ pub enum Instr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place { Local, ClosureEnv }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Var { pub place: Place, pub slot: usize }
 
 impl fmt::Display for Instr {

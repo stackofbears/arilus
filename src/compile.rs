@@ -80,14 +80,14 @@ impl Compiler {
         //     { if(c1; if(c2; t2; e2); e1) }
         // which translates to
         //     eval c1
-        //     if false, jump to L1
+        //     if false, jump to L3
         //     eval c2
-        //     if false, jump to L2
+        //     if false, jump to L1
         //     eval t2
-        //     jump to L3
-        // L2: eval e2
-        // L3: jump to L4
-        // L1: eval e1
+        //     jump to L2
+        // L1: eval e2
+        // L2: jump to L4
+        // L3: eval e1
         // L4: return
         //
         // If c1 and c2 are true, then after evaluating t2 we want to jump to
@@ -96,11 +96,11 @@ impl Compiler {
         // else-skipping jump of the outer `if` jumps to the else-skipping jump
         // of the inner `if`.
         //
-        // Eliminiating these chains is an optimization, but it's also a matter
-        // of semantic correctness because it lets the interpreter quickly
-        // identify tail calls made from within `if` expressions; it can just
-        // check if the next instruction is a return. The interpreter could
-        // follow these chains itself, but it's better to just fix them here.
+        // Eliminiating these chains is an optimization, but the interpreter
+        // also assumes that it's been done when it's identifying tail calls
+        // made from within `if` expressions; since we do this, it can just
+        // check if the next instruction is a return. We could rewrite it to
+        // follow these chains itself, but it's better to pay the cost once.
         for i in (0..self.code.len()).rev() {
             match self.code[i] {
                 JumpRelative { offset } => match self.code.get(next_ip(i, offset)) {
@@ -226,21 +226,11 @@ impl Compiler {
     fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>) -> Result<(), String> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
-                self.compile_verb(rhs, None)?;
+                self.compile_verb(rhs, arity)?;
                 let dst = self.fetch_var_in_current_scope(name);
                 self.code.push(Instr::StoreTo { dst });
             }
             Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity)?,
-            Verb::AmbivalentCases(monadic, dyadic) => match arity {
-                Some(1) => self.compile_verb(&*monadic, arity)?,
-                Some(2) => self.compile_small_verb(&*dyadic, arity)?,
-                None => {
-                    self.compile_verb(monadic, Some(1))?;
-                    self.compile_small_verb(dyadic, Some(2))?;
-                    self.code.push(Instr::CollectVerbAlternatives);
-                }
-                _ => todo!("Compile AmbivalentCases at arities other than 1 and 2"),
-            },
             // TODO trains should compile to functions that take N args and
             // splat them to the leaf verbs.
             Verb::Atop(f, g) => {
@@ -284,7 +274,6 @@ impl Compiler {
         }
     }
 
-    // TODO compile_small_verb should expect an arity (may be decided by a particular adverb)
     fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>) -> Result<(), String> {
         if let Some(prim) = form_prim_func_from_small_verb(small_verb, arity) {
             self.code.push(Instr::PushPrimFunc { prim });
@@ -301,7 +290,7 @@ impl Compiler {
                     self.compile_block(exprs)?; 
                     self.code.push(Instr::Pop);
                 }
-                self.compile_verb(&*verb, None)?;
+                self.compile_verb(&*verb, arity)?;
             }
             &SmallVerb::PrimVerb(prim) => {
                 if prim == PrimFunc::Rec && self.scopes.len() < 2 {
@@ -309,56 +298,14 @@ impl Compiler {
                 }
                 self.code.push(Instr::PushPrimFunc { prim })
             }
-            SmallVerb::Lambda(explicit_args, exprs) => {
+            SmallVerb::Lambda(lambda) => {
                 let make_func_index = self.push(Instr::Nop);
                 // TODO alloc locals?
 
-                let mut scope = HashMap::new();
-                match explicit_args {
-                    None => {
-                        scope.insert("x".to_string(), local_var(0));
-                        scope.insert("y".to_string(), local_var(1));
-                        self.scopes.push(scope);
-                    }
-                    Some(ExplicitArgs(patterns)) => {
-                        fn populate_direct_names(scope: &mut HashMap<String, Var>, pat: &Pattern, var: Var) {
-                            match pat {
-                                Pattern::Name(name) => { scope.insert(name.clone(), var); },
-                                Pattern::As(p1, p2) => {
-                                    populate_direct_names(scope, &*p1, var);
-                                    populate_direct_names(scope, &*p2, var);
-                                }
-                                Pattern::Array(_) => (),
-                            }
-                        }
-                        fn pattern_unpacks(pat: &Pattern) -> bool {
-                            match pat {
-                                Pattern::Array(_) => true,
-                                Pattern::Name(_) => false,
-                                Pattern::As(p1, p2) => pattern_unpacks(&*p1) || pattern_unpacks(&*p2)
-                            }
-                        }
-                        
-                        // By doing this first, we can avoid redundantly pushing
-                        // the args when the explicit argument list is just used
-                        // to name the args without applying complex patterns.
-                        for (i, pat) in patterns.iter().enumerate().rev() {
-                            let var = local_var(i);
-                            populate_direct_names(&mut scope, pat, var);
-                            if pattern_unpacks(pat) {
-                                self.code.push(Instr::PushVar { src: var });
-                            }
-                        }
-                        self.scopes.push(scope);
-
-                        for pat in patterns.iter().filter(|pat| pattern_unpacks(pat)) {
-                            self.compile_unpacking_assignment(pat, false);
-                        }
-                    }
+                match lambda {
+                    Lambda::Short(exprs) => self.compile_short_lambda(exprs)?,
+                    Lambda::Cases(cases) => self.compile_lambda_cases(cases)?,
                 }
-
-                self.compile_block(exprs)?;
-                self.code.push(Instr::Return);
 
                 let num_instructions = self.code.len() - (make_func_index + 1);
                 self.code[make_func_index] = Instr::MakeFunc { num_instructions };
@@ -394,7 +341,6 @@ impl Compiler {
                 }
             }
             SmallVerb::UserAdverbCall(small_verb, exprs) => {
-
                 self.compile_small_verb(small_verb, None)?;
                 for expr in exprs {
                     self.compile_expr(expr)?;
@@ -405,6 +351,72 @@ impl Compiler {
         Ok(())
     }
 
+    fn compile_short_lambda(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        // Assume the function is dyadic and then look at the
+        // generated code to see which arguments were actually
+        // accessed.
+        let splat = self.push(Instr::SplatArgs { count: 2 });
+
+        // TODO optimize away StoreTo(var); Pop; PushVarLastUse(var)
+        let mut scope = HashMap::new();
+        scope.insert("x".to_string(), local_var(0));
+        self.code.push(Instr::StoreTo { dst: local_var(0) });
+        self.code.push(Instr::Pop);
+
+        scope.insert("y".to_string(), local_var(1));
+        let y_start = self.push(Instr::StoreTo { dst: local_var(1) });
+        self.code.push(Instr::Pop);
+        self.scopes.push(scope);
+
+        let body_start = self.code.len();
+        self.compile_block(exprs)?;
+        self.code.push(Instr::Return);
+
+        // TODO optimize nops away (would need to adjust offsets)
+        if !accessed(&self.code[body_start..], local_var(1)) {
+            decrement_locals(&mut self.code[body_start..], 1);
+            if !accessed(&self.code[body_start..], local_var(0)) {
+                decrement_locals(&mut self.code[body_start..], 0);
+                self.fill_with_nop(splat..body_start);
+            } else {
+                self.code[splat] = Instr::SplatArgs { count: 1 };
+                self.fill_with_nop(y_start..body_start);
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_lambda_cases(&mut self, cases: &[LambdaCase]) -> Result<(), String> {
+        self.scopes.push(HashMap::new());
+        for i in 0..cases.len() {
+            let LambdaCase(ExplicitArgs(patterns), exprs) = &cases[i];
+            let header_index = if i == cases.len() - 1 {
+                None
+            } else {
+                Some(self.push(Instr::Nop))
+            };
+            
+            self.code.push(Instr::SplatArgs { count: patterns.len() });
+            for pattern in patterns {
+                self.compile_unpacking_assignment(pattern, false);
+            }
+
+            if header_index.is_some() {
+                self.code.push(Instr::HeaderPassed);
+            }
+
+            self.compile_block(exprs)?;
+            let case_end = self.push(Instr::Return);
+
+            if let Some(header_index) = header_index {
+                self.code[header_index] = Instr::Header {
+                    next_case_offset: (case_end - header_index) as i64
+                };
+            }
+        }
+        Ok(())
+    }
+    
     fn get_local_scope_mut(&mut self) -> &mut HashMap<String, Var> {
         self.scopes.last_mut().unwrap()
     }
@@ -611,13 +623,17 @@ impl Compiler {
         Ok(())
     }
     
+    fn fill_with_nop(&mut self, range: std::ops::Range<usize>) {
+        for i in range { self.code[i] = Instr::Nop }
+    }
+
     fn cull_locals_at_and_above(&mut self, too_high: usize) {
         let scope = self.scopes.last_mut().unwrap();
         scope.retain(|_, var| var.place == Place::ClosureEnv || var.slot < too_high);
     }
 
-    // We may need to take special care to make sure this works for imperative
-    // loops if we add those.
+    // We may need to take special care to make sure this works if we add
+    // imperative loops.
     fn mark_last_local_uses(&mut self, make_func_index: usize, num_local_vars_in_scope: usize) {
         let mut inner_scope_skip_up = Vec::new();
         let mut i = make_func_index + 1;
@@ -662,7 +678,7 @@ impl Compiler {
                     }
                     else_branch_last_uses.push(last_uses_in_else);
                 }
-                Instr::JumpRelativeUnless{ offset } if offset > 0 => {
+                Instr::JumpRelativeUnless { offset } if offset > 0 => {
                     let last_uses_in_else = else_branch_last_uses.pop().unwrap();
                     for slot in last_uses_in_else {
                         set(&mut last_use_seen, slot, true);
@@ -797,5 +813,35 @@ fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<
         AtColon => Some(1),
         Tilde | Backslash => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
+    }
+}
+
+fn accessed(code: &[Instr], var: Var) -> bool {
+    let mut i = 0;
+    while i < code.len() {
+        match code[i] {
+            Instr::PushVar { src } | Instr::PushVarLastUse { src } if src == var => return true,
+            Instr::StoreTo { dst } if dst == var => return true,
+            Instr::MakeFunc { num_instructions } => i += num_instructions,
+            _ => (),
+        }
+        i += 1;
+    }
+    false
+}
+
+fn decrement_locals(code: &mut [Instr], above_slot: usize) {
+    use Place::*;
+    let mut i = 0;
+    while i < code.len() {
+        match &mut code[i] {
+            Instr::PushVar        { src: Var { place: Local, slot } } |
+            Instr::PushVarLastUse { src: Var { place: Local, slot } } |
+            Instr::StoreTo        { dst: Var { place: Local, slot } } if *slot > above_slot => *slot -= 1,
+
+            Instr::MakeFunc { num_instructions } => i += *num_instructions,
+            _ => (),
+        }
+        i += 1;
     }
 }

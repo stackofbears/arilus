@@ -62,10 +62,6 @@ pub enum Verb {
 
     // A B C  ==  {x A B (x C)} : {x A y B (x C y)}
     Fork(Box<Verb>, Box<SmallVerb>, Box<SmallVerb>),
-
-    // A : B
-    // A is monadic case, B is dyadic case.
-    AmbivalentCases(Box<Verb>, Box<SmallVerb>),
 }
 
 #[derive(Debug, Clone)]
@@ -99,10 +95,19 @@ pub enum SmallVerb {
     UpperName(String),
     VerbBlock(Vec<Expr>, Box<Verb>),  // parenthesized
     PrimVerb(PrimFunc),
-    Lambda(Option<ExplicitArgs>, Vec<Expr>),
+    Lambda(Lambda),
     PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
     UserAdverbCall(Box<SmallVerb>, Vec<Expr>),
 }
+
+#[derive(Debug, Clone)]
+pub enum Lambda {
+    Short(Vec<Expr>),
+    Cases(Vec<LambdaCase>),
+}
+
+#[derive(Debug, Clone)]
+pub struct LambdaCase(pub ExplicitArgs, pub Vec<Expr>);
 
 // Explicit argument syntax:
 //   - Naming x: {|xPat| ...}
@@ -429,13 +434,7 @@ impl<'a> Parser<'a> {
         };
 
         loop {
-            if self.consume(&Token::ColonAfterWhitespace) {
-                let dyadic_case = match self.parse_small_verb()? {
-                    Some(dyadic) => dyadic,
-                    None => return Err(self.expected(&"verb for dyadic case of ambivalent function")),
-                };
-                verb = Verb::AmbivalentCases(Box::new(verb), Box::new(dyadic_case));
-            } else if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {  // (+ a b)
+            if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {  // (+ a b)
                 verb = match next_expr {
                     SmallExpr::Verb(small_verb) => match self.parse_small_expr(/*stranding_allowed=*/true)? {
                         Some(SmallExpr::Verb(fork_y)) => Verb::Fork(Box::new(verb), Box::new(small_verb), Box::new(fork_y)),
@@ -511,8 +510,16 @@ impl<'a> Parser<'a> {
     fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
         // TODO predicate syntax  {|x?(pred)| ...},  {|x;y?(pred)|},  {|?(pred)| ...} if useful
         self.skip_newlines();
+
+        // Allow an optional leading colon for uniformity with multiple cases.
+        let initial_colon = self.consume(&Token::Colon) || self.consume(&Token::ColonAfterWhitespace);
+        self.skip_newlines();
         if !self.consume(&Token::PrimVerb(lex::PrimVerb::Pipe)) {
-            return Ok(None)
+            if initial_colon {
+                return Err(self.expected(&"`|' and explicit arguments after `:'"));
+            } else {
+                return Ok(None)
+            }
         }
 
         self.skip_newlines();
@@ -540,15 +547,36 @@ impl<'a> Parser<'a> {
             }
             Some(Token::LBrace) => {
                 self.skip();
-                let maybe_explicit_args = self.parse_explicit_args()?;
-                let exprs = self.parse_exprs()?;
-                if exprs.is_empty() {  // TODO remove to enable () parse
-                    return Err(self.expected(&"expression"))
-                }
+                let lambda = match self.parse_explicit_args()? {
+                    None => {
+                        let exprs = self.parse_exprs()?;
+                        if exprs.is_empty() {  // TODO remove to enable {} or {|args|} parse
+                            return Err(self.expected(&"expression"))
+                        }
+                        Lambda::Short(exprs)
+                    }
+                    Some(mut explicit_args) => {
+                        let mut cases = vec![];
+                        loop {
+                            let exprs = self.parse_exprs()?;
+                            if exprs.is_empty() {  // TODO remove to enable {} or {|args|} parse
+                                return Err(self.expected(&"expression"))
+                            }
+                            cases.push(LambdaCase(explicit_args, exprs));
+                            if !self.consume(&Token::ColonAfterWhitespace) { break }
+                            match self.parse_explicit_args()? {
+                                None => return Err(self.expected(&"explicit argument list after ` : '")),
+                                Some(new_args) => explicit_args = new_args,
+                            }
+                        }
+                        Lambda::Cases(cases)
+                    }
+                };
+
                 if !self.consume(&Token::RBrace) {
                     return Err(self.expected("`;', newline, or `}}'"))
                 }
-                Lambda(maybe_explicit_args, exprs)
+                Lambda(lambda)
             }
             Some(&Token::PrimVerb(prim_verb)) => {
                 self.skip();
@@ -586,7 +614,7 @@ impl<'a> Parser<'a> {
             _ => return Ok(None),
         };
 
-        if matches!(small_verb, UpperName(_) | Lambda(_, _) | VerbBlock(_, _)) {
+        if matches!(small_verb, UpperName(_) | Lambda(_) | VerbBlock(_, _)) {
             while let Some(args) = self.parse_bracketed_args()? {
                 small_verb = UserAdverbCall(Box::new(small_verb), args);
             }

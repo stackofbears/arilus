@@ -200,6 +200,7 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
 
 fn go(text: &str) -> Result<(), String> {
     let code = compile::compile_string(text)?;
+    dbg!(&code);
     let mut mem = vm::Mem::new();
     mem.code = code;
     mem.execute_from_toplevel(0)?;

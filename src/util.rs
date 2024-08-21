@@ -49,3 +49,8 @@ pub fn match_lengths(xlen: usize, ylen: usize) -> Result<(), String> {
     if xlen != ylen { length_mismatch_error(xlen, ylen) }
     else { Ok(()) }
 }
+
+#[inline]
+pub fn is_none_or<A, F: FnOnce(&A) -> bool>(o: &Option<A>, f: F) -> bool {
+    !o.as_ref().is_some_and(|x| !f(x))
+}
