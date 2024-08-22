@@ -59,6 +59,7 @@ impl Lexer {
                     tokens.push(match token {
                         Colon if is_after_whitespace => ColonAfterWhitespace,
                         LBracket {..} => LBracket { after_whitespace: is_after_whitespace },
+                        DotDot {..} => DotDot { before_whitespace: text.starts_with(|c: char| c.is_whitespace()) },
                         _ => token.clone(),
                     });
                     continue 'next_token;
@@ -222,6 +223,7 @@ pub enum Token {
     IfUpper,  // If
     IfLower,  // if
     Underscore,  // _
+    DotDot { before_whitespace: bool },  // ..
 
     LParen,  // (
     RParen,  // )
@@ -308,13 +310,18 @@ impl Display for Token {
             IfUpper => f.write_str("If"),
             IfLower => f.write_str("if"),
             Underscore => f.write_str("_"),
+            DotDot { before_whitespace } => if *before_whitespace {
+                f.write_str(".. ")
+            } else {
+                f.write_str("..")
+            }
             LParen => f.write_str("("),
             RParen => f.write_str(")"),
             LBracket { after_whitespace } => if *after_whitespace {
                 f.write_str(" [")
             } else {
                 f.write_str("[")
-            },
+            }
             RBracket => f.write_str("]"),
             LBrace => f.write_str("{"),
             RBrace => f.write_str("}"),
@@ -413,6 +420,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         RParen,
         RightArrow,
         Semicolon,
+        DotDot { before_whitespace: false },
         Newline,
 
         PrimVerb(Ampersand),

@@ -3,7 +3,7 @@
 
 // - Multi-arg functions
 // - Partial application with F[...] syntax?
-// 
+//
 // mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); error messages (incl. argument errors for commutative primitives, which may output argument info in the wrong order)
 //
 // FIX: [] shows as "", []#n is just []

@@ -55,7 +55,7 @@ impl Args {
             Args::Two(_, _) => 2,
             Args::Many(vec) => vec.len(),
         }
-    }                
+    }
 
     fn pop(&mut self) -> Option<Val> {
         use Args::*;
@@ -132,7 +132,15 @@ pub struct Mem {
 
     pub stack: Vec<Val>,
 
-    // Stack of local scopes
+    // Indices into `stack` that mark the start of a sequence of related stack
+    // elements; for example, the elements of an array literal. We don't
+    // statically know the length of the result since it may include splices, so
+    // we set a marker, continue execution, and then collect the elements at or
+    // above the marker at the end. Stack markers are created by MarkStack and
+    // consumed as needed by other instructions.
+    stack_markers: Vec<usize>,
+
+    // Stack of local scopes.
     locals_stack: Vec<Val>,
 
     // Details about the explicit function (or global scope) we're currently
@@ -145,6 +153,7 @@ impl Mem {
         Self {
             code: vec![],
             stack: vec![],
+            stack_markers: vec![],
             locals_stack: vec![],  // TODO stdlib?
             stack_frames: vec![StackFrame {
                 closure_env: Rc::new(RefCell::new(vec![])),
@@ -286,8 +295,9 @@ impl Mem {
                         self.push(result);
                     }
                 }
-                CallN { num_args } => {
-                    let args = Args::from_iter(self.stack.drain((self.stack.len() - num_args)..));
+                CallMarked => {
+                    let args_start = self.stack_markers.pop().unwrap();
+                    let args = Args::from_iter(self.stack.drain(args_start..));
                     let f = self.pop();
                     let result = self.index_or_call(f, args)?;
                     self.push(result);
@@ -310,11 +320,18 @@ impl Mem {
                         self.push(result);
                     }
                 }
+                MarkStack => self.stack_markers.push(self.stack.len()),
                 Pop => { self.pop(); }
                 StoreTo { dst } => {
                     self.store(dst, self.stack.last().unwrap().clone())
                 }
-                Splat { count } => {
+                Splat => {
+                    match iter_val(self.pop()) {
+                        None => return cold_err!("Splice failed; expected array, got atom."),  // TODO just push the atom?
+                        Some(val_iter) => self.stack.extend(val_iter),
+                    }
+                }
+                SplatReverse { count } => {
                     let actual_count = match self.pop() {
                         atom!() => None,
                         Val::U8s(cs) => {
@@ -360,6 +377,34 @@ impl Mem {
                                 ip = next_header_index;
                             }
                         }
+                    }
+                }
+                SplatReverseWithSplice { prefix_count, suffix_count, keep_splice } => {
+                    let x = self.pop();
+                    let len = match x.len() {
+                        Some(len) => len,
+                        None => return cold_err!("Array unpacking failed; expected array, got atom."),
+                    };
+
+                    let (prefix_count, suffix_count) = (prefix_count as usize, suffix_count as usize);
+                    let min_expected_count = prefix_count + suffix_count;
+                    if len < min_expected_count {
+                        return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got {len}.");
+                    }
+
+                    self.stack.reserve(min_expected_count + keep_splice as usize);
+                    if suffix_count > 0 {
+                        self.stack.extend(ValIter { x: x.clone(), i: len - suffix_count, len }.rev());
+                    }
+                    if keep_splice {
+                        self.stack.push(
+                            collect_list(ValIter {
+                                x: x.clone(), i: prefix_count, len: len - suffix_count
+                            }.map(Ok::<Val, Empty>)).unwrap()
+                        )
+                    }
+                    if prefix_count > 0 {
+                        self.stack.extend(ValIter { x, i: 0, len: prefix_count }.rev());
                     }
                 }
                 SplatArgs { count } => {
@@ -419,17 +464,19 @@ impl Mem {
                     self.push(Val::U8s(Rc::new(s)));
                 }
                 LiteralBytes { bytes } => self.push(Val::Char(bytes[0])),
-                CollectToArray { num_elems } => {
+                CollectMarkedToArray => {
                     let mut all_chars = true;
                     let mut all_ints = true;
                     let mut all_floats = true;
-                    for elem in &self.stack[(self.stack.len() - num_elems)..] {
+
+                    let start_index = self.stack_markers.pop().unwrap();
+                    for elem in &self.stack[start_index..] {
                         all_chars &= matches!(elem, Val::Char(_));
                         all_ints &= matches!(elem, Val::Int(_));
                         all_floats &= matches!(elem, Val::Float(_) | Val::Int(_));
                     }
 
-                    let elems = self.stack.drain((self.stack.len() - num_elems)..);
+                    let elems = self.stack.drain(start_index..);
                     let list_val = if all_chars {
                         Val::U8s(Rc::new(map(elems, |elem| irrefutable!(elem, Val::Char(ch) => ch))))
                     } else if all_ints {
@@ -618,7 +665,7 @@ impl Mem {
                     let frame = StackFrame {
                         code_index,
                         next_header: None,
-                        // TODO: 
+                        // TODO:
                         saved_args: match y { None => Args::One(x), Some(y) => Args::Two(x, y) },
                         closure_env: closure_env.clone(),
                         locals_start: self.locals_stack.len(),
@@ -681,7 +728,7 @@ impl Mem {
             }
             Backtick => match maybe_y {
                 None => for_each(self, operand, x)?,
-                Some(y) => match iter_val(&x) {
+                Some(y) => match iter_val(x.clone()) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
                     Some(iter) => collect_list(
                         iter.map(|x_val| self.call_val(operand.clone(), x_val, Some(y.clone())))
@@ -689,13 +736,13 @@ impl Mem {
                 }
             }
             BacktickColon => match maybe_y {
-                None => match iter_val(&x) {
+                None => match iter_val(x.clone()) {
                     None => self.call_val(operand, x, None)?,
                     Some(iter) => collect_list(
                         iter.map(|val| self.call_val(operand.clone(), val, None))
                     )?,
                 }
-                Some(y) => match iter_val(&y) {
+                Some(y) => match iter_val(y.clone()) {
                     None => self.call_val(operand.clone(), x, Some(y))?,
                     Some(iter) => collect_list(
                         iter.map(|y_val| self.call_val(operand.clone(), x.clone(), Some(y_val)))
@@ -729,7 +776,7 @@ impl Mem {
             Length | Verb(PrimVerb::Hash) => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
             Ints | Verb(PrimVerb::Slash) => Ok(iota(&x)),
             Rev | Verb(PrimVerb::Pipe) => Ok(prim_reverse(x)),
-            Ravel | Verb(PrimVerb::Comma) => Ok(prim_ravel(&x)),
+            Ravel | Verb(PrimVerb::Comma) => Ok(prim_ravel(x)),
             Inits | Verb(PrimVerb::Caret) => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
             Tails | Verb(PrimVerb::Dollar) => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
             Where | Verb(PrimVerb::Question) => prim_where(&x),
@@ -1583,7 +1630,7 @@ fn prim_append(x: Val, y: Val) -> Result<Val, String> {
         (Vals(x), y@atom!()) => Vals(push_or_clone(x, y)),
         (Vals(x), Vals(y)) => Vals(extend_or_clone(x, clones(&y))),
 
-        (x, y) => match (iter_val(&x), iter_val(&y)) {
+        (x, y) => match (iter_val(x.clone()), iter_val(y.clone())) {
             (None, None) => Vals(Rc::new(vec![x, y])),
             (Some(iter), None) => Vals(many_then_one(iter, y)),
             (None, Some(iter)) => Vals(one_then_many(x, iter)),
@@ -1593,15 +1640,15 @@ fn prim_append(x: Val, y: Val) -> Result<Val, String> {
     Ok(val)
 }
 
-fn prim_ravel(x: &Val) -> Val {
-    match x.as_val() {
-        atom!() => Val::Vals(Rc::new(vec![x.clone()])),
-        Val::U8s(_) | Val::I64s(_) | Val::F64s(_) => x.clone(),
+fn prim_ravel(x: Val) -> Val {
+    match x {
+        atom!() => Val::Vals(Rc::new(vec![x])),
+        Val::U8s(_) | Val::I64s(_) | Val::F64s(_) => x,
 
         // TODO do something about this mess
-        Val::Vals(_) => collect_list(
-            ValIter { x: x.clone(), i: 0 }
-            .flat_map(|val| ValIter { x: prim_ravel(&val), i: 0 })
+        Val::Vals(vals) => collect_list(
+            { let len = vals.len(); ValIter { x: Val::Vals(vals), i: 0, len } }
+            .flat_map(|val| ValIter { x: prim_ravel(val.clone()), i: 0, len: val.len().unwrap_or(1) })
             .map(|val| -> Result<Val, ()> { Ok(val) })
         ).unwrap(),
     }
@@ -1693,13 +1740,28 @@ where F: FnMut(&X) -> Result<A, E> {
 struct ValIter {
     x: Val,
     i: usize,
+    len: usize,
+}
+
+fn iter_val(x: Val) -> Option<ValIter> {
+    let len = x.len()?;
+    Some(ValIter { x, i: 0, len })
 }
 
 impl Iterator for ValIter {
     type Item = Val;
     fn next(&mut self) -> Option<Self::Item> {
+        if self.i == self.len { return None }
         self.i += 1;
         index_or_cycle_val(&self.x, self.i - 1)
+    }
+}
+
+impl DoubleEndedIterator for ValIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.i == self.len { return None }
+        self.len -= 1;
+        index_or_cycle_val(&self.x, self.len)
     }
 }
 
@@ -1733,11 +1795,6 @@ fn for_each(mem: &mut Mem, f: Val, x: Val) -> Result<Val, String> {
         }
     }
     x.dispatch_for_each(ForEach { mem, f })
-}
-
-fn iter_val(x: &Val) -> Option<ValIter> {
-    if x.len().is_none() { return None }
-    Some(ValIter { x: x.clone(), i: 0 })
 }
 
 fn zip_vals(x: &Val, y: &Val) -> Option<Result<ZippedVals, String>> {

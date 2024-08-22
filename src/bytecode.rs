@@ -34,8 +34,8 @@ pub enum Instr {
     // TODO [..]F[..] ?
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
     Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
-    CallN { num_args: usize }, // Let [f, x1, x2, .., xN] be the top num_args+1 values of the stack (xN on top). Pops all of them, calls f
-
+    CallMarked,  // Let [f, x1, x2, .., xN] be the top values of the stack, with x1..xN marked and xN on top. Pops all of them, calls f on x1..xN, and pushes the result.
+    MarkStack,  // Create a marker at the current stack position. Stack elements at or above that marker are considered "marked".
     Pop,  // TODO currenltly we compile multi-statment expressions into (E1; Pop; E2; Pop; ...; EN) - can we instead do (E1; E2; ...; Pop(N-1); EN)? Pro - fewer pops; con - hold onto vals longer than necessary, may make a reference non-unique when it can be
     StoreTo { dst: Var }, // Copies the top stack value into dst.
     CallPrimFunc1 { prim: PrimFunc },  // Pops the top stack value, calls `prim` on it, and pushes the result. `prim` must not be Verb(PrimVerb::Rec).
@@ -44,17 +44,34 @@ pub enum Instr {
     MakeString { num_bytes: usize }, // Followed by ceil(num_bytes/8) LiteralBytes.
     LiteralBytes { bytes: [u8; 8] }, // Following MakeString, forms the contents of the string. Outside, this is a char literal. TODO as a char literal, this is currently only ascii, and the first byte is the character; the rest are 0
 
-    // Pops the top `num_elems` stack elements and collects them into an array, which is then pushed.
-    CollectToArray { num_elems: usize },
+    // Consumes the current stack marker; pops the marked elements and collects
+    // them into an array, which is then pushed.
+    CollectMarkedToArray,
 
-    // Signals an error if the top element isn't an array of exactly `count`
-    // elements. Otherwise, pushes that array's elements in reverse order (so
-    // that the array's first element ends up on the top).
+    // Signals an error if the top element isn't an array. Pushes that array's
+    // elements (so that the array's last element ends up on top).
     //
     // TODO maybe pops the top of the stack? Popping is good for argument
     // lists/nested patterns, but for forward assignment we want to keep the
     // topmost val there.
-    Splat { count: usize },
+    Splat,
+
+    // Like Splat, but pushes the array's elements in reverse order (so the
+    // first element ends up on top). Signals an error if the top element isn't an
+    // array of exactly `count` elements.
+    SplatReverse { count: usize },
+
+    // Like SplatReverse, but
+    //   - Expects an array with at least `prefix_count` + `suffix_count` elements.
+    //   - Leaves the stack with
+    //       1) `prefix_count` elements on top, reversed;
+    //       2) if `keep_splice` is true, the elements between the prefix and the
+    //          suffix, *not reversed*;
+    //       3) `suffix_count` elements, reversed.
+    //
+    // This allows us to support patterns like [first; ..; last] without
+    // necessarily traversing the whole array.
+    SplatReverseWithSplice { prefix_count: u32, suffix_count: u32, keep_splice: bool },
 
     // Like Splat, but pushes all args onto the expression stack, first arg
     // last. Only allowed in a function's header (i.e., between MakeFunc and

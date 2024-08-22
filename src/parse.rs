@@ -75,6 +75,7 @@ pub enum SmallNoun {
     // produces a noun - that's the whole point - so it's treated specially
     // here.
     Underscored(Box<SmallExpr>),
+
     IntLiteral(i64),
     FloatLiteral(f64),
 
@@ -84,10 +85,22 @@ pub enum SmallNoun {
     StringLiteral(String),
 
     // [a; b; c] or a b c
-    ArrayLiteral(Vec<Expr>),
+    ArrayLiteral(Vec<Elem>),
 
     // a[i1; i2;...; iN]
-    Indexed(Box<SmallNoun>, Vec<Expr>),
+    Indexed(Box<SmallNoun>, Vec<Elem>),
+}
+
+// Part of an array literal or an argument list.
+#[derive(Debug, Clone)]
+pub enum Elem {
+    // A single expression: one item of the array or argument list.
+    Expr(Expr),
+
+    // A splicing of another array; this expands to 0 or more indvidual items.
+    // .. is parsed like an adverb, but it can only be used in array literals
+    // and function arguments.
+    Spliced(SmallExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +110,7 @@ pub enum SmallVerb {
     PrimVerb(PrimFunc),
     Lambda(Lambda),
     PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
-    UserAdverbCall(Box<SmallVerb>, Vec<Expr>),
+    UserAdverbCall(Box<SmallVerb>, Vec<Elem>),
 }
 
 #[derive(Debug, Clone)]
@@ -123,10 +136,13 @@ pub struct ExplicitArgs(pub Vec<Pattern>);
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
+    // _
+    Wildcard,
+
     Name(String),
 
     // Bracketed or stranded array
-    Array(Vec<Pattern>),
+    Array(Vec<PatternElem>),
 
     // Match two patterns at once, usually used to name the whole of a value
     // while also destructuring it, as in ( name->a b c ).
@@ -134,9 +150,34 @@ pub enum Pattern {
 }
 
 #[derive(Debug, Clone)]
+pub enum PatternElem {
+    Pattern(Pattern),
+
+    // .. or ..name
+    // Up to one subarray pattern is allowed in each Array pattern.
+    Subarray(Option<String>),
+}
+
+#[derive(Debug, Clone)]
 pub enum SmallExpr {
     Noun(SmallNoun),
     Verb(SmallVerb),
+}
+
+// `Elem` as it's allowed to appear in a stranded array literal. This isn't held
+// in the syntax tree, just used intermediately.
+enum StrandedElem {
+    Single(SmallNoun),
+    Spliced(SmallExpr),
+}
+
+impl StrandedElem {
+    fn to_elem(self) -> Elem {
+        match self {
+            StrandedElem::Single(small_noun) => Elem::Expr(Expr::Noun(Noun::SmallNoun(small_noun))),
+            StrandedElem::Spliced(small_expr) => Elem::Spliced(small_expr),
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -182,15 +223,23 @@ impl<'a> Parser<'a> {
         self.parse_sequenced(Self::parse_expr)
     }
 
-    fn parse_pattern_list(&mut self) -> Many<Pattern> {
+    fn parse_elems(&mut self) -> Many<Elem> {
+        self.parse_sequenced(Self::parse_elem)
+    }
+
+    fn parse_patterns(&mut self) -> Many<Pattern> {
         self.parse_sequenced(Self::parse_pattern)
     }
 
+    fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
+        self.parse_sequenced(Self::parse_pattern_elem)
+    }
+
     fn consume(&mut self, tok: &Token) -> bool {
-        if likely(self.peek() == Some(tok)) { self.skip(); true }
+        if self.peek() == Some(tok) { self.skip(); true }
         else { false }
     }
-    
+
     fn consume_or_fail(&mut self, tok: &Token) -> Result<(), String> {
         if self.consume(tok) {
             Ok(())
@@ -274,20 +323,47 @@ impl<'a> Parser<'a> {
         Ok(Some(noun))
     }
 
+    fn parse_splice(&mut self) -> Parsed<SmallExpr> {
+        match self.peek() {
+            Some(Token::DotDot {..}) => self.skip(),
+            _ => return Ok(None)
+        }
+        match self.parse_small_expr(/*stranding_allowed=*/false)? {
+            Some(spliced) => Ok(Some(spliced)),
+            None => Err(self.expected(&format!("operand for `..'"))),
+        }
+    }
+
+    fn parse_elem(&mut self) -> Parsed<Elem> {
+        Ok(match self.parse_splice()? {
+            Some(splice) => Some(Elem::Spliced(splice)),
+            None => self.parse_expr()?.map(Elem::Expr),
+        })
+    }
+
+    fn parse_stranded_elem(&mut self) -> Parsed<StrandedElem> {
+        Ok(match self.parse_splice()? {
+            Some(splice) => Some(StrandedElem::Spliced(splice)),
+            None => self.parse_small_noun_no_stranding()?.map(StrandedElem::Single),
+        })
+    }
+
     fn parse_small_noun(&mut self) -> Parsed<SmallNoun> {
-        let small_noun = match self.parse_small_noun_no_stranding()? {
+        let stranded_elem = match self.parse_stranded_elem()? {
+            Some(elem) => elem,
             None => return Ok(None),
-            Some(small_noun) => small_noun,
         };
-        match self.parse_small_noun_no_stranding()? {
-            None => Ok(Some(small_noun)),
-            Some(next_small_noun) => {
-                let mut stranded_nouns = vec![Expr::Noun(Noun::SmallNoun(small_noun)),
-                                              Expr::Noun(Noun::SmallNoun(next_small_noun))];
-                while let Some(next_small_noun) = self.parse_small_noun_no_stranding()? {
-                    stranded_nouns.push(Expr::Noun(Noun::SmallNoun(next_small_noun)));
+        match self.parse_stranded_elem()? {
+            None => match stranded_elem {
+                StrandedElem::Single(small_noun) => Ok(Some(small_noun)),
+                StrandedElem::Spliced(_) => cold_err!("`..' is only allowed in array literals and function argument lists."),
+            }
+            Some(next_elem) => {
+                let mut elems = vec![stranded_elem.to_elem(), next_elem.to_elem()];
+                while let Some(next_elem) = self.parse_stranded_elem()? {
+                    elems.push(next_elem.to_elem());
                 }
-                Ok(Some(ArrayLiteral(stranded_nouns)))
+                Ok(Some(ArrayLiteral(elems)))
             }
         }
     }
@@ -308,7 +384,7 @@ impl<'a> Parser<'a> {
                     return cold_err!("Too many arguments to `if'; expected 3")
                 }
                 self.consume_or_fail(&Token::RParen)?;
-                
+
                 let else_ = exprs.pop().unwrap();
                 let then = exprs.pop().unwrap();
                 let cond = exprs.pop().unwrap();
@@ -318,7 +394,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(operand) => Underscored(Box::new(operand)),
-                    None => return Err(self.expected(&format!("operand for `_'"))),
+                    None => return Err(self.expected("operand for `_'")),
                 }
             }
             Some(Token::LowerName(name)) => {
@@ -370,7 +446,7 @@ impl<'a> Parser<'a> {
             }
             Some(Token::LBracket{..}) => {
                 self.skip();
-                let elems = self.parse_exprs()?;
+                let elems = self.parse_elems()?;
                 self.consume_or_fail(&Token::RBracket)?;
                 ArrayLiteral(elems)
             }
@@ -404,7 +480,7 @@ impl<'a> Parser<'a> {
                     return cold_err!("Too many arguments to `if'; expected 2")
                 }
                 self.consume_or_fail(&Token::RParen)?;
-                
+
                 let else_ = exprs.pop().unwrap();
                 let then = exprs.pop().unwrap();
                 predicates.push(Predicate::If2(Box::new(then), Box::new(else_)))
@@ -454,20 +530,24 @@ impl<'a> Parser<'a> {
 
     fn parse_small_pattern(&mut self) -> Parsed<Pattern> {
         // TODO UpperName?
-        match self.peek() {
+        let pattern = match self.peek() {
             Some(Token::LowerName(name)) => {
                 if self.primitive_identifiers.contains_key(name.as_str()) {
                     return Err(self.expected(&"pattern"))
                 }
                 let pat = Pattern::Name(name.clone());
                 self.skip();
-                Ok(Some(pat))
+                pat
+            }
+            Some(Token::Underscore) => {
+                self.skip();
+                Pattern::Wildcard
             }
             Some(Token::LBracket{..}) => {
                 self.skip();
-                let names = self.parse_pattern_list()?;
+                let elems = self.parse_pattern_elems()?;
                 self.consume_or_fail(&Token::RBracket)?;
-                Ok(Some(Pattern::Array(names)))
+                Pattern::Array(elems)
             }
             Some(Token::LParen) => {
                 self.skip();
@@ -477,25 +557,76 @@ impl<'a> Parser<'a> {
                 };
 
                 self.consume_or_fail(&Token::RParen)?;
-                Ok(Some(inner))
+                inner
             }
             _ => return Ok(None),
+        };
+        Ok(Some(pattern))
+    }
+
+    fn parse_pattern_elem(&mut self) -> Parsed<PatternElem> {
+        match self.parse_subarray_pattern()? {
+            Some(pat) => Ok(Some(pat)),
+            None => Ok(self.parse_pattern()?.map(PatternElem::Pattern)),
         }
     }
 
+    fn parse_small_pattern_elem(&mut self) -> Parsed<PatternElem> {
+        match self.parse_subarray_pattern()? {
+            Some(pat) => Ok(Some(pat)),
+            None => Ok(self.parse_small_pattern()?.map(PatternElem::Pattern)),
+        }
+    }
+
+    fn parse_subarray_pattern(&mut self) -> Parsed<PatternElem> {
+        let dotdot_before_whitespace = match self.peek() {
+            Some(&Token::DotDot { before_whitespace }) => {
+                self.skip();
+                before_whitespace
+            }
+            _ => return Ok(None),
+        };
+
+        let elem = match self.peek() {
+            Some(Token::LowerName(name)) if !dotdot_before_whitespace => {
+                if self.primitive_identifiers.get(name.as_str()).is_some() {
+                    return Err(self.expected(&"pattern"))
+                }
+                let name = name.clone();
+                self.skip();
+                PatternElem::Subarray(Some(name))
+            }
+            _ => PatternElem::Subarray(None),
+        };
+        Ok(Some(elem))
+    }
+
     fn parse_pattern(&mut self) -> Parsed<Pattern> {
-        let mut pat = match self.parse_small_pattern()? {
+        let elem = match self.parse_small_pattern_elem()? {
             None => return Ok(None),
             Some(small_pat) => small_pat,
         };
 
-        if let Some(next_small_pat) = self.parse_small_pattern()? {
-            let mut stranded_pats = vec![pat, next_small_pat];
-            while let Some(next_small_pat) = self.parse_small_pattern()? {
-                stranded_pats.push(next_small_pat)
+        let mut pat = match self.parse_small_pattern_elem()? {
+            None => match elem {
+                PatternElem::Subarray(_) => return cold_err!("`..' is only allowed in array patterns"),
+                PatternElem::Pattern(pat) => pat
             }
-            pat = Pattern::Array(stranded_pats)
-        }
+
+            Some(next_elem) => {
+                let mut stranded_pats = vec![elem, next_elem];
+                while let Some(next_elem) = self.parse_small_pattern_elem()? {
+                    stranded_pats.push(next_elem)
+                }
+                let num_subarray_patterns = stranded_pats.iter()
+                    .filter(|elem| matches!(elem, PatternElem::Subarray(_)))
+                    .count();
+                if num_subarray_patterns > 1 {
+                    return cold_err!("Only one `..' is allowed per array-matching pattern.");
+                }
+                Pattern::Array(stranded_pats)
+            }
+        };
 
         while self.consume(&Token::RightArrow) {
             match self.parse_pattern()? {
@@ -523,7 +654,8 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_newlines();
-        let patterns = self.parse_pattern_list()?;
+        // TODO parse_pattern_elems
+        let patterns = self.parse_patterns()?;
         self.consume_or_fail(&Token::PrimVerb(lex::PrimVerb::Pipe))?;
 
         Ok(Some(ExplicitArgs(patterns)))
@@ -623,9 +755,9 @@ impl<'a> Parser<'a> {
         Ok(Some(small_verb))
     }
 
-    fn parse_bracketed_args(&mut self) -> Parsed<Vec<Expr>> {
+    fn parse_bracketed_args(&mut self) -> Parsed<Vec<Elem>> {
         if self.consume(&Token::LBracket{after_whitespace: false}) {
-            let args = self.parse_exprs()?;
+            let args = self.parse_elems()?;
             self.consume_or_fail(&Token::RBracket)?;
             Ok(Some(args))
         } else {
@@ -653,7 +785,7 @@ impl<'a> Parser<'a> {
 
 fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
     use PrimFunc::*;
-    HashMap::from([ 
+    HashMap::from([
         ("Rec", Rec),
         ("rec", Rec),
         ("Ints", Ints),

@@ -1,3 +1,6 @@
+#[derive(Debug)]
+pub enum Empty {}
+
 macro_rules! irrefutable {
     ($e:expr, $p:pat => $body:expr) => {
         match $e { $p => $body, _ => unreachable!() }

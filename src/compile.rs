@@ -30,7 +30,7 @@ pub struct Compiler {
     pub lexer: Lexer,
 
     scopes: Vec<HashMap<String, Var>>,
-    
+
     // (code index right after LoadModule, module vars)
     //
     // TODO in REPL use, allow cache entries to become dirty if a module or one
@@ -140,7 +140,7 @@ impl Compiler {
         let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
         parse(&tokens)
     }
-    
+
     fn compile_with_fresh_scopes(&mut self, exprs: &[Expr]) -> Result<HashMap<String, Var>, String> {
         let mut saved_scopes = vec![HashMap::new()];
         std::mem::swap(&mut self.scopes, &mut saved_scopes);
@@ -253,25 +253,51 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep_top: bool) {
+    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep_top: bool) -> Result<(), String> {
         match pat {
+            Pattern::Wildcard => if !keep_top { self.code.push(Instr::Pop) }
             Pattern::Name(name) => {
                 let dst = self.fetch_var_in_current_scope(name);
                 self.code.push(Instr::StoreTo { dst });
                 if !keep_top { self.code.push(Instr::Pop) }
             }
             Pattern::As(pat, as_pat) => {
-                self.compile_unpacking_assignment(&*pat, true);
-                self.compile_unpacking_assignment(&*as_pat, keep_top);
+                self.compile_unpacking_assignment(&*pat, true)?;
+                self.compile_unpacking_assignment(&*as_pat, keep_top)?;
             }
             Pattern::Array(pats) => {
                 if keep_top { self.code.push(Instr::Dup) }
-                self.code.push(Instr::Splat { count: pats.len() });
-                for pat in pats {
-                    self.compile_unpacking_assignment(pat, false);
+                let splat_index = self.push(Instr::Nop);
+
+                enum Splicing { NoSplice, Splice {i: usize, keep_splice: bool} }
+                let mut splicing = Splicing::NoSplice;
+
+                for i in 0..pats.len() {
+                    match &pats[i] {
+                        PatternElem::Pattern(pat) => self.compile_unpacking_assignment(pat, false)?,
+                        PatternElem::Subarray(name) if matches!(splicing, Splicing::NoSplice) => match name {
+                            Some(name) => {
+                                self.compile_unpacking_assignment(&Pattern::Name(name.clone()), false)?;
+                                splicing = Splicing::Splice { i, keep_splice: true };
+                            }
+                            None => splicing = Splicing::Splice { i, keep_splice: false },
+                        }
+                        PatternElem::Subarray(_) => return cold_err!("Only one `..' is allowed per array-matching pattern."),
+                    }
                 }
+
+                self.code[splat_index] = match splicing {
+                    Splicing::NoSplice => Instr::SplatReverse { count: pats.len() },
+                    Splicing::Splice {i, keep_splice} => Instr::SplatReverseWithSplice {
+                        prefix_count: i as u32,
+                        suffix_count: (pats.len() - i - 1) as u32,
+                        keep_splice
+                    }
+                };
             }
         }
+
+        Ok(())
     }
 
     fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>) -> Result<(), String> {
@@ -287,7 +313,7 @@ impl Compiler {
             }
             SmallVerb::VerbBlock(exprs, verb) => {
                 if !exprs.is_empty() {
-                    self.compile_block(exprs)?; 
+                    self.compile_block(exprs)?;
                     self.code.push(Instr::Pop);
                 }
                 self.compile_verb(&*verb, arity)?;
@@ -340,12 +366,13 @@ impl Compiler {
                     }
                 }
             }
-            SmallVerb::UserAdverbCall(small_verb, exprs) => {
+            SmallVerb::UserAdverbCall(small_verb, elems) => {
                 self.compile_small_verb(small_verb, None)?;
-                for expr in exprs {
-                    self.compile_expr(expr)?;
+                self.code.push(Instr::MarkStack);
+                for elem in elems {
+                    self.compile_elem(elem)?;
                 }
-                self.code.push(Instr::CallN { num_args: exprs.len() });
+                self.code.push(Instr::CallMarked);
             }
         }
         Ok(())
@@ -395,10 +422,10 @@ impl Compiler {
             } else {
                 Some(self.push(Instr::Nop))
             };
-            
+
             self.code.push(Instr::SplatArgs { count: patterns.len() });
             for pattern in patterns {
-                self.compile_unpacking_assignment(pattern, false);
+                self.compile_unpacking_assignment(pattern, false)?;
             }
 
             if header_index.is_some() {
@@ -416,7 +443,7 @@ impl Compiler {
         }
         Ok(())
     }
-    
+
     fn get_local_scope_mut(&mut self) -> &mut HashMap<String, Var> {
         self.scopes.last_mut().unwrap()
     }
@@ -431,14 +458,14 @@ impl Compiler {
             Noun::SmallNoun(small_noun) => self.compile_small_noun(small_noun)?,
             Noun::LowerAssign(pat, rhs) => {
                 self.compile_noun(rhs)?;
-                self.compile_unpacking_assignment(pat, true);
+                self.compile_unpacking_assignment(pat, true)?;
             }
             Noun::ModifyingAssign(pattern, predicates) => {
-                self.compile_small_noun(&pattern_to_small_noun(pattern))?;
+                self.compile_small_noun(&pattern_to_small_noun(pattern)?)?;
                 for predicate in predicates {
                     self.compile_predicate(predicate)?;
                 }
-                self.compile_unpacking_assignment(pattern, true);
+                self.compile_unpacking_assignment(pattern, true)?;
             }
             Noun::Sentence(small_noun, predicates) => {
                 self.compile_small_noun(small_noun)?;
@@ -482,7 +509,7 @@ impl Compiler {
             }
 
             Predicate::ForwardAssignment(pat) =>
-                self.compile_unpacking_assignment(pat, true),
+                self.compile_unpacking_assignment(pat, true)?,
 
             Predicate::If2(then, else_) => self.compile_if(&*then, &*else_)?,
         }
@@ -499,7 +526,7 @@ impl Compiler {
         // s+t+2      (else start) <----'  |
         // s+t+2+e    (else end)           |
         // s+t+2+e+1  (after) <------------'
-        
+
         let jump_unless_index = self.push(Instr::Nop);
 
         // TODO keep local names that are defined in both branches? They'd need
@@ -516,7 +543,7 @@ impl Compiler {
             offset: self.code.len() as i64 - (jump_unless_index as i64 + 1)
         };
 
-        { 
+        {
             let in_branch_locals_start = next_local_slot(self.get_local_scope());
             self.compile_expr(else_)?;
             self.cull_locals_at_and_above(in_branch_locals_start);
@@ -578,7 +605,7 @@ impl Compiler {
             }
             NounBlock(exprs, last) => {
                 if !exprs.is_empty() {
-                    self.compile_block(exprs)?; 
+                    self.compile_block(exprs)?;
                     self.code.push(Instr::Pop);
                 }
                 self.compile_noun(&*last)?;
@@ -606,23 +633,40 @@ impl Compiler {
                     self.code.push(Instr::LiteralBytes { bytes });
                 }
             }
-            ArrayLiteral(exprs) => {
-                for expr in exprs {
-                    self.compile_expr(expr)?;
+            ArrayLiteral(elems) => {
+                self.code.push(Instr::MarkStack);
+                for elem in elems {
+                    self.compile_elem(elem)?;
                 }
-                self.code.push(Instr::CollectToArray { num_elems: exprs.len() });
+                self.code.push(Instr::CollectMarkedToArray);
             }
             Indexed(small_noun, args) => {
                 self.compile_small_noun(&*small_noun)?;
-                for expr in args {
-                    self.compile_expr(expr)?;
+                self.code.push(Instr::MarkStack);
+                for elem in args {
+                    self.compile_elem(elem)?;
                 }
-                self.code.push(Instr::CallN { num_args: args.len() });
+                self.code.push(Instr::CallMarked);
             }
         }
         Ok(())
     }
-    
+
+    fn compile_elem(&mut self, elem: &Elem) -> Result<(), String> {
+        match elem {
+            Elem::Expr(expr) => self.compile_expr(expr),
+            Elem::Spliced(small_expr) => {
+                match small_expr {
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None)?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                }
+                self.code.push(Instr::Splat);
+                Ok(())
+            }
+        }
+    }
+
+
     fn fill_with_nop(&mut self, range: std::ops::Range<usize>) {
         for i in range { self.code[i] = Instr::Nop }
     }
@@ -644,7 +688,7 @@ impl Compiler {
             }
             i += 1;
         }
-        
+
         fn get(v: &mut Vec<bool>, slot: usize) -> bool {
             if slot >= v.len() {
                 v.resize(slot + 1, false);
@@ -739,20 +783,29 @@ fn add_closure_var(name: &str, scope: &mut HashMap<String, Var>) {
 
 fn get_stdlib_names() -> &'static [&'static str] {
     &[
-        
+
     ]
 }
 
-fn pattern_to_small_noun(pat: &Pattern) -> SmallNoun {
-    match pat {
-        Pattern::As(pat1, _) => pattern_to_small_noun(pat1),
+fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
+    Ok(match pat_elem {
+        PatternElem::Pattern(pat) => Elem::Expr(Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(pat)?))),
+        PatternElem::Subarray(Some(name)) => Elem::Spliced(SmallExpr::Noun(SmallNoun::LowerName(name.clone()))),
+        PatternElem::Subarray(None) => return cold_err!("`..' wildcards can't be converted to expressions."),
+    })
+}
+
+fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
+    Ok(match pat {
+        Pattern::Wildcard => return cold_err!("`_' wildcards can't be converted to expressions."),
+        Pattern::As(pat1, _) => pattern_to_small_noun(pat1)?,
         Pattern::Name(name) => SmallNoun::LowerName(name.clone()),
-        Pattern::Array(pats) => SmallNoun::ArrayLiteral(
-            pats.iter().map(
-                |elem| Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(elem)))
-            ).collect()
+        Pattern::Array(pat_elems) => SmallNoun::ArrayLiteral(
+            pat_elems.iter()
+                .map(|pat_elem| pattern_elem_to_elem(pat_elem))
+                .collect::<Result<Vec<_>, String>>()?
         ),
-    }
+    })
 }
 
 fn form_prim_func_from_verb(verb: &Verb, arity: Option<usize>) -> Option<PrimFunc> {

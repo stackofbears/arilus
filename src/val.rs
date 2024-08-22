@@ -304,7 +304,7 @@ impl Default for NoValEmptyEnum {
 
 pub fn index_or_cycle_val(val: &Val, i: usize) -> Option<Val> {
     use Val::*;
-    Some(match val.as_val() {
+    Some(match val {
         atom!() => val.clone(),
         U8s(cs) => Val::Char(*cs.get(i)?),
         I64s(is) => Val::Int(*is.get(i)?),
