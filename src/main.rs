@@ -127,13 +127,11 @@ impl ReplSession {
                 print!("  ");
             }
 
-            if let Err(err) = io::stdout().flush() { return cold(Err(err.to_string())) }
-            if let Err(err) = io::stdin().read_line(&mut self.line) { return cold(Err(err.to_string())) }
-            let line_start = self.tokens.len();
+            io::stdout().flush().map_err(|e| e.to_string())?;
+            io::stdin().read_line(&mut self.line).map_err(|e| e.to_string())?;
 
-            // TODO use line length to guess token count
+            let line_start = self.tokens.len();
             if let err@Err(_) = self.compiler.lexer.tokenize(&self.line, &mut self.tokens) {
-                cold(());
                 self.tokens.truncate(token_start);
                 self.line.clear();
                 return err
