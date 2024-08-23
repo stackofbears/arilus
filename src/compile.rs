@@ -791,7 +791,7 @@ fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
     Ok(match pat_elem {
         PatternElem::Pattern(pat) => Elem::Expr(Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(pat)?))),
         PatternElem::Subarray(Some(name)) => Elem::Spliced(SmallExpr::Noun(SmallNoun::LowerName(name.clone()))),
-        PatternElem::Subarray(None) => return cold_err!("`..' wildcards can't be converted to expressions."),
+        PatternElem::Subarray(None) => return cold_err!("Unnamed `..' wildcards can't be converted to expressions."),
     })
 }
 
