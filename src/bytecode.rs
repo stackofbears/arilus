@@ -32,9 +32,10 @@ pub enum Instr {
     PushPrimFunc { prim: PrimFunc },  // Pushes `prim` onto stack.
 
     // TODO [..]F[..] ?
+    // All call instructions leave a stack marker if they're calling an explicit function, which is eventually popped by SplatArgs or HeaderPassed
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
     Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
-    CallMarked,  // Let [f, x1, x2, .., xN] be the top values of the stack, with x1..xN marked and xN on top. Pops all of them, calls f on x1..xN, and pushes the result.
+    CallMarked,  // Let [f, x1, x2, .., xN] be the top values of the stack, with f..xN marked and xN on top. Reverses all of them and pops f, so the new stack is [xN, .. x2, x1] and calls f.
     MarkStack,  // Create a marker at the current stack position. Stack elements at or above that marker are considered "marked".
     Pop,  // TODO currenltly we compile multi-statment expressions into (E1; Pop; E2; Pop; ...; EN) - can we instead do (E1; E2; ...; Pop(N-1); EN)? Pro - fewer pops; con - hold onto vals longer than necessary, may make a reference non-unique when it can be
     StoreTo { dst: Var }, // Copies the top stack value into dst.
@@ -47,6 +48,11 @@ pub enum Instr {
     // Consumes the current stack marker; pops the marked elements and collects
     // them into an array, which is then pushed.
     CollectMarkedToArray,
+
+    // Pops the marked elements, except for the `suffix_count` of them closest
+    // to the marker. If `keep`, collects them into an array in reverse order
+    // and pushes the array. Note that this doesn't pop the stack marker.
+    CollectArgs { suffix_count: u32, keep: bool },
 
     // Signals an error if the top element isn't an array. Pushes that array's
     // elements (so that the array's last element ends up on top).
@@ -73,10 +79,14 @@ pub enum Instr {
     // necessarily traversing the whole array.
     SplatReverseWithSplice { prefix_count: u32, suffix_count: u32, keep_splice: bool },
 
-    // Like Splat, but pushes all args onto the expression stack, first arg
-    // last. Only allowed in a function's header (i.e., between MakeFunc and
-    // HeaderPassed).
-    SplatArgs { count: usize },
+    // Check that the function has been provided `count` args. If this fails,
+    // throw an error; if it succeeds, the current marker is popped and all its
+    // marked stack values are popped.
+    ArgCheckEq { count: usize },
+
+    // Like ArgCheckEq, but checks that the function has been provided *at
+    // least* `count` args and leaves the current stack marker where it is.
+    ArgCheckGe { count: usize },
 
     // Pops the top two elements of the stack (G on top, F second), both functions,
     // and pushes a new function equivalent to {x F G} : {x F y G}.

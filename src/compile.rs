@@ -367,8 +367,17 @@ impl Compiler {
                 }
             }
             SmallVerb::UserAdverbCall(small_verb, elems) => {
-                self.compile_small_verb(small_verb, None)?;
                 self.code.push(Instr::MarkStack);
+
+                let mut arity = Some(elems.len());
+                for elem in elems {
+                    if matches!(elem, Elem::Spliced(_)) {
+                        arity = None;
+                        break;
+                    }
+                }
+
+                self.compile_small_verb(small_verb, arity)?;
                 for elem in elems {
                     self.compile_elem(elem)?;
                 }
@@ -382,7 +391,7 @@ impl Compiler {
         // Assume the function is dyadic and then look at the
         // generated code to see which arguments were actually
         // accessed.
-        let splat = self.push(Instr::SplatArgs { count: 2 });
+        let splat = self.push(Instr::ArgCheckEq { count: 2 });
 
         // TODO optimize away StoreTo(var); Pop; PushVarLastUse(var)
         let mut scope = HashMap::new();
@@ -406,7 +415,7 @@ impl Compiler {
                 decrement_locals(&mut self.code[body_start..], 0);
                 self.fill_with_nop(splat..body_start);
             } else {
-                self.code[splat] = Instr::SplatArgs { count: 1 };
+                self.code[splat] = Instr::ArgCheckEq { count: 1 };
                 self.fill_with_nop(y_start..body_start);
             }
         }
@@ -416,19 +425,42 @@ impl Compiler {
     fn compile_lambda_cases(&mut self, cases: &[LambdaCase]) -> Result<(), String> {
         self.scopes.push(HashMap::new());
         for i in 0..cases.len() {
-            let LambdaCase(ExplicitArgs(patterns), exprs) = &cases[i];
+            let LambdaCase(ExplicitArgs(pats), exprs) = &cases[i];
             let header_index = if i == cases.len() - 1 {
                 None
             } else {
                 Some(self.push(Instr::Nop))
             };
 
-            self.code.push(Instr::SplatArgs { count: patterns.len() });
-            for pattern in patterns {
-                self.compile_unpacking_assignment(pattern, false)?;
+            let arg_check_index = self.push(Instr::Nop);
+            let mut splicing = false;
+            for i in 0..pats.len() {
+                match &pats[i] {
+                    PatternElem::Pattern(pat) => self.compile_unpacking_assignment(pat, false)?,
+                    PatternElem::Subarray(name) if !splicing => {
+                        splicing = true;
+                        let suffix_count = (pats.len() - i - 1) as u32;
+                        match name {
+                            Some(name) => {
+                                self.code.push(Instr::CollectArgs { suffix_count, keep: true });
+                                self.compile_unpacking_assignment(&Pattern::Name(name.clone()), false)?;
+                            }
+                            None => self.code.push(Instr::CollectArgs { suffix_count, keep: false }),
+                        }
+                    }
+                    PatternElem::Subarray(_) => return cold_err!("Only one `..' parameter is allowed per function parameter list."),
+                }
             }
 
-            if header_index.is_some() {
+            self.code[arg_check_index] = if splicing {
+                Instr::ArgCheckGe { count: pats.len() - 1 }  // The subarray parameter can be empty.
+            } else {
+                Instr::ArgCheckEq { count: pats.len() }
+            };
+
+            if header_index.is_some() || splicing {
+                // If we're splicing, we need HeaderPassed to pop the stack
+                // marker (ArgCheckGe won't pop it like ArgCheckEq does).
                 self.code.push(Instr::HeaderPassed);
             }
 
@@ -641,8 +673,8 @@ impl Compiler {
                 self.code.push(Instr::CollectMarkedToArray);
             }
             Indexed(small_noun, args) => {
-                self.compile_small_noun(&*small_noun)?;
                 self.code.push(Instr::MarkStack);
+                self.compile_small_noun(&*small_noun)?;
                 for elem in args {
                     self.compile_elem(elem)?;
                 }

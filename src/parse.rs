@@ -132,7 +132,7 @@ pub struct LambdaCase(pub ExplicitArgs, pub Vec<Expr>);
 //   Invalid: ( ReturnsReverse: {|} )
 //   Valid:   ( ReturnsReverse: {(|)} )
 #[derive(Debug, Clone)]
-pub struct ExplicitArgs(pub Vec<Pattern>);
+pub struct ExplicitArgs(pub Vec<PatternElem>);
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -654,8 +654,7 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_newlines();
-        // TODO parse_pattern_elems
-        let patterns = self.parse_patterns()?;
+        let patterns = self.parse_pattern_elems()?;
         self.consume_or_fail(&Token::PrimVerb(lex::PrimVerb::Pipe))?;
 
         Ok(Some(ExplicitArgs(patterns)))

@@ -402,7 +402,11 @@ pub trait IsVal: ToVal {
     fn to_val_ref(&self) -> &Val;
 
     fn dispatch<F: ValConsumer>(self, f: F) -> Res<Val>;
+
+    // TODO decide if we need this
+    #[allow(dead_code)]
     fn dispatch_or_vals<F: SingleValConsumer + MultiValConsumer>(self, f: F) -> Res<Val>;
+
     fn dispatch_for_each<F: SingleValConsumer>(self, f: F) -> Res<Val>;
 }
 

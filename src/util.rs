@@ -30,12 +30,14 @@ pub fn float_as_int(f: f64) -> Option<i64> {
 pub fn cold<A>(a: A) -> A { a }
 
 #[inline]
+#[allow(dead_code)]
 pub fn likely(b: bool) -> bool {
     if !b { cold(()) }
     b
 }
 
 #[inline]
+#[allow(dead_code)]
 pub fn unlikely(b: bool) -> bool {
     if b { cold(()) }
     b
@@ -51,9 +53,4 @@ pub fn length_mismatch_error(xlen: usize, ylen: usize) -> Result<(), String> {
 pub fn match_lengths(xlen: usize, ylen: usize) -> Result<(), String> {
     if xlen != ylen { length_mismatch_error(xlen, ylen) }
     else { Ok(()) }
-}
-
-#[inline]
-pub fn is_none_or<A, F: FnOnce(&A) -> bool>(o: &Option<A>, f: F) -> bool {
-    !o.as_ref().is_some_and(|x| !f(x))
 }
