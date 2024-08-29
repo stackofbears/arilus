@@ -89,19 +89,12 @@ pub enum Val {
 
 #[derive(Debug, Clone)]
 pub enum Func {
-    // TODO switch this out for the non-token type (some primitives won't have
-    // token representations)
     Prim(PrimFunc),
 
     AdverbDerived {
         adverb: PrimAdverb,
         operand: Val,
     },
-
-    // TODO this can probably just be a closure
-    Atop { f_func: Val, g_func: Val },
-    Bound { func: Val, y: Val },
-    Fork { f_func: Val, h_func: Val, g_func: Val },
 
     // TODO decide if closures should refer to a shared environment or be value
     // types (copying copies environment. Currently, we hold a reference to the env.
@@ -116,6 +109,9 @@ pub enum Func {
 
         closure_env: Rc<RefCell<Vec<Val>>>,
     },
+
+    // TODO(c) needed?
+    // Bound { func: Val, y: Val },
 }
 
 macro_rules! atom {
@@ -127,6 +123,14 @@ pub(crate) use atom;
 
 impl Val {
     pub fn as_val(&self) -> &Self { &self }
+
+    pub fn is_constant_function(&self) -> bool {
+        if let Val::Function(func) = self {
+            func.is_constant_function()
+        } else {
+            false
+        }
+    }
 
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -213,28 +217,63 @@ impl PartialOrd for Val {
 
 impl Eq for Val {}
 
+impl PartialEq for Func {
+    fn eq(&self, other: &Func) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Func {}
+
+impl PartialOrd for Func {
+    fn partial_cmp(&self, other: &Func) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+
+impl Func {
+    pub fn is_constant_function(&self) -> bool {
+        matches!(self, Func::AdverbDerived{adverb: PrimAdverb::Underscore, ..})
+    }
+
+    fn key_variant(&self) -> u32 {
+        use Func::*;
+        match self {
+            Prim(_) => 0,
+            AdverbDerived{..} => 1,
+            Explicit{..} => 2,
+        }
+    }
+}
+
+impl Ord for Func {
+    fn cmp(&self, other: &Func) -> Ordering {
+        use Func::*;
+        
+        match (self, other) {
+            (Prim(_), Prim(_)) => todo!("Sort primitives"),
+            (Explicit{code_index: x, ..}, Explicit{code_index: y, ..}) => x.cmp(y),
+            (AdverbDerived{operand: x, ..}, AdverbDerived{operand: y, ..}) => x.cmp(y),
+            _ => self.key_variant().cmp(&other.key_variant()),
+        }
+    }
+}
+
 impl Ord for Val {
     fn cmp(&self, other: &Val) -> Ordering {
         use Val::*;
-        use Func::*;
 
         fn key_variant(x: &Val) -> u32 {
             match x {
                 Char(_) => 0,
                 Int(_) => 1,
                 Float(_) => 2,
-                Function(rc) => match &**rc {
-                    Prim(_) => 3,
-                    AdverbDerived {..} => 4,
-                    Atop{..} => 5,
-                    Bound{..} => 6,
-                    Fork{..} => 7,
-                    Explicit {..} => 8,
-                }
-                U8s(_) => 9,
-                I64s(_) => 10,
-                F64s(_) => 11,
-                Vals(_) => 12,
+                U8s(_) => 3,
+                I64s(_) => 4,
+                F64s(_) => 5,
+                Vals(_) => 6,
+                Function(func) => 7 + func.key_variant(),
             }
         }
 
@@ -262,26 +301,6 @@ impl Ord for Val {
             (Int(i), Float(f)) => int_float_cmp(i, f),
             (Float(f), Int(i)) => int_float_cmp(i, f).reverse(),
 
-            (Function(f), Function(g)) => match (f.as_ref(), g.as_ref()) {
-                (Prim(_), Prim(_)) => todo!("Sort primitives"),
-                // TODO sort by closure envs instead? Would be cool, but they may
-                // not have envs, and ideally there aren't semantic differences
-                // between explicit and primitive functions
-                (Explicit{code_index: x, ..}, Explicit{code_index: y, ..}) => x.cmp(y),
-                (AdverbDerived{operand: x, ..}, AdverbDerived{operand: y, ..}) => x.cmp(y),
-
-                (Atop { f_func: x_f_func, g_func: x_g_func },
-                 Atop { f_func: y_f_func, g_func: y_g_func }) =>
-                    x_f_func.cmp(y_f_func).then_with(|| x_g_func.cmp(y_g_func)),
-
-                (Bound{func: x_func, y: x_y}, Bound{func: y_func, y: y_y}) =>
-                    x_func.cmp(y_func).then_with(|| x_y.cmp(y_y)),
-
-                (Fork{f_func: x_f_func, h_func: x_h_func, g_func: x_g_func},
-                 Fork{f_func: y_f_func, h_func: y_h_func, g_func: y_g_func}) =>
-                    x_f_func.cmp(y_f_func).then_with(|| x_h_func.cmp(y_h_func)).then_with(|| x_g_func.cmp(y_g_func)),
-                _ => key_variant(self).cmp(&key_variant(other)),
-            }
             (U8s(x), U8s(y)) => x.cmp(y),
             (I64s(x), I64s(y)) => x.cmp(y),
 
@@ -289,6 +308,9 @@ impl Ord for Val {
             (F64s(fs), I64s(is)) => ints_floats_cmp(is, fs).reverse(),
 
             (Vals(x), Vals(y)) => x.cmp(y),
+
+            (Function(f), Function(g)) => f.cmp(g),
+
             _ => key_variant(self).cmp(&key_variant(other)),
         }
     }

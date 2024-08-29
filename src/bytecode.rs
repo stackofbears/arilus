@@ -6,11 +6,16 @@ use crate::lex::*;
 //   - An value stack: values - data and functions - are pushed onto the stack and popped to call functions
 //   - A function call stack (frames contain locals and a pointer to the closure environment)
 //
+// When you add an instruction that accesses a Var, update the following functions in compile.rs:
+//   - `accessed`
+//   - `decrement_locals`
+//   - `mark_last_local_uses`
+//
+// When you add an instruction that jumps or terminates a scope (like
+// MakeClosure), update `mark_last_local_uses`.
+//
 // TODO repr(c) and store parameters inline (i.e. [i32], decode instructions to
 // enum, read parameters afterward)
-//
-// TODO optimize PushSubject1+PopToSubject2 -> LoadSubject2
-// TODO instead of subject2, maybe we just have call1 and call2 instructions (less shuffling around). Can we do all this with just one stack? [..., x, v, y] -> v(x, y)
 #[derive(Debug, Clone, Copy)]
 pub enum Instr {
     Nop,
@@ -19,9 +24,10 @@ pub enum Instr {
     ModuleEnd,
     Dup,  // Duplicates the top stack element.
     MakeClosure { num_closure_vars: usize },  // Immediately follows the Return instruction of a MakeFunc. Followed by `num_closure_vars` PushVar instructions which form the closure environment. Pops the top value of the stack, which must be an explicit function, and pushes a function with the closure environment formed by those PushVar instructions. The closure environment comes after the function body so we can compile functions in one pass, since we don't know how many closure vars there are until after compiling a function.
+    MakeClosureFromStack { num_closure_vars: usize },  // Like MakeClosure, but takes `num_closure_vars` from the stack instead of being followed by PushVar instructions.
     MakeFunc { num_instructions: usize },  // Followed by the function's body (num_instructions instructions, including Return).
     Header { next_case_offset: i64 },  // Begin executing a function header. If it fails before running HeaderPassed, jump to (ip + `next_case_offset`), where `ip` points to the instruction after this Header instruction.
-    HeaderPassed,  // Indicates that the current function call's arguments conform to the function's header. Splat failures after this will be errors instead of resulting in falling back to the next function case.
+    HeaderPassed,  // Indicates that the function call's arguments conform to the current header. Splat failures after this will be errors instead of resulting in falling back to the next function case.
     Return,  // Discards the current stack frame and returns control to the instruction after the Call.
     JumpRelative { offset: i64 },  // Add `offset` to ip.
     JumpRelativeUnless { offset: i64 },  // Pops the top of the stack, then adds `offset` to `ip`, unless the popped value is falsy (its first atom is 0).
@@ -29,14 +35,17 @@ pub enum Instr {
     PushLiteralFloat(f64),
     PushVar { src: Var },  // Inside MakeClosure: Var to include in the closure environment. Otherwise: pushes src's value onto stack.
     PushVarLastUse { src: Var },  // Like PushVar, but this is the last possible use of this Var, so it can be moved out of the locals or closure environment. If this Var was the unique reference to its underlying array, then the array's storage may be reused.
+    TuckVar { src: Var },  // Like PushVar, but places `src` below the top stack element instead of on the top.
+    TuckVarLastUse { src: Var },  // Like PushVarLastUse, but places `src` below the top stack element instead of on the top.
     PushPrimFunc { prim: PrimFunc },  // Pushes `prim` onto stack.
 
-    // TODO [..]F[..] ?
-    // All call instructions leave a stack marker if they're calling an explicit function, which is eventually popped by SplatArgs or HeaderPassed
+    // All call instructions leave a stack marker if they're calling an explicit function, which is eventually popped by ArgCheckEq or HeaderPassed
     Call1,  // Let [x, f] be the top two stack values (f on top). Pops both, calls f with x as an argument, and pushes the result of the call.
     Call2,  // Let [x, f, y] be the top three values of the stack (y on top). Pops all three, calls f with x and y as its left and right arguments, and pushes the result.
     CallMarked,  // Let [f, x1, x2, .., xN] be the top values of the stack, with f..xN marked and xN on top. Reverses all of them and pops f, so the new stack is [xN, .. x2, x1] and calls f.
+    CallOnArgs { var: Var },  // Calls `var` on the marked arguments which are on the stack in reverse order.
     MarkStack,  // Create a marker at the current stack position. Stack elements at or above that marker are considered "marked".
+    CopyArgs,  // Within an explicit function, pushes a new set of the provided arguments.
     Pop,  // TODO currenltly we compile multi-statment expressions into (E1; Pop; E2; Pop; ...; EN) - can we instead do (E1; E2; ...; Pop(N-1); EN)? Pro - fewer pops; con - hold onto vals longer than necessary, may make a reference non-unique when it can be
     StoreTo { dst: Var }, // Copies the top stack value into dst.
     CallPrimFunc1 { prim: PrimFunc },  // Pops the top stack value, calls `prim` on it, and pushes the result. `prim` must not be Verb(PrimVerb::Rec).
@@ -87,19 +96,6 @@ pub enum Instr {
     // Like ArgCheckEq, but checks that the function has been provided *at
     // least* `count` args and leaves the current stack marker where it is.
     ArgCheckGe { count: usize },
-
-    // Pops the top two elements of the stack (G on top, F second), both functions,
-    // and pushes a new function equivalent to {x F G} : {x F y G}.
-    MakeAtopFunc,
-
-    // Pops the top two elements of the stack (n on top, F second), where F is a
-    // function and n is a noun, and pushes a new function equivalent to {x F n}.
-    MakeBoundFunc,
-
-    // Pops the top three elements of the stack (G on top, H second, F third),
-    // which must be functions, and pushes a new function equivalent to 
-    // {x F H (x G)} : {x F y H (x G y)}
-    MakeForkFunc,
 }
                
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +109,9 @@ impl fmt::Display for Instr {
         match self {
             Instr::PushVar { src } => write!(f, "PushVar({src})"),
             Instr::PushVarLastUse { src } => write!(f, "PushVarLastUse({src})"),
+            Instr::TuckVar { src } => write!(f, "TuckVar({src})"),
+            Instr::TuckVarLastUse { src } => write!(f, "TuckVarLastUse({src})"),
+            Instr::CallOnArgs { var } => write!(f, "CallOnArgs({var})"),
             Instr::StoreTo { dst } => write!(f, "StoreTo({dst})"),
             Instr::CallPrimFunc1 { prim } => write!(f, "CallPrimFunc1({prim})"),
             Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),

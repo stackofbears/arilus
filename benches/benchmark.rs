@@ -88,16 +88,18 @@ criterion_group!(misc, spectral_norm, spectral_a_explicit, spectral_a_tacit, bin
 
 // Based on
 // https://sschakraborty.github.io/benchmark/spectralnorm-csharpcore-1.html
+//
+// Expected answer for n=100: 1.2742199912349306
 bench!(spectral_norm,
 r#"
     A: { x+y*(x+y+1)/2+x+1 ~/ 1.0 }
     Approximate: {|n|
       i: n/
-      MultiplyAv: { i'(A i * x \+) }
-      MultiplyAtv: { i'(~A i * x \+) }
+      MultiplyAv: { i'(P A i * x \+) }
+      MultiplyAtv: { i'(P ~A i * x \+) }
       MultiplyAtAv: MultiplyAv MultiplyAtv
 
-      v: 19/ \MultiplyAtAv (1#n)
+      v: 19/ \(P MultiplyAtAv) (1#n)
       vBv: v MultiplyAtAv * v \+
       vv: v * v \+
       vBv/vv ^ 0.5
@@ -135,13 +137,13 @@ r#"
     ComputeChecksum: { if (x == zeros; 1; x 'rec \+ + 1) }
 
     Main: {
-      min: 4
-      max: min + 2 >. x
+      minNodes: 3
+      maxNodes: minNodes + 2 >: x
 
-      stretchTree: max+1 CreateTree
-      longLivedTree: max CreateTree
+      stretchTree: maxNodes+1 CreateTree
+      longLivedTree: minNodes CreateTree
 
-      (max-min+1)/+min'{
+      (maxNodes-minNodes+1)/+minNodes'{
         iterations: 2 ^ x
         total: iterations/+1 '(CreateTree ComputeChecksum) \+
       }

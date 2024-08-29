@@ -128,7 +128,8 @@ impl Lexer {
                 return err!("Unterminated string literal");
             }
 
-            return err!("Invalid syntax: {}...", &text[0..10.min(text.len())]);
+            let invalid_sample = text.chars().take(10).collect::<String>();
+            return err!("Invalid syntax: {}...", invalid_sample.trim());
         }
         Ok(())
     }
@@ -222,7 +223,6 @@ pub enum Token {
     Load,  // load
     IfUpper,  // If
     IfLower,  // if
-    Underscore,  // _
     DotDot { before_whitespace: bool },  // ..
 
     LParen,  // (
@@ -298,6 +298,9 @@ pub enum PrimAdverb {
     Backslash, // \
     P,  // p
     Q,  // q
+
+    Underscore,  // _
+
     // TODO converge/do-times/do-while
 }
 
@@ -309,7 +312,6 @@ impl Display for Token {
             Load => f.write_str("load"),
             IfUpper => f.write_str("If"),
             IfLower => f.write_str("if"),
-            Underscore => f.write_str("_"),
             DotDot { before_whitespace } => if *before_whitespace {
                 f.write_str(".. ")
             } else {
@@ -400,6 +402,7 @@ impl Display for PrimAdverb {
             Backslash => "\\",
             P => "p",
             Q => "q",
+            Underscore => "_",
         };
 
         f.write_str(s)
@@ -474,11 +477,11 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
         Token::IfUpper,
         Token::IfLower,
         Token::Load,
-        Token::Underscore,
         Token::PrimVerb(PrimVerb::P),
         Token::PrimVerb(PrimVerb::Q),
         Token::PrimAdverb(PrimAdverb::P),
         Token::PrimAdverb(PrimAdverb::Q),
+        Token::PrimAdverb(PrimAdverb::Underscore),
     ].iter().map(|t| (t.to_string(), t.clone())).collect()
 }
 

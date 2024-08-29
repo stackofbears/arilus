@@ -134,7 +134,6 @@ impl Compiler {
         }
     }
 
-
     fn parse_file(&self, filepath: &str) -> Result<Vec<Expr>, String> {
         let file_contents = fs::read_to_string(filepath).map_err(|err| cold(err.to_string()))?;
         let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
@@ -231,25 +230,84 @@ impl Compiler {
                 self.code.push(Instr::StoreTo { dst });
             }
             Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity)?,
-            // TODO trains should compile to functions that take N args and
-            // splat them to the leaf verbs.
-            Verb::Atop(f, g) => {
-                self.compile_verb(f.as_ref(), arity)?;
-                self.compile_verb(g.as_ref(), Some(1))?;
-                self.code.push(Instr::MakeAtopFunc);
-            }
-            Verb::Bind(f, y) => {
-                self.compile_verb(f.as_ref(), Some(2))?;
-                self.compile_small_noun(y.as_ref())?;
-                self.code.push(Instr::MakeBoundFunc);
-            }
-            Verb::Fork(f, h, g) => {
-                self.compile_verb(f.as_ref(), arity)?;
-                self.compile_small_verb(h.as_ref(), Some(2))?;
-                self.compile_small_verb(g.as_ref(), arity)?;
-                self.code.push(Instr::MakeForkFunc);
+            Verb::Train(f, rest) => self.compile_train_as_explicit(f, rest, arity)?,
+        }
+        Ok(())
+    }
+
+    fn compile_train_as_explicit(&mut self, f: &Verb, parts: &[TrainPart], arity: Option<usize>) -> Result<(), String> {
+        self.compile_verb(f, arity)?;
+
+        let mut last_slot_called_on_args = 0;
+        let mut total_closure_slots = 1;
+        for part in parts {
+            match part {
+                TrainPart::Fork(mid, rhs) => {
+                    total_closure_slots += 2;
+                    self.compile_small_verb(mid, Some(2))?;
+                    match rhs {
+                        SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                        SmallExpr::Verb(small_verb) => {
+                            last_slot_called_on_args = total_closure_slots - 1;
+                            self.compile_small_verb(small_verb, arity)?;
+                        }
+                    }
+                }
+                TrainPart::Atop(small_verb) => {
+                    total_closure_slots += 1;
+                    self.compile_small_verb(small_verb, Some(1))?;
+                }
             }
         }
+
+        let make_func_index = self.push(Instr::Nop);
+
+        if last_slot_called_on_args != 0 {
+            self.code.push(Instr::CopyArgs);
+        }
+        self.code.push(Instr::CallOnArgs { var: closure_var(0) });
+
+        for (slot, part) in (1..).step_by(2).zip(parts) {
+            match part {
+                TrainPart::Fork(_, rhs) => {
+                    let rhs_slot = slot + 1;
+                    // Each branch sets up x f y on the stack
+                    match rhs {
+                        SmallExpr::Noun(_) => {
+                            self.code.push(Instr::PushVar { src: closure_var(slot) });
+                            self.code.push(Instr::PushVar { src: closure_var(rhs_slot)  });
+                        }
+
+                        SmallExpr::Verb(_) => {
+                            if rhs_slot != last_slot_called_on_args {
+                                self.code.push(Instr::PushVar { src: closure_var(slot) });
+                                self.code.push(Instr::CopyArgs);
+                                self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
+                            } else {
+                                self.code.push(Instr::StoreTo { dst: local_var(0) });
+                                self.code.push(Instr::Pop);
+                                self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
+                                self.code.push(Instr::TuckVarLastUse { src: local_var(0) });
+                                self.code.push(Instr::TuckVar { src: closure_var(slot) });
+                            }
+                        }
+                    }
+                    self.code.push(Instr::Call2);
+                }
+                TrainPart::Atop(_) => {
+                    self.code.push(Instr::PushVar { src: closure_var(slot) });
+                    self.code.push(Instr::Call1);
+                }
+            }
+        }
+
+        self.code.push(Instr::Return);
+
+        self.code[make_func_index] = Instr::MakeFunc {
+            num_instructions: self.code.len() - (make_func_index + 1)
+        };
+        self.code.push(Instr::MakeClosureFromStack { num_closure_vars: total_closure_slots });
+
         Ok(())
     }
 
@@ -744,6 +802,14 @@ impl Compiler {
                     self.code[i] = Instr::PushVarLastUse { src };
                     set(&mut last_use_seen, slot, true);
                 }
+                Instr::TuckVar { src: src@Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
+                    self.code[i] = Instr::TuckVarLastUse { src };
+                    set(&mut last_use_seen, slot, true);
+                }
+                Instr::CallOnArgs { var: Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
+                    // There's not currently a LastUse variant for CallOnArgs.
+                    set(&mut last_use_seen, slot, true);
+                }
                 Instr::JumpRelative { offset } if offset > 0 => {
                     let mut last_uses_in_else = vec![];
                     for j in (i+1)..(i+offset as usize) {
@@ -761,7 +827,8 @@ impl Compiler {
                     }
                 }
                 Instr::MakeClosure{..} => i = inner_scope_skip_up.pop().unwrap(),
-                _ => (),
+                Instr::MakeClosureFromStack{..} => i = inner_scope_skip_up.pop().unwrap(),
+                _ => {}
             }
             i -= 1;
         }
@@ -895,6 +962,7 @@ fn form_prim_func_from_small_verb(small_verb: &SmallVerb, arity: Option<usize>) 
 fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<usize>) -> Option<usize> {
     use PrimAdverb::*;
     match adverb {
+        Underscore => None,  // TODO is this right?
         AtColon => Some(1),
         Tilde | Backslash => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
@@ -905,10 +973,15 @@ fn accessed(code: &[Instr], var: Var) -> bool {
     let mut i = 0;
     while i < code.len() {
         match code[i] {
-            Instr::PushVar { src } | Instr::PushVarLastUse { src } if src == var => return true,
+            Instr::PushVar { src } | Instr::PushVarLastUse { src } |
+            Instr::TuckVar { src } | Instr::TuckVarLastUse { src } if src == var => return true,
+
+            Instr::CallOnArgs { var: called } if called == var => return true,
+
             Instr::StoreTo { dst } if dst == var => return true,
+
             Instr::MakeFunc { num_instructions } => i += num_instructions,
-            _ => (),
+            _ => {}
         }
         i += 1;
     }
@@ -922,10 +995,13 @@ fn decrement_locals(code: &mut [Instr], above_slot: usize) {
         match &mut code[i] {
             Instr::PushVar        { src: Var { place: Local, slot } } |
             Instr::PushVarLastUse { src: Var { place: Local, slot } } |
+            Instr::TuckVar        { src: Var { place: Local, slot } } |
+            Instr::TuckVarLastUse { src: Var { place: Local, slot } } |
+            Instr::CallOnArgs     { var: Var { place: Local, slot } } |
             Instr::StoreTo        { dst: Var { place: Local, slot } } if *slot > above_slot => *slot -= 1,
 
             Instr::MakeFunc { num_instructions } => i += *num_instructions,
-            _ => (),
+            _ => {}
         }
         i += 1;
     }

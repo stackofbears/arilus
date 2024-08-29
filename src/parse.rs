@@ -50,18 +50,13 @@ pub enum Predicate {
 pub enum Verb {
     UpperAssign(String, Box<Verb>),
     SmallVerb(SmallVerb),
+    Train(Box<Verb>, Vec<TrainPart>),
+}
 
-    // A B  ==  {x A B} : {x A y B}
-    // RHS is only Verb instead of SmallVerb to allow (F G n) to be
-    // Atop(F, Bind(G, n)); no other reason! But why can't (A B : C)
-    // be Atop(A, B : C)?
-    Atop(Box<Verb>, Box<Verb>),
-
-    // A b  ==  {x A b}
-    Bind(Box<Verb>, Box<SmallNoun>),
-
-    // A B C  ==  {x A B (x C)} : {x A y B (x C y)}
-    Fork(Box<Verb>, Box<SmallVerb>, Box<SmallVerb>),
+#[derive(Debug, Clone)]
+pub enum TrainPart {
+    Fork(SmallVerb, SmallExpr),
+    Atop(SmallVerb),
 }
 
 #[derive(Debug, Clone)]
@@ -72,8 +67,8 @@ pub enum SmallNoun {
     NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
 
     // The underscore is parsed like an adverb, but unlike other adverbs, it
-    // produces a noun - that's the whole point - so it's treated specially
-    // here.
+    // produces something parsed like a noun - that's the whole point - so it's
+    // treated specially here.
     Underscored(Box<SmallExpr>),
 
     IntLiteral(i64),
@@ -356,7 +351,7 @@ impl<'a> Parser<'a> {
         match self.parse_stranded_elem()? {
             None => match stranded_elem {
                 StrandedElem::Single(small_noun) => Ok(Some(small_noun)),
-                StrandedElem::Spliced(_) => cold_err!("`..' is only allowed in array literals and function argument lists."),
+                StrandedElem::Spliced(name) => cold_err!("`..' is only {name:?} allowed in array literals and function argument lists."),
             }
             Some(next_elem) => {
                 let mut elems = vec![stranded_elem.to_elem(), next_elem.to_elem()];
@@ -390,7 +385,7 @@ impl<'a> Parser<'a> {
                 let cond = exprs.pop().unwrap();
                 If3(Box::new(cond), Box::new(then), Box::new(else_))
             }
-            Some(Token::Underscore) => {
+            Some(Token::PrimAdverb(PrimAdverb::Underscore)) => {
                 self.skip();
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(operand) => Underscored(Box::new(operand)),
@@ -497,7 +492,7 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let mut verb = if self.consume(&Token::Colon) {
+        let verb = if self.consume(&Token::Colon) {
             match small_verb {
                 UpperName(name) => match self.parse_verb()? {
                     Some(rhs) => UpperAssign(name, Box::new(rhs)),
@@ -509,23 +504,21 @@ impl<'a> Parser<'a> {
             SmallVerb(small_verb)
         };
 
-        loop {
-            if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {  // (+ a b)
-                verb = match next_expr {
-                    SmallExpr::Verb(small_verb) => match self.parse_small_expr(/*stranding_allowed=*/true)? {
-                        Some(SmallExpr::Verb(fork_y)) => Verb::Fork(Box::new(verb), Box::new(small_verb), Box::new(fork_y)),
-                        Some(SmallExpr::Noun(fork_y)) => Verb::Atop(Box::new(verb),
-                                                                    Box::new(Verb::Bind(Box::new(Verb::SmallVerb(small_verb)), Box::new(fork_y)))),
-                        None => Verb::Atop(Box::new(verb), Box::new(Verb::SmallVerb(small_verb))),
-                    },
-                    SmallExpr::Noun(small_noun) => Verb::Bind(Box::new(verb), Box::new(small_noun)),
-                }
+        let mut train = vec![];
+        while let Some(next_verb) = self.parse_small_verb()? {
+            if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {
+                train.push(TrainPart::Fork(next_verb, next_expr));
             } else {
-                break
+                train.push(TrainPart::Atop(next_verb));
+                break;
             }
         }
 
-        Ok(Some(verb))
+        Ok(Some(if train.is_empty() {
+            verb
+        } else {
+            Verb::Train(Box::new(verb), train)
+        }))
     }
 
     fn parse_small_pattern(&mut self) -> Parsed<Pattern> {
@@ -539,7 +532,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 pat
             }
-            Some(Token::Underscore) => {
+            Some(Token::PrimAdverb(PrimAdverb::Underscore)) => {
                 self.skip();
                 Pattern::Wildcard
             }
