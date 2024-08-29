@@ -59,10 +59,9 @@ r#"
 
 bench!(naive_triangular_tail,
 r#"
-    Tri: {if(x=1; y; x-1 Rec (y + x))} 1
+    Tri: {|x| x Rec 1 : |x;y| if(x=1; y; x-1 Rec (y + x))}
     1e3 Tri
 "#);
-
 
 criterion_group!(linear_ops, int_sum, transpose, transpose_copies);
 

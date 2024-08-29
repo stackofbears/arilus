@@ -727,8 +727,8 @@ impl Mem {
     }
 
     fn call_dyad(&mut self, val: Val, x: Val, y: Val) -> Result<Val, String> {
-        self.push(x);
         self.push(y);
+        self.push(x);
         self.index_or_call(val, 2)
     }
 
@@ -767,7 +767,7 @@ impl Mem {
             Backtick => match maybe_y {
                 None => for_each(self, operand, x)?,
                 Some(y) => match iter_val(x.clone()) {
-                    None => self.call_dyad(operand.clone(), x, y)?,
+                    None => self.call_dyad(operand, x, y)?,
                     Some(iter) => collect_list(
                         iter.map(|x_val| self.call_dyad(operand.clone(), x_val, y.clone()))
                     )?,
