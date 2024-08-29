@@ -54,7 +54,7 @@ impl Compiler {
     }
 
     pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
-        let result = self.compile_block(exprs);
+        let result = self.compile_block(exprs, true);
         self.scopes.truncate(1);  // Move back to global scope
 
         self.eliminate_unconditional_jump_chains();
@@ -149,15 +149,16 @@ impl Compiler {
         Ok(saved_scopes.into_iter().next().unwrap())
     }
 
-    fn compile_block(&mut self, exprs: &[Expr]) -> Result<(), String> {
-        if exprs.is_empty() { todo!("Compile ()"); }
-
-        self.compile_expr(&exprs[0])?;
-        for expr in &exprs[1..] {
-            self.code.push(Instr::Pop);
-            self.compile_expr(expr)?;
+    fn compile_block(&mut self, exprs: &[Expr], keep: bool) -> Result<(), String> {
+        match exprs.split_last() {
+            None => todo!("Compile ()"),
+            Some((last, init)) => {
+                for expr in init {
+                    self.compile_expr(expr, false)?;
+                }
+                self.compile_expr(last, keep)
+            }
         }
-        Ok(())
     }
 
     fn push(&mut self, instr: Instr) -> usize {
@@ -192,10 +193,10 @@ impl Compiler {
         Ok((*code_index, scope))
     }
 
-    fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
+    fn compile_expr(&mut self, expr: &Expr, keep: bool) -> Result<(), String> {
         match expr {
-            Expr::Noun(noun) => self.compile_noun(noun),
-            Expr::Verb(verb) => self.compile_verb(verb, None),
+            Expr::Noun(noun) => self.compile_noun(noun, keep),
+            Expr::Verb(verb) => self.compile_verb(verb, None, keep),
             Expr::PragmaLoad(mod_name) => {
                 let load_module_index = self.push(Instr::Nop);
                 let mut local_scope = self.scopes.pop().unwrap();
@@ -222,21 +223,22 @@ impl Compiler {
         }
     }
 
-    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>) -> Result<(), String> {
+    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>, keep: bool) -> Result<(), String> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
-                self.compile_verb(rhs, arity)?;
+                self.compile_verb(rhs, arity, true)?;
                 let dst = self.fetch_var_in_current_scope(name);
+                if keep { self.code.push(Instr::Dup) }
                 self.code.push(Instr::StoreTo { dst });
             }
-            Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity)?,
-            Verb::Train(f, rest) => self.compile_train_as_explicit(f, rest, arity)?,
+            Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity, keep)?,
+            Verb::Train(f, rest) => self.compile_train_as_explicit(f, rest, arity, keep)?,
         }
         Ok(())
     }
 
-    fn compile_train_as_explicit(&mut self, f: &Verb, parts: &[TrainPart], arity: Option<usize>) -> Result<(), String> {
-        self.compile_verb(f, arity)?;
+    fn compile_train_as_explicit(&mut self, f: &Verb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Result<(), String> {
+        self.compile_verb(f, arity, true)?;
 
         let mut last_slot_called_on_args = 0;
         let mut total_closure_slots = 1;
@@ -244,18 +246,18 @@ impl Compiler {
             match part {
                 TrainPart::Fork(mid, rhs) => {
                     total_closure_slots += 2;
-                    self.compile_small_verb(mid, Some(2))?;
+                    self.compile_small_verb(mid, Some(2), true)?;
                     match rhs {
-                        SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                        SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
                         SmallExpr::Verb(small_verb) => {
                             last_slot_called_on_args = total_closure_slots - 1;
-                            self.compile_small_verb(small_verb, arity)?;
+                            self.compile_small_verb(small_verb, arity, true)?;
                         }
                     }
                 }
                 TrainPart::Atop(small_verb) => {
                     total_closure_slots += 1;
-                    self.compile_small_verb(small_verb, Some(1))?;
+                    self.compile_small_verb(small_verb, Some(1), true)?;
                 }
             }
         }
@@ -285,7 +287,6 @@ impl Compiler {
                                 self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
                             } else {
                                 self.code.push(Instr::StoreTo { dst: local_var(0) });
-                                self.code.push(Instr::Pop);
                                 self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
                                 self.code.push(Instr::TuckVarLastUse { src: local_var(0) });
                                 self.code.push(Instr::TuckVar { src: closure_var(slot) });
@@ -308,14 +309,16 @@ impl Compiler {
         };
         self.code.push(Instr::MakeClosureFromStack { num_closure_vars: total_closure_slots });
 
+        if !keep { self.code.push(Instr::Pop); }
+
         Ok(())
     }
 
-    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep_top: bool) -> Result<(), String> {
+    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep: bool) -> Result<(), String> {
         match pat {
             Pattern::Constant(literal) => {
-                if keep_top { self.code.push(Instr::Dup) }
-                self.compile_small_noun(&SmallNoun::Constant(literal.clone()))?;
+                if keep { self.code.push(Instr::Dup) }
+                self.compile_small_noun(&SmallNoun::Constant(literal.clone()), true)?;
                 if literal.is_atom() {
                     self.code.push(Instr::CallPrimFunc2 { prim: PrimFunc::Equal });
                 } else {
@@ -323,18 +326,18 @@ impl Compiler {
                 }
                 self.code.push(Instr::Assert);
             }
-            Pattern::Wildcard => if !keep_top { self.code.push(Instr::Pop) }
+            Pattern::Wildcard => if !keep { self.code.push(Instr::Pop) }
             Pattern::Name(name) => {
                 let dst = self.fetch_var_in_current_scope(name);
+                if keep { self.code.push(Instr::Dup) }
                 self.code.push(Instr::StoreTo { dst });
-                if !keep_top { self.code.push(Instr::Pop) }
             }
             Pattern::As(pat, as_pat) => {
                 self.compile_unpacking_assignment(&*pat, true)?;
-                self.compile_unpacking_assignment(&*as_pat, keep_top)?;
+                self.compile_unpacking_assignment(&*as_pat, keep)?;
             }
             Pattern::Array(pats) => {
-                if keep_top { self.code.push(Instr::Dup) }
+                if keep { self.code.push(Instr::Dup) }
                 let splat_index = self.push(Instr::Nop);
 
                 enum Splicing { NoSplice, Splice {i: usize, keep_splice: bool} }
@@ -368,29 +371,28 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>) -> Result<(), String> {
+    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>, keep: bool) -> Result<(), String> {
         if let Some(prim) = form_prim_func_from_small_verb(small_verb, arity) {
-            self.code.push(Instr::PushPrimFunc { prim });
+            if keep { self.code.push(Instr::PushPrimFunc { prim }); }
             return Ok(());
         }
 
         match small_verb {
             SmallVerb::UpperName(name) => {
                 let src = self.fetch_var(name)?;
-                self.code.push(Instr::PushVar { src });
+                if keep { self.code.push(Instr::PushVar { src }) }
             }
             SmallVerb::VerbBlock(exprs, verb) => {
                 if !exprs.is_empty() {
-                    self.compile_block(exprs)?;
-                    self.code.push(Instr::Pop);
+                    self.compile_block(exprs, false)?;
                 }
-                self.compile_verb(&*verb, arity)?;
+                self.compile_verb(&*verb, arity, keep)?;
             }
             &SmallVerb::PrimVerb(prim) => {
                 if prim == PrimFunc::Rec && self.scopes.len() < 2 {
                     return cold_err!("Can't use `Rec` outside of an explicit definition")
                 }
-                self.code.push(Instr::PushPrimFunc { prim })
+                if keep { self.code.push(Instr::PushPrimFunc { prim }) }
             }
             SmallVerb::Lambda(lambda) => {
                 let make_func_index = self.push(Instr::Nop);
@@ -419,20 +421,22 @@ impl Compiler {
                         self.code.push(Instr::PushVar { src });
                     }
                 }
+                if !keep { self.code.push(Instr::Pop) }
             }
             SmallVerb::PrimAdverbCall(prim, small_expr_box) => {
                 match small_expr_box.as_ref() {
                     SmallExpr::Verb(small_verb) => {
-                        self.compile_small_verb(small_verb, get_prim_adverb_operand_arity(*prim, arity))?;
+                        self.compile_small_verb(small_verb, get_prim_adverb_operand_arity(*prim, arity), true)?;
                         if !matches!(prim, PrimAdverb::Dot) {
                             self.code.push(Instr::CallPrimAdverb { prim: *prim });
                         }
                     }
                     SmallExpr::Noun(small_noun) => {
-                        self.compile_small_noun(small_noun)?;
+                        self.compile_small_noun(small_noun, true)?;
                         self.code.push(Instr::CallPrimAdverb { prim: *prim });
                     }
                 }
+                if !keep { self.code.push(Instr::Pop) }
             }
             SmallVerb::UserAdverbCall(small_verb, elems) => {
                 self.code.push(Instr::MarkStack);
@@ -445,11 +449,12 @@ impl Compiler {
                     }
                 }
 
-                self.compile_small_verb(small_verb, arity)?;
+                self.compile_small_verb(small_verb, arity, true)?;
                 for elem in elems {
                     self.compile_elem(elem)?;
                 }
                 self.code.push(Instr::CallMarked);
+                if !keep { self.code.push(Instr::Pop) }
             }
         }
         Ok(())
@@ -465,15 +470,13 @@ impl Compiler {
         let mut scope = HashMap::new();
         scope.insert("x".to_string(), local_var(0));
         self.code.push(Instr::StoreTo { dst: local_var(0) });
-        self.code.push(Instr::Pop);
 
         scope.insert("y".to_string(), local_var(1));
         let y_start = self.push(Instr::StoreTo { dst: local_var(1) });
-        self.code.push(Instr::Pop);
         self.scopes.push(scope);
 
         let body_start = self.code.len();
-        self.compile_block(exprs)?;
+        self.compile_block(exprs, true)?;
         self.code.push(Instr::Return);
 
         // TODO optimize nops away (would need to adjust offsets)
@@ -532,7 +535,7 @@ impl Compiler {
                 self.code.push(Instr::HeaderPassed);
             }
 
-            self.compile_block(exprs)?;
+            self.compile_block(exprs, true)?;
             let case_end = self.push(Instr::Return);
 
             if let Some(header_index) = header_index {
@@ -553,24 +556,27 @@ impl Compiler {
     }
 
     // Leaves the compiled noun's value in subject1
-    fn compile_noun(&mut self, noun: &Noun) -> Result<(), String> {
+    fn compile_noun(&mut self, noun: &Noun, keep: bool) -> Result<(), String> {
         match noun {
-            Noun::SmallNoun(small_noun) => self.compile_small_noun(small_noun)?,
+            Noun::SmallNoun(small_noun) => self.compile_small_noun(small_noun, keep)?,
             Noun::LowerAssign(pat, rhs) => {
-                self.compile_noun(rhs)?;
-                self.compile_unpacking_assignment(pat, true)?;
+                self.compile_noun(rhs, true)?;
+                self.compile_unpacking_assignment(pat, keep)?;
             }
             Noun::ModifyingAssign(pattern, predicates) => {
-                self.compile_small_noun(&pattern_to_small_noun(pattern)?)?;
+                self.compile_small_noun(&pattern_to_small_noun(pattern)?, true)?;
                 for predicate in predicates {
-                    self.compile_predicate(predicate)?;
+                    self.compile_predicate(predicate, true)?;
                 }
-                self.compile_unpacking_assignment(pattern, true)?;
+                self.compile_unpacking_assignment(pattern, keep)?;
             }
             Noun::Sentence(small_noun, predicates) => {
-                self.compile_small_noun(small_noun)?;
-                for predicate in predicates {
-                    self.compile_predicate(predicate)?;
+                self.compile_small_noun(small_noun, true)?;
+                if let Some((last, init)) = predicates.split_last() {
+                    for predicate in init {
+                        self.compile_predicate(predicate, true)?;
+                    }
+                    self.compile_predicate(last, keep)?;
                 }
             }
         }
@@ -578,7 +584,7 @@ impl Compiler {
     }
 
     // Before calling, add the code to put the x argument on the stack
-    fn compile_predicate(&mut self, predicate: &Predicate) -> Result<(), String> {
+    fn compile_predicate(&mut self, predicate: &Predicate, keep: bool) -> Result<(), String> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
                 let prim_func = form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
@@ -588,7 +594,7 @@ impl Compiler {
                                 self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Rec }),
                         _ => {
                             let arity = 1 + maybe_y_arg.is_some() as usize;
-                            self.compile_verb(verb, Some(arity))?;
+                            self.compile_verb(verb, Some(arity), true)?;
                         }
                     }
                 }
@@ -599,24 +605,26 @@ impl Compiler {
                         None => Instr::Call1,
                     }),
                     Some(y) => {
-                        self.compile_small_noun(y)?;
+                        self.compile_small_noun(y, true)?;
                         self.code.push(match prim_func {
                             Some(prim) => Instr::CallPrimFunc2 { prim },
                             None => Instr::Call2,
                         });
                     }
                 }
+
+                if !keep { self.code.push(Instr::Pop) }
             }
 
             Predicate::ForwardAssignment(pat) =>
-                self.compile_unpacking_assignment(pat, true)?,
+                self.compile_unpacking_assignment(pat, keep)?,
 
-            Predicate::If2(then, else_) => self.compile_if(&*then, &*else_)?,
+            Predicate::If2(then, else_) => self.compile_if(&*then, &*else_, keep)?,
         }
         Ok(())
     }
 
-    fn compile_if(&mut self, then: &Expr, else_: &Expr) -> Result<(), String> {
+    fn compile_if(&mut self, then: &Expr, else_: &Expr, keep: bool) -> Result<(), String> {
         // s: start;  t: #then;  e: #else     offset = target      - (index+1)
         //
         // s          JumpUnless(t+1) --,     t+1    = (s+t+2)     - (ip=s+1)
@@ -633,7 +641,7 @@ impl Compiler {
         // to be get the same slot.
         {
             let in_branch_locals_start = next_local_slot(self.get_local_scope());
-            self.compile_expr(then)?;
+            self.compile_expr(then, keep)?;
             self.cull_locals_at_and_above(in_branch_locals_start);
         }
 
@@ -645,7 +653,7 @@ impl Compiler {
 
         {
             let in_branch_locals_start = next_local_slot(self.get_local_scope());
-            self.compile_expr(else_)?;
+            self.compile_expr(else_, keep)?;
             self.cull_locals_at_and_above(in_branch_locals_start);
         }
 
@@ -684,7 +692,7 @@ impl Compiler {
         cold_err!("Undefined name: `{name}'")
     }
 
-    fn compile_small_noun(&mut self, small_noun: &SmallNoun) -> Result<(), String> {
+    fn compile_small_noun(&mut self, small_noun: &SmallNoun, keep: bool) -> Result<(), String> {
         // TODO currently V N pushes N but doesn't pop it unless another
         // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
@@ -696,34 +704,33 @@ impl Compiler {
                 self.code.push(Instr::PushPrimFunc { prim });
             }
             If3(cond, then, else_) => {
-                self.compile_expr(&*cond)?;
-                self.compile_if(&*then, &*else_)?;
+                self.compile_expr(&*cond, true)?;
+                self.compile_if(&*then, &*else_, keep)?;
             }
             LowerName(name) => {
                 let src = self.fetch_var(name)?;
-                self.code.push(Instr::PushVar { src });
+                if keep { self.code.push(Instr::PushVar { src }) }
             }
             NounBlock(exprs, last) => {
                 if !exprs.is_empty() {
-                    self.compile_block(exprs)?;
-                    self.code.push(Instr::Pop);
+                    self.compile_block(exprs, false)?;
                 }
-                self.compile_noun(&*last)?;
+                self.compile_noun(&*last, keep)?;
             }
             Underscored(small_expr) => {
                 match small_expr.as_ref() {
-                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None)?,
-                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None, keep)?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, keep)?,
                 }
             }
-            Constant(Literal::Int(int)) => self.code.push(Instr::PushLiteralInteger(*int)),
-            Constant(Literal::Float(float)) => self.code.push(Instr::PushLiteralFloat(*float)),
-            Constant(Literal::Char(byte)) => {
+            Constant(Literal::Int(int)) => if keep { self.code.push(Instr::PushLiteralInteger(*int)) }
+            Constant(Literal::Float(float)) => if keep { self.code.push(Instr::PushLiteralFloat(*float)) }
+            Constant(Literal::Char(byte)) => if keep {
                 let mut bytes = [0; 8];
                 bytes[0] = *byte;
                 self.code.push(Instr::LiteralBytes { bytes });
             }
-            Constant(Literal::String(s)) => {
+            Constant(Literal::String(s)) => if keep {
                 self.code.push(Instr::MakeString { num_bytes: s.len() });
                 for i in (0..s.len()).step_by(8) {
                     let mut bytes = [0; 8];
@@ -739,14 +746,16 @@ impl Compiler {
                     self.compile_elem(elem)?;
                 }
                 self.code.push(Instr::CollectMarkedToArray);
+                if !keep { self.code.push(Instr::Pop) }
             }
             Indexed(small_noun, args) => {
                 self.code.push(Instr::MarkStack);
-                self.compile_small_noun(&*small_noun)?;
+                self.compile_small_noun(&*small_noun, true)?;
                 for elem in args {
                     self.compile_elem(elem)?;
                 }
                 self.code.push(Instr::CallMarked);
+                if !keep { self.code.push(Instr::Pop) }
             }
         }
         Ok(())
@@ -754,11 +763,11 @@ impl Compiler {
 
     fn compile_elem(&mut self, elem: &Elem) -> Result<(), String> {
         match elem {
-            Elem::Expr(expr) => self.compile_expr(expr),
+            Elem::Expr(expr) => self.compile_expr(expr, true),
             Elem::Spliced(small_expr) => {
                 match small_expr {
-                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None)?,
-                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None, true)?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
                 }
                 self.code.push(Instr::Splat);
                 Ok(())
@@ -1017,3 +1026,4 @@ fn decrement_locals(code: &mut [Instr], above_slot: usize) {
         i += 1;
     }
 }
+
