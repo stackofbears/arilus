@@ -329,7 +329,8 @@ impl Mem {
                 MarkStack => self.push_marker(self.stack.len()),
                 Pop => { self.pop(); }
                 StoreTo { dst } => {
-                    self.store(dst, self.top().clone())
+                    let val = self.pop();
+                    self.store(dst, val);
                 }
                 Splat => {
                     match iter_val(self.pop()) {
@@ -697,7 +698,8 @@ impl Mem {
                             self.tuck(index_or_cycle_val(&x, 0).unwrap());
                             calling = operand.clone();
                         }
-                        1 if self.top().len().unwrap_or(2) == 2 => {
+                        1 if matches!(self.top().len(), Some(2)) => {
+                            arg_count = 2;
                             calling = operand.clone();
                             let x = self.pop();
                             self.push(index_or_cycle_val(&x, 1).unwrap());
@@ -721,6 +723,10 @@ impl Mem {
         }
     }
 
+    fn call_val(&mut self, val: Val, x: Val, y: Option<Val>) -> Result<Val, String> {
+        if let Some(y) = y { self.call_dyad(val, x, y) } else { self.call_monad(val, x) }
+    }
+
     fn call_monad(&mut self, val: Val, x: Val) -> Result<Val, String> {
         self.push(x);
         self.index_or_call(val, 1)
@@ -730,10 +736,6 @@ impl Mem {
         self.push(y);
         self.push(x);
         self.index_or_call(val, 2)
-    }
-
-    fn call_val(&mut self, val: Val, x: Val, y: Option<Val>) -> Result<Val, String> {
-        if let Some(y) = y { self.call_dyad(val, x, y) } else { self.call_monad(val, x) }
     }
 
     fn call_prim_adverb(&mut self,
@@ -1062,7 +1064,7 @@ impl Mem {
         Ok(seed)
     }
 
-    // Args should be on the stack in reverse order.
+    // Args should be on the stack in reverse order (first argument on top).
     fn index_or_call(&mut self, f: Val, arg_count: usize) -> Result<Val, String> {
         use Val::*;
         if let Function(func) = f {

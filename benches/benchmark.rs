@@ -59,7 +59,7 @@ r#"
 
 bench!(naive_triangular_tail,
 r#"
-    Tri: {|x| x Rec 1 : |x;y| if(x=1; y; x-1 Rec (y + x))}
+    Tri: {|x| x Rec 1 : |1;y| y : |x;y| x-1 Rec (y + x)}
     1e3 Tri
 "#);
 
@@ -123,17 +123,12 @@ r#"
 // https://benchmarksgame-team.pages.debian.net/benchmarksgame/program/binarytrees-gcc-3.html
 bench!(binary_trees,
 r#"
-    \ Node: 2-item array: each item is 0 or another node
-    CreateTree: {|depth|
-      if (depth > 0
-        [depth - 1 Rec; depth - 1 Rec]
-        0 0
-      )
-    }
-
     zeros: 0 0
 
-    ComputeChecksum: { if (x == zeros; 1; x 'rec \+ + 1) }
+    \ Node: 2-item array: each item is 0 or another node
+    CreateTree: {|0| zeros : |depth| [depth-1 Rec; depth-1 Rec]}
+
+    ComputeChecksum: { |0 0| 1 : |x| x 'rec \+ + 1 }
 
     Main: {
       minNodes: 3
@@ -144,7 +139,7 @@ r#"
 
       (maxNodes-minNodes+1)/+minNodes'{
         iterations: 2 ^ x
-        total: iterations/+1 '(CreateTree ComputeChecksum) \+
+        iterations/+1 '(CreateTree ComputeChecksum) \+
       }
     }
 
