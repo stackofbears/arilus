@@ -107,6 +107,19 @@ impl Mem {
             ip += 1;
             match self.code[ip - 1] {
                 Nop => {}
+                Assert => {
+                    let val = self.pop();
+                    if val.is_falsy() {
+                        let frame = self.current_frame();
+                        match frame.next_header {
+                            None => return cold_err!("Assertion failed"),
+                            Some(next_header_index) => {
+                                self.locals_stack.truncate(frame.locals_start);
+                                ip = next_header_index;
+                            }
+                        }
+                    }
+                }
                 LoadModule { code_index } => {
                     let top_of_locals = self.locals_stack.len();
                     let frame = self.current_frame_mut();
@@ -170,8 +183,7 @@ impl Mem {
                     if enter_case {
                         let args_start = self.peek_marker();
                         let have = self.stack.len() - (args_start + arg_count);
-                        let need = arg_count - have;
-                        if have < need {
+                        if have < arg_count {
                             self.stack.extend_from_within(args_start+have .. args_start+arg_count);
                         }
                         self.current_frame_mut().next_header = Some((ip as i64 + next_case_offset) as usize);

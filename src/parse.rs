@@ -66,24 +66,39 @@ pub enum SmallNoun {
     LowerName(String),
     NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
 
+    Constant(Literal),
+
     // The underscore is parsed like an adverb, but unlike other adverbs, it
     // produces something parsed like a noun - that's the whole point - so it's
     // treated specially here.
     Underscored(Box<SmallExpr>),
-
-    IntLiteral(i64),
-    FloatLiteral(f64),
-
-    // ( "a" ) is a character literal. Two ways to make a single-character
-    // string are ( "a", ) and ( ["a"] ).
-    CharLiteral(u8),
-    StringLiteral(String),
 
     // [a; b; c] or a b c
     ArrayLiteral(Vec<Elem>),
 
     // a[i1; i2;...; iN]
     Indexed(Box<SmallNoun>, Vec<Elem>),
+}
+
+#[derive(Debug, Clone)]
+pub enum Literal {
+    Int(i64),
+    Float(f64),
+
+    // ( "a" ) is a character literal. Two ways to make a single-character
+    // string are ( "a", ) and ( ["a"] ).
+    Char(u8),
+    String(String),
+}
+
+impl Literal {
+    pub fn is_atom(&self) -> bool {
+        use Literal::*;
+        match self {
+            Int(_) | Float(_) | Char(_) => true,
+            String(_) => false,
+        }
+    }
 }
 
 // Part of an array literal or an argument list.
@@ -131,6 +146,8 @@ pub struct ExplicitArgs(pub Vec<PatternElem>);
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
+    Constant(Literal),
+
     // _
     Wildcard,
 
@@ -366,7 +383,7 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let mut small_noun = match self.peek() {
-            Some(Token::C0Lower) => SmallNoun::CharLiteral(0),
+            Some(Token::C0Lower) => Constant(Literal::Char(0)),
             Some(&Token::IfLower) => {
                 self.skip();
 
@@ -404,20 +421,20 @@ impl<'a> Parser<'a> {
             }
             Some(&Token::IntLit(int)) => {
                 self.skip();
-                IntLiteral(int)
+                Constant(Literal::Int(int))
             }
             Some(&Token::FloatLit(float)) => {
                 self.skip();
-                FloatLiteral(float)
+                Constant(Literal::Float(float))
             }
             Some(Token::StrLit(s)) => {
-                let noun = if s.len() == 1 {
-                    CharLiteral(s.as_bytes()[0])  // TODO unicode
+                let literal = if s.len() == 1 {
+                    Literal::Char(s.as_bytes()[0])  // TODO unicode
                 } else {
-                    StringLiteral(s.clone())
+                    Literal::String(s.clone())
                 };
                 self.skip();
-                noun
+                Constant(literal)
             }
             Some(Token::LParen) => {
                 // TODO backtracking can be inefficient if we have to go deep
@@ -524,6 +541,23 @@ impl<'a> Parser<'a> {
     fn parse_small_pattern(&mut self) -> Parsed<Pattern> {
         // TODO UpperName?
         let pattern = match self.peek() {
+            Some(&Token::IntLit(int)) => {
+                self.skip();
+                Pattern::Constant(Literal::Int(int))
+            }
+            Some(&Token::FloatLit(float)) => {
+                self.skip();
+                Pattern::Constant(Literal::Float(float))
+            }
+            Some(Token::StrLit(s)) => {
+                let literal = if s.len() == 1 {
+                    Literal::Char(s.as_bytes()[0])
+                } else {
+                    Literal::String(s.clone())
+                };
+                self.skip();
+                Pattern::Constant(literal)
+            }
             Some(Token::LowerName(name)) => {
                 if self.primitive_identifiers.contains_key(name.as_str()) {
                     return Err(self.expected(&"pattern"))
@@ -657,7 +691,7 @@ impl<'a> Parser<'a> {
         let mut small_verb = match self.peek() {
             Some(Token::C0Upper) => SmallVerb::PrimAdverbCall(
                 PrimAdverb::Dot,
-                Box::new(SmallExpr::Noun(SmallNoun::CharLiteral(0)))
+                Box::new(SmallExpr::Noun(SmallNoun::Constant(Literal::Char(0))))
             ),
             Some(Token::UpperName(name)) => {
                 if let Some(&prim) = self.primitive_identifiers.get(name.as_str()) {

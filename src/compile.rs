@@ -313,6 +313,16 @@ impl Compiler {
 
     fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep_top: bool) -> Result<(), String> {
         match pat {
+            Pattern::Constant(literal) => {
+                if keep_top { self.code.push(Instr::Dup) }
+                self.compile_small_noun(&SmallNoun::Constant(literal.clone()))?;
+                if literal.is_atom() {
+                    self.code.push(Instr::CallPrimFunc2 { prim: PrimFunc::Equal });
+                } else {
+                    self.code.push(Instr::CallPrimFunc2 { prim: PrimFunc::Match });
+                }
+                self.code.push(Instr::Assert);
+            }
             Pattern::Wildcard => if !keep_top { self.code.push(Instr::Pop) }
             Pattern::Name(name) => {
                 let dst = self.fetch_var_in_current_scope(name);
@@ -706,14 +716,14 @@ impl Compiler {
                     SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun)?,
                 }
             }
-            IntLiteral(int) => self.code.push(Instr::PushLiteralInteger(*int)),
-            FloatLiteral(float) => self.code.push(Instr::PushLiteralFloat(*float)),
-            CharLiteral(byte) => {
+            Constant(Literal::Int(int)) => self.code.push(Instr::PushLiteralInteger(*int)),
+            Constant(Literal::Float(float)) => self.code.push(Instr::PushLiteralFloat(*float)),
+            Constant(Literal::Char(byte)) => {
                 let mut bytes = [0; 8];
                 bytes[0] = *byte;
                 self.code.push(Instr::LiteralBytes { bytes });
             }
-            StringLiteral(s) => {
+            Constant(Literal::String(s)) => {
                 self.code.push(Instr::MakeString { num_bytes: s.len() });
                 for i in (0..s.len()).step_by(8) {
                     let mut bytes = [0; 8];
@@ -896,6 +906,7 @@ fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
 
 fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
     Ok(match pat {
+        Pattern::Constant(literal) => SmallNoun::Constant(literal.clone()),
         Pattern::Wildcard => return cold_err!("`_' wildcards can't be converted to expressions."),
         Pattern::As(pat1, _) => pattern_to_small_noun(pat1)?,
         Pattern::Name(name) => SmallNoun::LowerName(name.clone()),
