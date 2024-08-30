@@ -184,6 +184,7 @@ pub enum PrimFunc {
     Find,
     FindAll,
     FindSubseq,
+    Has,
     In,
     Copy,
     IdentityLeft,

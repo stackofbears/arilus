@@ -203,3 +203,30 @@ pub fn group_indices(x: Val) -> Res<Val> {
         _ => cold_err!("domain\nExpected non-negative integers, got {x:?}"),
     }
 }
+
+pub fn has(x: Val, y: Val) -> bool {
+    find(&x, &y) != x.len().unwrap_or(1) as i64
+}
+
+// Attempts to find the whole of y as an element of x.
+// TODO flip argument order?
+pub fn find(x: &Val, y: &Val) -> i64 {
+    use Val::*;
+    match (x, y) {
+        (atom!(), _) => if x == y { 0 } else { 1 },
+        (U8s(xs), Char(c)) => index_of(&**xs, c),
+        (I64s(xs), Int(i)) => index_of(&**xs, i),
+        (I64s(xs), Float(f)) =>
+            float_as_int(*f).map(|i| index_of(&**xs, &i)).unwrap_or(xs.len() as i64),
+        (F64s(xs), Float(f)) => index_of(&**xs, f),
+        (F64s(xs), Int(i)) => index_of(&**xs, &(*i as f64)),
+        (Vals(xs), _) => index_of(xs.iter().map(|rc_val| rc_val.as_val()), y),
+        _ => x.len().unwrap_or(1) as i64,
+    }
+}
+
+fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A, IntoIter: ExactSizeIterator>>(x: I, y: &A) -> i64 {
+    let mut iter = x.into_iter();
+    let len = iter.len();
+    iter.position(|x| x == y).unwrap_or(len) as i64
+}

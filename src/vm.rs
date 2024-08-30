@@ -861,7 +861,9 @@ impl Mem {
             Min | Verb(PrimVerb::LessThanColon) => prim_choose_atoms(x, y, Val::le),
             Max | Verb(PrimVerb::GreaterThanColon) => prim_choose_atoms(x, y, Val::ge),
             Index | Verb(PrimVerb::At) => self.prim_index(&x, &y),
-            Find | Verb(PrimVerb::Question) => Ok(Val::Int(prim_find(x.as_val(), y.as_val()))),
+            Find | Verb(PrimVerb::Question) => Ok(Val::Int(prim::find(x.as_val(), y.as_val()))),
+            Has => Ok(Val::Int(prim::has(x, y) as i64)),
+            In => Ok(Val::Int(prim::has(y, x) as i64)),
             FindSubseq | Verb(PrimVerb::QuestionColon) => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
 
             Sum => prim::sum(x, Some(y)), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
@@ -1265,23 +1267,6 @@ where F: Copy + Fn(&Val, &Val) -> bool {
         Err((x, y)) => if f(&x, &y) { x } else { y },
         Ok(iter) => collect_list(iter?.map(|(x, y)| prim_choose_atoms(x, y, f)))?
     })
-}
-
-// Attempts to find the whole of y as an element of x.
-// TODO flip argument order?
-fn prim_find(x: &Val, y: &Val) -> i64 {
-    use Val::*;
-    match (x, y) {
-        (atom!(), _) => if x == y { 0 } else { 1 },
-        (U8s(xs), Char(c)) => index_of(&**xs, c),
-        (I64s(xs), Int(i)) => index_of(&**xs, i),
-        (I64s(xs), Float(f)) =>
-            float_as_int(*f).map(|i| index_of(&**xs, &i)).unwrap_or(xs.len() as i64),
-        (F64s(xs), Float(f)) => index_of(&**xs, f),
-        (F64s(xs), Int(i)) => index_of(&**xs, &(*i as f64)),
-        (Vals(xs), _) => index_of(xs.iter().map(|rc_val| rc_val.as_val()), y),
-        _ => x.len().unwrap_or(1) as i64,
-    }
 }
 
 fn prim_where(x: &Val) -> Result<Val, String> {
@@ -1709,16 +1694,6 @@ fn iota(x: &Val) -> Val {
 // TODO should [] == "" be 1?
 fn prim_match(x: &Val, y: &Val) -> Result<Val, String> {
     Ok(Val::Int((x == y) as i64))
-}
-
-fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A>>(x: I, y: &A) -> i64 {
-    let mut i = 0i64;
-    let mut iter = x.into_iter();
-    while let Some(next) = iter.next() {
-        if next == y { break }
-        i += 1
-    }
-    return i
 }
 
 fn replicate<A: Clone>(a: A, n: usize) -> impl Iterator<Item=A> {
