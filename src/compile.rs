@@ -984,7 +984,7 @@ fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<
     match adverb {
         Underscore => None,  // TODO is this right?
         AtColon => Some(1),
-        Tilde | Backslash => Some(2),
+        Tilde | Backslash | BackslashColon => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
     }
 }

@@ -239,10 +239,6 @@ impl<'a> Parser<'a> {
         self.parse_sequenced(Self::parse_elem)
     }
 
-    fn parse_patterns(&mut self) -> Many<Pattern> {
-        self.parse_sequenced(Self::parse_pattern)
-    }
-
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
         self.parse_sequenced(Self::parse_pattern_elem)
     }

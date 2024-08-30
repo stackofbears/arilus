@@ -333,7 +333,7 @@ impl Mem {
                     self.store(dst, val);
                 }
                 Splat => {
-                    match iter_val(self.pop()) {
+                    match iter_non_atom(self.pop()) {
                         None => return cold_err!("Splice failed; expected array, got atom."),  // TODO just push the atom?
                         Some(val_iter) => self.stack.extend(val_iter),
                     }
@@ -623,17 +623,18 @@ impl Mem {
         }
     }
 
-    // Prepare to tail call `calling`. This will either set up the current stack
-    // frame and return the code index to jump to or execute a primitive and
-    // push its result, returning None.
+    // Prepare to call `calling`. This will either
+    //   - set up the current stack frame and return the code index to jump to, or
+    //   - execute a primitive and push its result, returning None.
     //
-    // Arguments should be on the stack in reverse order.
-    fn set_up_call(&mut self, mut calling: Val, mut arg_count: usize) -> Result<Option<(usize, Rc<RefCell<Vec<Val>>>)>, String> {
+    // Arguments should be on the stack in reverse order (first argument on top).
+    fn set_up_call(&mut self, mut calling: Val, mut arg_count: usize)
+                   -> Result<Option<(usize, Rc<RefCell<Vec<Val>>>)>, String> {
         loop {
             let function = match &calling {
                 Val::Function(rc) => &**rc,
                 _ => {
-                    let val = self.progressive_index(calling, arg_count)?;
+                    let val = self.progressive_index(&calling, arg_count)?;
                     self.push(val);
                     return Ok(None);
                 }
@@ -668,7 +669,7 @@ impl Mem {
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::AtColon, operand } if arg_count == 1 || arg_count == 2 => {
                     let x = self.top().clone();
-                    self.index_or_call(operand.clone(), 1)?;
+                    self.index_or_call(&operand, 1)?;
                     let index = self.pop();
                     if arg_count == 1 {
                         return cold_err!("TODO: monadic @:v");
@@ -708,7 +709,7 @@ impl Mem {
                         _ => {
                             let x = self.pop();
                             let y = self.stack.pop();
-                            let result = self.fold_val(operand.clone(), x, y)?;
+                            let result = self.fold_val(&operand, x, y)?;
                             self.push(result);
                             return Ok(None);
                         }
@@ -723,16 +724,16 @@ impl Mem {
         }
     }
 
-    fn call_val(&mut self, val: Val, x: Val, y: Option<Val>) -> Result<Val, String> {
+    fn call_val(&mut self, val: &Val, x: Val, y: Option<Val>) -> Result<Val, String> {
         if let Some(y) = y { self.call_dyad(val, x, y) } else { self.call_monad(val, x) }
     }
 
-    fn call_monad(&mut self, val: Val, x: Val) -> Result<Val, String> {
+    fn call_monad(&mut self, val: &Val, x: Val) -> Result<Val, String> {
         self.push(x);
         self.index_or_call(val, 1)
     }
 
-    fn call_dyad(&mut self, val: Val, x: Val, y: Val) -> Result<Val, String> {
+    fn call_dyad(&mut self, val: &Val, x: Val, y: Val) -> Result<Val, String> {
         self.push(y);
         self.push(x);
         self.index_or_call(val, 2)
@@ -747,53 +748,54 @@ impl Mem {
         let result = match adverb {
             Underscore => operand,
             AtColon => {
-                let index = self.call_monad(operand, x.clone())?;
+                let index = self.call_monad(&operand, x.clone())?;
                 let elem = self.prim_index(&maybe_y.expect("TODO: monadic @:v"), &index)?;
-                self.call_monad(elem, x)?
+                self.call_monad(&elem, x)?
             }
-            Dot => self.call_val(operand, x, maybe_y)?,
-            P => self.call_monad(operand, x)?,
+            Dot => self.call_val(&operand, x, maybe_y)?,
+            P => self.call_monad(&operand, x)?,
             Q => match maybe_y {
-                Some(y) => self.call_monad(operand, y)?,
-                None => self.call_monad(operand, x)?,
+                Some(y) => self.call_monad(&operand, y)?,
+                None => self.call_monad(&operand, x)?,
             },
             SingleQuote => match maybe_y {
                 None => for_each(self, operand, x)?,
                 Some(y) => match zip_vals(x, y) {
-                    Err((x, y)) => self.call_dyad(operand, x, y)?,
+                    Err((x, y)) => self.call_dyad(&operand, x, y)?,
                     Ok(iter) => collect_list(
-                        iter?.map(|(x_val, y_val)| self.call_dyad(operand.clone(), x_val, y_val))
+                        iter?.map(|(x_val, y_val)| self.call_dyad(&operand, x_val, y_val))
                     )?,
                 }
             }
             Backtick => match maybe_y {
                 None => for_each(self, operand, x)?,
-                Some(y) => match iter_val(x.clone()) {
-                    None => self.call_dyad(operand, x, y)?,
+                Some(y) => match iter_non_atom(x.clone()) {
+                    None => self.call_dyad(&operand, x, y)?,
                     Some(iter) => collect_list(
-                        iter.map(|x_val| self.call_dyad(operand.clone(), x_val, y.clone()))
+                        iter.map(|x_val| self.call_dyad(&operand, x_val, y.clone()))
                     )?,
                 }
             }
             BacktickColon => match maybe_y {
-                None => match iter_val(x.clone()) {
-                    None => self.call_monad(operand, x)?,
+                None => match iter_non_atom(x.clone()) {
+                    None => self.call_monad(&operand, x)?,
                     Some(iter) => collect_list(
-                        iter.map(|val| self.call_monad(operand.clone(), val))
+                        iter.map(|val| self.call_monad(&operand, val))
                     )?,
                 }
-                Some(y) => match iter_val(y.clone()) {
-                    None => self.call_dyad(operand.clone(), x, y)?,
+                Some(y) => match iter_non_atom(y.clone()) {
+                    None => self.call_dyad(&operand, x, y)?,
                     Some(iter) => collect_list(
-                        iter.map(|y_val| self.call_dyad(operand.clone(), x.clone(), y_val))
+                        iter.map(|y_val| self.call_dyad(&operand, x.clone(), y_val))
                     )?,
                 }
             }
             Tilde => match maybe_y {
-                None => self.call_dyad(operand, x.clone(), x)?,
-                Some(y) => self.call_dyad(operand, y, x)?,
+                None => self.call_dyad(&operand, x.clone(), x)?,
+                Some(y) => self.call_dyad(&operand, y, x)?,
             }
-            Backslash => self.fold_val(operand, x, maybe_y)?,
+            Backslash => self.fold_val(&operand, x, maybe_y)?,
+            BackslashColon => self.scan_val(&operand, x, maybe_y)?,
         };
         Ok(result)
     }
@@ -1050,7 +1052,7 @@ impl Mem {
                   self.prim_to_debug_string(x)?)
     }
 
-    fn fold_val(&mut self, f: Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
+    fn fold_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
         let (mut seed, start) = match maybe_y {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
@@ -1060,17 +1062,40 @@ impl Mem {
         };
 
         for i in start..x.len().unwrap_or(1) {
-            seed = self.call_val(f.clone(), seed, index_or_cycle_val(&x, i))?;
+            seed = self.call_val(f, seed, index_or_cycle_val(&x, i))?;
         }
 
         Ok(seed)
     }
+    
+    // TODO bad code
+    fn scan_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
+        let (mut seed, start) = match maybe_y {
+            Some(y) => (y, 0),
+            None => match index_or_cycle_val(&x, 0) {
+                Some(first) => (first, 1),
+                None => return cold_err!("Error: scan with no input"),
+            }
+        };
+
+        collect_list(
+            (start .. x.len().unwrap_or(1)+1)
+                .map(|i| match index_or_cycle_val(&x, i) {
+                    Some(val) => {
+                        let mut new = self.call_dyad(f, seed.clone(), val)?;
+                        std::mem::swap(&mut seed, &mut new);
+                        Ok(new)
+                    }
+                    None => Ok(seed.clone())
+                })
+        )
+    }
 
     // Args should be on the stack in reverse order (first argument on top).
-    fn index_or_call(&mut self, f: Val, arg_count: usize) -> Result<Val, String> {
+    fn index_or_call(&mut self, f: &Val, arg_count: usize) -> Result<Val, String> {
         use Val::*;
         if let Function(func) = f {
-            self.call_func(func.as_ref(), arg_count)
+            self.call_func(func, arg_count)
         } else {
             self.progressive_index(f, arg_count)
         }
@@ -1122,14 +1147,14 @@ impl Mem {
     }
 
     // Args should be on the stack in reverse order.
-    fn progressive_index(&mut self, x: Val, arg_count: usize) -> Result<Val, String> {
-        if arg_count == 0 { return Ok(x) }
+    fn progressive_index(&mut self, x: &Val, arg_count: usize) -> Result<Val, String> {
+        if arg_count == 0 { return Ok(x.clone()) }
         let arg = self.pop();
         for_each_atom_retaining_shape(
             arg,
             |atom| {
                 let elem = self.prim_index(&x, atom)?;
-                self.progressive_index(elem, arg_count - 1)
+                self.progressive_index(&elem, arg_count - 1)
             }
         )
     }
@@ -1168,7 +1193,7 @@ impl Mem {
             (Char(_) | Int(_) | Float(_) | U8s(_) | I64s(_) | F64s(_) | Vals(_), Vals(is)) => collect_list(
                 is.iter().map(|i| self.prim_index(x, i))
             )?,
-            _ => return self.call_monad(x.clone(), y.clone()),
+            _ => return self.call_monad(&x, y.clone()),
         };
         Ok(val)
     }
@@ -1649,7 +1674,7 @@ fn prim_append(x: Val, y: Val) -> Result<Val, String> {
         (Vals(x), y@atom!()) => Vals(push_or_clone(x, y)),
         (Vals(x), Vals(y)) => Vals(extend_or_clone(x, clones(&y))),
 
-        (x, y) => match (iter_val(x.clone()), iter_val(y.clone())) {
+        (x, y) => match (iter_non_atom(x.clone()), iter_non_atom(y.clone())) {
             (None, None) => Vals(Rc::new(vec![x, y])),
             (Some(iter), None) => Vals(many_then_one(iter, y)),
             (None, Some(iter)) => Vals(one_then_many(x, iter)),
@@ -1752,7 +1777,7 @@ struct ValIter {
     len: usize,
 }
 
-fn iter_val(x: Val) -> Option<ValIter> {
+fn iter_non_atom(x: Val) -> Option<ValIter> {
     let len = x.len()?;
     Some(ValIter { x, i: 0, len })
 }
@@ -1763,6 +1788,12 @@ impl Iterator for ValIter {
         if self.i == self.len { return None }
         self.i += 1;
         index_or_cycle_val(&self.x, self.i - 1)
+    }
+}
+
+impl ExactSizeIterator for ValIter {
+    fn len(&self) -> usize {
+        self.len - self.i
     }
 }
 
@@ -1797,10 +1828,10 @@ fn for_each(mem: &mut Mem, f: Val, x: Val) -> Result<Val, String> {
     struct ForEach<'a> { mem: &'a mut Mem, f: Val }
     impl<'a> SingleValConsumer for ForEach<'a> {
         fn eat_val(&mut self, val: Val) -> Result<Val, String> {
-            self.mem.call_monad(self.f.clone(), val)
+            self.mem.call_monad(&self.f, val)
         }
         fn eat_val_ref(&mut self, val: &Val) -> Result<Val, String> {
-            self.mem.call_monad(self.f.clone(), val.clone())
+            self.mem.call_monad(&self.f, val.clone())
         }
     }
     x.dispatch_for_each(ForEach { mem, f })

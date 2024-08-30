@@ -296,6 +296,7 @@ pub enum PrimAdverb {
     BacktickColon,  // `:
     Tilde,  // ~
     Backslash, // \
+    BackslashColon, // \:
     P,  // p
     Q,  // q
 
@@ -400,6 +401,7 @@ impl Display for PrimAdverb {
             Dot => ".",
             Tilde => "~",
             Backslash => "\\",
+            BackslashColon => "\\:",
             P => "p",
             Q => "q",
             Underscore => "_",
@@ -459,6 +461,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimAdverb(Backtick),
         PrimAdverb(BacktickColon),
         PrimAdverb(Backslash),
+        PrimAdverb(BackslashColon),
         PrimAdverb(Dot),
         PrimAdverb(SingleQuote),
         PrimAdverb(Tilde),
