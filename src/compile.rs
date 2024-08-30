@@ -237,8 +237,8 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_train_as_explicit(&mut self, f: &Verb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Result<(), String> {
-        self.compile_verb(f, arity, true)?;
+    fn compile_train_as_explicit(&mut self, f: &SmallVerb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Result<(), String> {
+        self.compile_small_verb(f, arity, true)?;
 
         let mut last_slot_called_on_args = 0;
         let mut total_closure_slots = 1;

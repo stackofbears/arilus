@@ -50,7 +50,7 @@ pub enum Predicate {
 pub enum Verb {
     UpperAssign(String, Box<Verb>),
     SmallVerb(SmallVerb),
-    Train(Box<Verb>, Vec<TrainPart>),
+    Train(Box<SmallVerb>, Vec<TrainPart>),
 }
 
 #[derive(Debug, Clone)]
@@ -509,17 +509,15 @@ impl<'a> Parser<'a> {
             None => return Ok(None),
         };
 
-        let verb = if self.consume(&Token::Colon) {
-            match small_verb {
+        if self.consume(&Token::Colon) {
+            return match small_verb {
                 UpperName(name) => match self.parse_verb()? {
-                    Some(rhs) => UpperAssign(name, Box::new(rhs)),
-                    None => return Err(self.expected(&"RHS of verb assignment")),
+                    Some(rhs) => Ok(Some(UpperAssign(name, Box::new(rhs)))),
+                    None => Err(self.expected(&"RHS of verb assignment")),
                 }
-                _ => return cold_err!("Invalid verb assignment target: {small_verb:?}"),
+                _ => cold_err!("Invalid verb assignment target: {small_verb:?}"),
             }
-        } else {
-            SmallVerb(small_verb)
-        };
+        }
 
         let mut train = vec![];
         while let Some(next_verb) = self.parse_small_verb()? {
@@ -531,10 +529,10 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Some(if train.is_empty() {
-            verb
+        Ok(Some(if !train.is_empty() {
+            Verb::Train(Box::new(small_verb), train)
         } else {
-            Verb::Train(Box::new(verb), train)
+            Verb::SmallVerb(small_verb)
         }))
     }
 
