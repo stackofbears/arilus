@@ -112,7 +112,7 @@ impl Mem {
                     if val.is_falsy() {
                         let frame = self.current_frame();
                         match frame.next_header {
-                            None => return cold_err!("Assertion failed"),
+                            None => return cold_err!("Assertion failed"),  // TODO better (+custom) messages
                             Some(next_header_index) => {
                                 self.locals_stack.truncate(frame.locals_start);
                                 ip = next_header_index;
