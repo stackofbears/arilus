@@ -56,7 +56,7 @@
   (regexp-opt (split-string "| . ' ` ~ \\")))
 
 (defconst -symbol-adverbs-len-2
-  (regexp-opt (split-string "`: @:")))
+  (regexp-opt (split-string "\\: `: @:")))
 
 (setq -mode-fontlock
       `(;; Need OVERRIDE=t or else comments containing string literals won't

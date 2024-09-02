@@ -741,61 +741,65 @@ impl Mem {
 
     fn call_prim_adverb(&mut self,
                         adverb: PrimAdverb,
-                        operand: Val,
+                        operand: &Val,
                         x: Val,
                         maybe_y: Option<Val>) -> Result<Val, String> {
         use PrimAdverb::*;
         let result = match adverb {
-            Underscore => operand,
+            Runs => match maybe_y {
+                Some(y) => self.prim_runs_dyad(operand, x, y)?,
+                None => self.prim_runs_monad(operand, x)?,
+            }
+            Underscore => operand.clone(),
             AtColon => {
-                let index = self.call_monad(&operand, x.clone())?;
+                let index = self.call_monad(operand, x.clone())?;
                 let elem = self.prim_index(&maybe_y.expect("TODO: monadic @:v"), &index)?;
                 self.call_monad(&elem, x)?
             }
-            Dot => self.call_val(&operand, x, maybe_y)?,
-            P => self.call_monad(&operand, x)?,
+            Dot => self.call_val(operand, x, maybe_y)?,
+            P => self.call_monad(operand, x)?,
             Q => match maybe_y {
-                Some(y) => self.call_monad(&operand, y)?,
-                None => self.call_monad(&operand, x)?,
+                Some(y) => self.call_monad(operand, y)?,
+                None => self.call_monad(operand, x)?,
             },
             SingleQuote => match maybe_y {
                 None => for_each(self, operand, x)?,
                 Some(y) => match zip_vals(x, y) {
-                    Err((x, y)) => self.call_dyad(&operand, x, y)?,
+                    Err((x, y)) => self.call_dyad(operand, x, y)?,
                     Ok(iter) => collect_list(
-                        iter?.map(|(x_val, y_val)| self.call_dyad(&operand, x_val, y_val))
+                        iter?.map(|(x_val, y_val)| self.call_dyad(operand, x_val, y_val))
                     )?,
                 }
             }
             Backtick => match maybe_y {
                 None => for_each(self, operand, x)?,
                 Some(y) => match iter_non_atom(x.clone()) {
-                    None => self.call_dyad(&operand, x, y)?,
+                    None => self.call_dyad(operand, x, y)?,
                     Some(iter) => collect_list(
-                        iter.map(|x_val| self.call_dyad(&operand, x_val, y.clone()))
+                        iter.map(|x_val| self.call_dyad(operand, x_val, y.clone()))
                     )?,
                 }
             }
             BacktickColon => match maybe_y {
                 None => match iter_non_atom(x.clone()) {
-                    None => self.call_monad(&operand, x)?,
+                    None => self.call_monad(operand, x)?,
                     Some(iter) => collect_list(
-                        iter.map(|val| self.call_monad(&operand, val))
+                        iter.map(|val| self.call_monad(operand, val))
                     )?,
                 }
                 Some(y) => match iter_non_atom(y.clone()) {
-                    None => self.call_dyad(&operand, x, y)?,
+                    None => self.call_dyad(operand, x, y)?,
                     Some(iter) => collect_list(
-                        iter.map(|y_val| self.call_dyad(&operand, x.clone(), y_val))
+                        iter.map(|y_val| self.call_dyad(operand, x.clone(), y_val))
                     )?,
                 }
             }
             Tilde => match maybe_y {
-                None => self.call_dyad(&operand, x.clone(), x)?,
-                Some(y) => self.call_dyad(&operand, y, x)?,
+                None => self.call_dyad(operand, x.clone(), x)?,
+                Some(y) => self.call_dyad(operand, y, x)?,
             }
-            Backslash => self.fold_val(&operand, x, maybe_y)?,
-            BackslashColon => self.scan_val(&operand, x, maybe_y)?,
+            Backslash => self.fold_val(operand, x, maybe_y)?,
+            BackslashColon => self.scan_val(operand, x, maybe_y)?,
         };
         Ok(result)
     }
@@ -1052,6 +1056,86 @@ impl Mem {
                   self.prim_to_debug_string(x)?)
     }
 
+    pub fn prim_runs_monad(&mut self, f: &Val, x: Val) -> Result<Val, String> {
+        struct Runs<'a> {
+            mem: &'a mut Mem,
+            f: &'a Val,
+            x: Val,
+            i: usize,
+        }
+
+        impl Iterator for Runs<'_> {
+            type Item = Result<Val, String>;
+            fn next(&mut self) -> Option<Self::Item> {
+                let current = index_or_cycle_val(&self.x, self.i)?;
+                let start = self.i;
+                self.i += 1;
+                while let Some(next) = index_or_cycle_val(&self.x, self.i) {
+                    if next != current {
+                        break;
+                    }
+                    self.i += 1;
+                }
+                let count = (self.i - start) as i64;
+                Some(self.mem.call_dyad(self.f, current, Val::Int(count)))
+            }
+        }
+
+        collect_list(Runs { mem: self, f, x, i: 0 })
+    }
+
+    // TODO returns a singleton list of x and y are atoms; think about this?
+    pub fn prim_runs_dyad(&mut self, f: &Val, x: Val, y: Val) -> Result<Val, String> {
+        use Val::*;
+        match_lengths(x.len().unwrap_or(1), y.len().unwrap_or(1))?;
+        
+        fn rc_vec<A: Clone>(vec: &Rc<Vec<A>>, start: usize, one_past_end: usize) -> Rc<Vec<A>> {
+            Rc::new(vec.as_slice()[start..one_past_end].to_vec())
+        }
+
+        fn sublist(x: &Val, start: usize, one_past_end: usize) -> Val {
+            match x {
+                atom!() => x.clone(),
+                U8s(x) => Val::U8s(rc_vec(x, start, one_past_end)),
+                I64s(x) => Val::I64s(rc_vec(x, start, one_past_end)),
+                F64s(x) => Val::F64s(rc_vec(x, start, one_past_end)),
+                Vals(x) => Val::Vals(rc_vec(x, start, one_past_end)),
+            }
+        }
+
+        struct Runs<'a> {
+            mem: &'a mut Mem,
+            f: &'a Val,
+            x: Val,
+            iter_y: ValIter,
+            current: Option<Val>,
+            x_start: usize,
+        }
+
+        impl Iterator for Runs<'_> {
+            type Item = Result<Val, String>;
+            fn next(&mut self) -> Option<Self::Item> {
+                let current = self.current.take()?;
+                let x_start = self.x_start;
+                let mut end = self.iter_y.len;
+                while let Some(next) = self.iter_y.next() {
+                    if next != current {
+                        self.current = Some(next);
+                        // iter_y.i is the index after `next`.
+                        end = self.iter_y.i - 1;
+                        break
+                    }
+                }
+                self.x_start = end;
+                Some(self.mem.call_dyad(self.f, sublist(&self.x, x_start, end), current))
+            }
+        }
+
+        let mut iter_y = iter_val(y);
+        let current = iter_y.next();
+        collect_list(Runs { mem: self, f, x, iter_y, current, x_start: 0 })
+    }
+
     fn fold_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
         let (mut seed, start) = match maybe_y {
             Some(y) => (y, 0),
@@ -1134,11 +1218,11 @@ impl Mem {
             Func::AdverbDerived { adverb, operand } => {
                 if arg_count == 1 {
                     let x = self.pop();
-                    self.call_prim_adverb(*adverb, operand.clone(), x, None)
+                    self.call_prim_adverb(*adverb, operand, x, None)
                 } else if arg_count == 2 {
                     let x = self.pop();
                     let y = self.pop();
-                    self.call_prim_adverb(*adverb, operand.clone(), x, Some(y))
+                    self.call_prim_adverb(*adverb, operand, x, Some(y))
                 } else {
                     todo!("Arg count {arg_count} for primitive adverbs")
                 }
@@ -1782,6 +1866,11 @@ fn iter_non_atom(x: Val) -> Option<ValIter> {
     Some(ValIter { x, i: 0, len })
 }
 
+fn iter_val(x: Val) -> ValIter {
+    let len = x.len().unwrap_or(1);
+    ValIter { x, i: 0, len }
+}
+
 impl Iterator for ValIter {
     type Item = Val;
     fn next(&mut self) -> Option<Self::Item> {
@@ -1822,10 +1911,10 @@ impl Iterator for ZippedVals {
 }
 
 // TODO dyadic
-fn for_each(mem: &mut Mem, f: Val, x: Val) -> Result<Val, String> {
+fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Result<Val, String> {
     use crate::ops::{SingleValConsumer, IsVal};
 
-    struct ForEach<'a> { mem: &'a mut Mem, f: Val }
+    struct ForEach<'a> { mem: &'a mut Mem, f: &'a Val }
     impl<'a> SingleValConsumer for ForEach<'a> {
         fn eat_val(&mut self, val: Val) -> Result<Val, String> {
             self.mem.call_monad(&self.f, val)

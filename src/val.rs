@@ -122,6 +122,11 @@ macro_rules! atom {
 pub(crate) use atom;
 
 impl Val {
+    pub fn empty_list() -> Val {
+        // TODO
+        Val::I64s(Rc::new(vec![]))
+    }
+
     pub fn as_val(&self) -> &Self { &self }
 
     pub fn is_constant_function(&self) -> bool {

@@ -24,12 +24,18 @@ pub fn compile_string(text: &str) -> Result<Vec<Instr>, String> {
     Ok(code)
 }
 
+enum NameValue {
+    Var(Var),
+    Prim(PrimFunc),
+}
+
 // Invariants: `scopes` non-empty after `new`.
 pub struct Compiler {
     pub code: Vec<Instr>,
     pub lexer: Lexer,
 
     scopes: Vec<HashMap<String, Var>>,
+    primitive_identifiers: HashMap<&'static str, PrimFunc>,
 
     // (code index right after LoadModule, module vars)
     //
@@ -50,6 +56,7 @@ impl Compiler {
         Self { code: vec![],
                lexer,
                scopes: vec![globals],
+               primitive_identifiers: make_primitive_identifier_map(),
                module_cache: HashMap::new() }
     }
 
@@ -193,6 +200,11 @@ impl Compiler {
         Ok((*code_index, scope))
     }
 
+    fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<usize>, keep: bool) -> Result<(), String> {
+        if let Expr::Verb(verb) = expr { self.compile_verb(verb, arity, keep) }
+        else { self.compile_expr(expr, keep) }
+    }
+
     fn compile_expr(&mut self, expr: &Expr, keep: bool) -> Result<(), String> {
         match expr {
             Expr::Noun(noun) => self.compile_noun(noun, keep),
@@ -227,9 +239,13 @@ impl Compiler {
         match verb {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs, arity, true)?;
-                let dst = self.fetch_var_in_current_scope(name);
-                if keep { self.code.push(Instr::Dup) }
-                self.code.push(Instr::StoreTo { dst });
+                match self.fetch_var_in_current_scope(name) {
+                    NameValue::Prim(prim) => return cold_err!("Invalid assignment to primitive `{prim}'"),
+                    NameValue::Var(dst) => {
+                        if keep { self.code.push(Instr::Dup) }
+                        self.code.push(Instr::StoreTo { dst });
+                    }
+                }
             }
             Verb::SmallVerb(small_verb) => self.compile_small_verb(small_verb, arity, keep)?,
             Verb::Train(f, rest) => self.compile_train_as_explicit(f, rest, arity, keep)?,
@@ -328,9 +344,13 @@ impl Compiler {
             }
             Pattern::Wildcard => if !keep { self.code.push(Instr::Pop) }
             Pattern::Name(name) => {
-                let dst = self.fetch_var_in_current_scope(name);
-                if keep { self.code.push(Instr::Dup) }
-                self.code.push(Instr::StoreTo { dst });
+                match self.fetch_var_in_current_scope(name) {
+                    NameValue::Prim(prim) => return cold_err!("Can't use primitive `{prim}' as a pattern"),
+                    NameValue::Var(dst) => {
+                        if keep { self.code.push(Instr::Dup) }
+                        self.code.push(Instr::StoreTo { dst });
+                    }
+                }
             }
             Pattern::As(pat, as_pat) => {
                 self.compile_unpacking_assignment(&*pat, true)?;
@@ -378,21 +398,26 @@ impl Compiler {
         }
 
         match small_verb {
-            SmallVerb::UpperName(name) => {
-                let src = self.fetch_var(name)?;
-                if keep { self.code.push(Instr::PushVar { src }) }
+            &SmallVerb::PrimVerb(prim) => {
+                if prim == PrimFunc::Rec && self.scopes.len() < 2 {
+                    return cold_err!("Can't use `Rec` outside of an explicit definition")
+                }
+                if keep { self.code.push(Instr::PushPrimFunc { prim }) }
+            }
+            SmallVerb::UpperName(name) => match self.fetch_var(name)? {
+                NameValue::Prim(prim) => {
+                    if prim == PrimFunc::Rec && self.scopes.len() < 2 {
+                        return cold_err!("Can't use `Rec` outside of an explicit definition")
+                    }
+                    if keep { self.code.push(Instr::PushPrimFunc { prim }) }
+                }
+                NameValue::Var(src) => if keep { self.code.push(Instr::PushVar { src }) }
             }
             SmallVerb::VerbBlock(exprs, verb) => {
                 if !exprs.is_empty() {
                     self.compile_block(exprs, false)?;
                 }
                 self.compile_verb(&*verb, arity, keep)?;
-            }
-            &SmallVerb::PrimVerb(prim) => {
-                if prim == PrimFunc::Rec && self.scopes.len() < 2 {
-                    return cold_err!("Can't use `Rec` outside of an explicit definition")
-                }
-                if keep { self.code.push(Instr::PushPrimFunc { prim }) }
             }
             SmallVerb::Lambda(lambda) => {
                 let make_func_index = self.push(Instr::Nop);
@@ -417,8 +442,8 @@ impl Compiler {
                     self.code.push(Instr::MakeClosure { num_closure_vars: closure_vars.len() });
                     closure_vars.sort_unstable_by_key(|(_, var)| var.slot);
                     for (name, _) in &closure_vars {
-                        let src = self.fetch_var(name)?;
-                        self.code.push(Instr::PushVar { src });
+                        irrefutable!(self.fetch_var(name)?,
+                                     NameValue::Var(src) => self.code.push(Instr::PushVar { src }));
                     }
                 }
                 if !keep { self.code.push(Instr::Pop) }
@@ -438,26 +463,46 @@ impl Compiler {
                 }
                 if !keep { self.code.push(Instr::Pop) }
             }
-            SmallVerb::UserAdverbCall(small_verb, elems) => {
-                self.code.push(Instr::MarkStack);
+            SmallVerb::NamedAdverbCall(small_verb, elems) => match (self.get_prim_adverb_from_small_verb(small_verb), &elems[..]) {
+                (Some(adverb), [Elem::Expr(expr)]) => {
+                    self.compile_expr_with_arity(&expr, get_prim_adverb_operand_arity(adverb, arity), true)?;
+                    self.code.push(Instr::CallPrimAdverb { prim: adverb });
+                    if !keep { self.code.push(Instr::Pop) }
+                }
+                _ => {
+                    self.code.push(Instr::MarkStack);
 
-                let mut arity = Some(elems.len());
-                for elem in elems {
-                    if matches!(elem, Elem::Spliced(_)) {
-                        arity = None;
-                        break;
+                    let mut arity = Some(elems.len());
+                    for elem in elems {
+                        if matches!(elem, Elem::Spliced(_)) {
+                            arity = None;
+                            break;
+                        }
                     }
-                }
 
-                self.compile_small_verb(small_verb, arity, true)?;
-                for elem in elems {
-                    self.compile_elem(elem)?;
+                    self.compile_small_verb(small_verb, arity, true)?;
+                    for elem in elems {
+                        self.compile_elem(elem)?;
+                    }
+                    self.code.push(Instr::CallMarked);
+                    if !keep { self.code.push(Instr::Pop) }
                 }
-                self.code.push(Instr::CallMarked);
-                if !keep { self.code.push(Instr::Pop) }
             }
         }
         Ok(())
+    }
+
+    fn get_prim_adverb_from_small_verb(&self, small_verb: &SmallVerb) -> Option<PrimAdverb> {
+        let prim_func = if let SmallVerb::UpperName(name) = small_verb {
+            self.primitive_identifiers.get(name.as_str())?
+        } else {
+            return None
+        };
+
+        Some(match prim_func {
+            PrimFunc::Runs => PrimAdverb::Runs,
+            _ => return None,
+        })
     }
 
     fn compile_short_lambda(&mut self, exprs: &[Expr]) -> Result<(), String> {
@@ -664,19 +709,27 @@ impl Compiler {
         Ok(())
     }
 
-    fn fetch_var_in_current_scope(&mut self, name: &str) -> Var {
+    fn fetch_var_in_current_scope(&mut self, name: &str) -> NameValue {
+        if let Some(prim) = self.primitive_identifiers.get(name) {
+            return NameValue::Prim(*prim)
+        }
+
         let local_scope = self.get_local_scope_mut();
         if let Some(var) = local_scope.get(name) {
-            return *var;
+            return NameValue::Var(*var);
         }
         let var = local_var(next_local_slot(local_scope));
         local_scope.insert(name.to_string(), var);
-        var
+        NameValue::Var(var)
     }
 
     // If name isn't defined in the current scope, updates all intervening
     // scopes to include it in their closure environment.
-    fn fetch_var(&mut self, name: &str) -> Result<Var, String> {
+    fn fetch_var(&mut self, name: &str) -> Result<NameValue, String> {
+        if let Some(prim) = self.primitive_identifiers.get(name) {
+            return Ok(NameValue::Prim(*prim))
+        }
+
         for i in (0 .. self.scopes.len()).rev() {
             if self.scopes[i].contains_key(name) {
                 for j in (i+1)..self.scopes.len() {
@@ -687,7 +740,7 @@ impl Compiler {
         }
 
         if let Some(var) = self.get_local_scope().get(name) {
-            return Ok(*var);
+            return Ok(NameValue::Var(*var));
         }
         cold_err!("Undefined name: `{name}'")
     }
@@ -697,19 +750,20 @@ impl Compiler {
         // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
         match small_noun {
-            &PrimNoun(prim) => {
-                if prim == PrimFunc::Rec && self.scopes.len() < 2 {
-                    return cold_err!("Can't use `rec` outside of an explicit definition")
-                }
-                self.code.push(Instr::PushPrimFunc { prim });
-            }
             If3(cond, then, else_) => {
                 self.compile_expr(&*cond, true)?;
                 self.compile_if(&*then, &*else_, keep)?;
             }
             LowerName(name) => {
-                let src = self.fetch_var(name)?;
-                if keep { self.code.push(Instr::PushVar { src }) }
+                match self.fetch_var(name)? {
+                    NameValue::Prim(prim) => {
+                        if prim == PrimFunc::Rec && self.scopes.len() < 2 {
+                            return cold_err!("Can't use `rec` outside of an explicit definition")
+                        }
+                        if keep { self.code.push(Instr::PushPrimFunc { prim }) }
+                    }
+                    NameValue::Var(src) => if keep { self.code.push(Instr::PushVar { src }) }
+                }
             }
             NounBlock(exprs, last) => {
                 if !exprs.is_empty() {
@@ -984,7 +1038,7 @@ fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<
     match adverb {
         Underscore => None,  // TODO is this right?
         AtColon => Some(1),
-        Tilde | Backslash | BackslashColon => Some(2),
+        Tilde | Backslash | BackslashColon | Runs => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
     }
 }
@@ -1027,3 +1081,80 @@ fn decrement_locals(code: &mut [Instr], above_slot: usize) {
     }
 }
 
+fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
+    use PrimFunc::*;
+    HashMap::from([
+        ("rec", Rec),
+        ("ints", Ints),
+        ("rev", Rev),
+        ("where", Where),
+        ("nub", Nub),
+        ("identity", Identity),
+        ("asc", Asc),
+        ("desc", Desc),
+        ("sort", Sort),
+        ("sortDesc", SortDesc),
+        ("inits", Inits),
+        ("tails", Tails),
+        ("not", Not),
+        ("ravel", Ravel),
+        ("floor", Floor),
+        ("ceil", Ceil),
+        ("length", Length),
+        ("exit", Exit),
+        ("show", Show),
+        ("print", Print),
+        ("getLine", GetLine),
+        ("readFile", ReadFile),
+        ("rand", Rand),
+        ("type", Type),
+        ("printBytecode", PrintBytecode),
+        ("take", Take),
+        ("drop", Drop),
+        ("rot", Rot),
+        ("find", Find),
+        ("findAll", FindAll),
+        ("findSubseq", FindSubseq),
+        ("has", Has),
+        ("in", In),
+        ("copy", Copy),
+        ("identityLeft", IdentityLeft),
+        ("identityRight", IdentityRight),
+        ("shiftLeft", ShiftLeft),
+        ("shiftRight", ShiftRight),
+        ("and", And),
+        ("or", Or),
+        ("equal", Equal),
+        ("notEqual", NotEqual),
+        ("match", Match),
+        ("notMatch", NotMatch),
+        ("greaterThan", GreaterThan),
+        ("greaterThanEqual", GreaterThanEqual),
+        ("lessThan", LessThan),
+        ("lessThanEqual", LessThanEqual),
+        ("index", Index),
+        ("pick", Pick),
+        ("append", Append),
+        ("cons", Cons),
+        ("snoc", Snoc),
+        ("cut", Cut),
+        ("add", Add),
+        ("sub", Sub),
+        ("neg", Neg),
+        ("abs", Abs),
+        ("mul", Mul),
+        ("div", Div),
+        ("intDiv", IntDiv),
+        ("mod", Mod),
+        ("pow", Pow),
+        ("log", Log),
+        ("min", Min),
+        ("max", Max),
+        ("windows", Windows),
+        ("chunks", Chunks),
+        ("groupBy", GroupBy),
+        ("groupIndices", GroupIndices),
+        ("sendToIndex", SendToIndex),
+        ("runs", Runs),
+    ])
+}

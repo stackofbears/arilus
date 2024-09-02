@@ -299,9 +299,9 @@ pub enum PrimAdverb {
     BackslashColon, // \:
     P,  // p
     Q,  // q
-
     Underscore,  // _
 
+    Runs,
     // TODO converge/do-times/do-while
 }
 
@@ -405,6 +405,7 @@ impl Display for PrimAdverb {
             P => "p",
             Q => "q",
             Underscore => "_",
+            Runs => "runs",
         };
 
         f.write_str(s)

@@ -151,6 +151,9 @@ pub enum PrimFunc {
     // Rec stands for the innermost explicit function.
     Rec,
 
+    // "Adverbs"
+    Runs,  // {|f| {|x| :|x;y|}
+
     // Primitive identifier functions with fixed arity.
     // Monadic
     Ints,

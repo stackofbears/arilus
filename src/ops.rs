@@ -348,7 +348,7 @@ impl VecToVal for Val {
 }
 impl VecToVal for NoValEmptyEnum {
     #[inline]
-    fn vec_to_val(_: Vec<NoValEmptyEnum>) -> Val { Val::I64s(Rc::new(vec![])) }
+    fn vec_to_val(_: Vec<NoValEmptyEnum>) -> Val { Val::empty_list() }
 }
 
 impl<A> ToVal for Vec<A> where A: VecToVal {

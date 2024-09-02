@@ -83,7 +83,21 @@ r#"
 "#);
 
 
-criterion_group!(misc, spectral_norm, spectral_a_explicit, spectral_a_tacit, binary_trees, sum_ravel, sum_rows_cols, sum_cols_rows);
+criterion_group!(misc, spectral_norm, spectral_a_explicit, spectral_a_tacit, binary_trees, sum_ravel, sum_rows_cols, sum_cols_rows, split_group_indices, split_runs);
+
+bench!(split_group_indices,
+r#"
+    Split: {x = y \:+ GroupIndices ~@ x}
+    a:1e3/ % 8
+    a Split 0
+"#);
+
+bench!(split_runs,
+r#"
+    Split: { x Runs[#:] (x=!y) ->x#:(x'#>0) }
+    a:1e3/ % 8
+    a Split 0
+"#);
 
 // Based on
 // https://sschakraborty.github.io/benchmark/spectralnorm-csharpcore-1.html
