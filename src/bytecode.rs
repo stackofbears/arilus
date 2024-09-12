@@ -234,3 +234,46 @@ impl std::fmt::Display for PrimFunc {
         }
     }
 }
+
+impl PrimFunc {
+    pub fn from_verb(verb: PrimVerb, monad: bool) -> Self {
+        use PrimFunc::*;
+        let fail = || {
+            todo!("{} `{verb}'", if monad { "monadic" } else { "dyadic" })
+        };
+        match verb {
+            PrimVerb::At => if monad { fail() } else { Index }
+            PrimVerb::Comma => if monad { Ravel } else { Append }
+            PrimVerb::CommaColon => if monad { fail() } else { Windows }
+            PrimVerb::DotColon => if monad { fail() }  else { Chunks }
+            PrimVerb::Plus => if monad { fail() } else { Add }
+            PrimVerb::Minus => if monad { Neg } else { Sub }
+            PrimVerb::Asterisk => if monad { fail() } else { Mul }
+            PrimVerb::Slash => if monad { Ints } else { Div }
+            PrimVerb::DoubleSlash => if monad { fail() } else { IntDiv }
+            PrimVerb::Percent => if monad { fail() } else { Mod }
+            PrimVerb::Equals => if monad { fail() } else { Equal }
+            PrimVerb::EqualBang => if monad { fail() } else { NotEqual }
+            PrimVerb::DoubleEquals => if monad { fail() } else { Match }
+            PrimVerb::Hash => if monad { Length } else { Take }
+            PrimVerb::HashColon => if monad { fail() } else { Copy }
+            PrimVerb::Caret => if monad { Inits } else { Pow }
+            PrimVerb::Pipe => if monad { Rev } else { Or }
+            PrimVerb::Bang => if monad { Not } else { fail() }
+            PrimVerb::Dollar => if monad { Tails } else { Drop }
+            PrimVerb::LessThan => if monad { Sort } else { LessThan }
+            PrimVerb::LessThanColon => if monad { Asc } else { Min }
+            PrimVerb::LessThanEquals => if monad { fail()  } else { LessThanEqual }
+            PrimVerb::GreaterThan => if monad { SortDesc } else { GreaterThan }
+            PrimVerb::GreaterThanColon => if monad { Desc } else { Max }
+            PrimVerb::GreaterThanEquals => if monad { fail() } else { GreaterThanEqual }
+            PrimVerb::Question => if monad { Where } else { Find }
+            PrimVerb::QuestionColon => if monad { fail() } else { FindAll }
+            PrimVerb::P => if monad { Identity } else { IdentityLeft }
+            PrimVerb::Q => if monad { Identity } else { IdentityRight }
+            PrimVerb::DoublePipe => fail(),
+            PrimVerb::DoubleAmpersand => fail(),
+            PrimVerb::Ampersand => fail(),
+        }
+    }
+}

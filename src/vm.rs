@@ -715,7 +715,7 @@ impl Mem {
                         }
                         _ => {
                             let x = self.pop();
-                            let y = self.stack.pop();
+                            let y = if arg_count == 2 { Some(self.pop()) } else { None };
                             let result = self.fold_val(&operand, x, y)?;
                             self.push(result);
                             return Ok(None);
@@ -811,12 +811,15 @@ impl Mem {
         Ok(result)
     }
 
-    fn call_prim_monad(&mut self, v: PrimFunc, x: Val) -> Result<Val, String> {
+    fn call_prim_monad(&mut self, mut v: PrimFunc, x: Val) -> Result<Val, String> {
         use PrimFunc::*;
+        if let Verb(verb) = v {
+            v = PrimFunc::from_verb(verb, true);
+        }
         let result = match v {
-            Identity | IdentityLeft | Verb(PrimVerb::P) | IdentityRight | Verb(PrimVerb::Q) => Ok(x),
-            Neg | Verb(PrimVerb::Minus) => prim::negate(x),
-            Not | Verb(PrimVerb::Bang) => prim::not(x),
+            Identity | IdentityLeft | IdentityRight => Ok(x),
+            Neg => prim::negate(x),
+            Not => prim::not(x),
             Show => prim_show(x),
             GetLine => prim_get_line(),
             Print => self.prim_to_string(&x)
@@ -827,17 +830,17 @@ impl Mem {
                 .map(|_| x),
             PrintBytecode => self.prim_print_bytecode(x.as_val()).map(|_| x),
             ReadFile => prim_read_file(x.as_val()),
-            Length | Verb(PrimVerb::Hash) => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
-            Ints | Verb(PrimVerb::Slash) => Ok(iota(&x)),
-            Rev | Verb(PrimVerb::Pipe) => Ok(prim_reverse(x)),
-            Ravel | Verb(PrimVerb::Comma) => Ok(prim_ravel(x)),
-            Inits | Verb(PrimVerb::Caret) => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
-            Tails | Verb(PrimVerb::Dollar) => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
-            Where | Verb(PrimVerb::Question) => prim_where(&x),
-            Sort | Verb(PrimVerb::LessThan) => Ok(prim_sort(x, false)),
-            SortDesc | Verb(PrimVerb::GreaterThan) => Ok(prim_sort(x, true)),
-            Asc | Verb(PrimVerb::LessThanColon) => Ok(prim_grade(&x, false)),
-            Desc | Verb(PrimVerb::GreaterThanColon) => Ok(prim_grade(&x, true)),
+            Length => Ok(Val::Int(x.len().unwrap_or(1) as i64)),
+            Ints => Ok(iota(&x)),
+            Rev => Ok(prim_reverse(x)),
+            Ravel => Ok(prim_ravel(x)),
+            Inits => Ok(Val::Vals(Rc::new(prim_prefixes(&x)))),
+            Tails => Ok(Val::Vals(Rc::new(prim_suffixes(&x)))),
+            Where => prim_where(&x),
+            Sort => Ok(prim_sort(x, false)),
+            SortDesc => Ok(prim_sort(x, true)),
+            Asc => Ok(prim_grade(&x, false)),
+            Desc => Ok(prim_grade(&x, true)),
             Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
             GroupIndices => prim::group_indices(x),
             Exit => prim_exit(&x),
@@ -849,40 +852,43 @@ impl Mem {
         result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
 
-    fn call_prim_dyad(&mut self, v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
+    fn call_prim_dyad(&mut self, mut v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
         use PrimFunc::*;
+        if let Verb(verb) = v {
+            v = PrimFunc::from_verb(verb, false);
+        }
         let result = match v {
-            Identity | IdentityLeft | Verb(PrimVerb::P) => Ok(x),
-            IdentityRight | Verb(PrimVerb::Q) => Ok(y),
-            Or | Verb(PrimVerb::Pipe) => prim::or(x, y),
-            Add | Verb(PrimVerb::Plus) => prim::add(x, y),
-            Sub | Verb(PrimVerb::Minus) => prim::subtract(x, y),
-            Mul | Verb(PrimVerb::Asterisk) => prim::multiply(x, y),
-            Div | Verb(PrimVerb::Slash) => prim::divide(x, y),
-            IntDiv | Verb(PrimVerb::DoubleSlash) => prim::int_divide(x, y),
-            Mod | Verb(PrimVerb::Percent) => prim::int_mod(x, y),
-            Pow | Verb(PrimVerb::Caret) => prim::pow(x, y),
-            Take | Verb(PrimVerb::Hash) => prim_take(x, &y),
-            Drop | Verb(PrimVerb::Dollar) => prim_drop(x, &y),
-            Copy | Verb(PrimVerb::HashColon) => prim_copy(&x, &y),
-            Append | Verb(PrimVerb::Comma) => prim_append(x, y),
-            Windows | Verb(PrimVerb::CommaColon) => prim::windows(&x, &y),
-            Chunks | Verb(PrimVerb::DotColon) => prim::chunks(&x, &y),
-            Match | Verb(PrimVerb::DoubleEquals) => prim_match(&x, &y),
+            Identity | IdentityLeft => Ok(x),
+            IdentityRight => Ok(y),
+            Or => prim::or(x, y),
+            Add => prim::add(x, y),
+            Sub => prim::subtract(x, y),
+            Mul => prim::multiply(x, y),
+            Div => prim::divide(x, y),
+            IntDiv => prim::int_divide(x, y),
+            Mod => prim::int_mod(x, y),
+            Pow => prim::pow(x, y),
+            Take => prim_take(x, &y),
+            Drop => prim_drop(x, &y),
+            Copy => prim_copy(&x, &y),
+            Append => prim_append(x, y),
+            Windows => prim::windows(&x, &y),
+            Chunks => prim::chunks(&x, &y),
+            Match => prim_match(&x, &y),
             // TODO take Val instead of &
-            Equal | Verb(PrimVerb::Equals) => prim_compare(x, y, |ord| ord == Ordering::Equal),
-            NotEqual | Verb(PrimVerb::EqualBang) => prim_compare(x, y, |ord| ord != Ordering::Equal),
-            GreaterThan | Verb(PrimVerb::GreaterThan) => prim_compare(x, y, |ord| ord > Ordering::Equal),
-            GreaterThanEqual | Verb(PrimVerb::GreaterThanEquals) => prim_compare(x, y, |ord| ord >= Ordering::Equal),
-            LessThan | Verb(PrimVerb::LessThan) => prim_compare(x, y, |ord| ord < Ordering::Equal),
-            LessThanEqual | Verb(PrimVerb::LessThanEquals) => prim_compare(x, y, |ord| ord <= Ordering::Equal),
-            Min | Verb(PrimVerb::LessThanColon) => prim_choose_atoms(x, y, Val::le),
-            Max | Verb(PrimVerb::GreaterThanColon) => prim_choose_atoms(x, y, Val::ge),
-            Index | Verb(PrimVerb::At) => self.prim_index(&x, &y),
-            Find | Verb(PrimVerb::Question) => Ok(Val::Int(prim::find(x.as_val(), y.as_val()))),
+            Equal => prim_compare(x, y, |ord| ord == Ordering::Equal),
+            NotEqual => prim_compare(x, y, |ord| ord != Ordering::Equal),
+            GreaterThan => prim_compare(x, y, |ord| ord > Ordering::Equal),
+            GreaterThanEqual => prim_compare(x, y, |ord| ord >= Ordering::Equal),
+            LessThan => prim_compare(x, y, |ord| ord < Ordering::Equal),
+            LessThanEqual => prim_compare(x, y, |ord| ord <= Ordering::Equal),
+            Min => prim_choose_atoms(x, y, Val::le),
+            Max => prim_choose_atoms(x, y, Val::ge),
+            Index => self.prim_index(&x, &y),
+            Find => Ok(Val::Int(prim::find(x.as_val(), y.as_val()))),
             Has => Ok(Val::Int(prim::has(x, y) as i64)),
             In => Ok(Val::Int(prim::has(y, x) as i64)),
-            FindSubseq | Verb(PrimVerb::QuestionColon) => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
+            FindSubseq => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
 
             Sum => prim::sum(x, Some(y)),
 
