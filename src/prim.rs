@@ -1,8 +1,10 @@
+use std::cmp;
+use std::iter;
 use std::rc::Rc;
 
 use crate::ops::{self, IsVal, Op2Val, AtomOp2, dispatch_to_atoms};
 use crate::val::*;
-use crate::util::{cold, err, cold_err, float_as_int};
+use crate::util::{cold, err, cold_err, float_as_int, Empty};
 
 type Res<A> = Result<A, String>;
 
@@ -84,6 +86,59 @@ pub fn pow<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
         (Float(x), Float(y)) => ops::Pow::op2val(*x, *y),
         _ => dispatch_to_atoms(AtomOp2::Pow, x, y),
     }
+}
+
+pub fn or<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
+    use Val::*;
+    match (x.to_val_ref(), y.to_val_ref()) {
+        (Int(x), Int(y)) => ops::Or::op2val(*x, *y),
+        (Int(x), Float(y)) => ops::Or::op2val(*x, *y),
+        (Float(x), Int(y)) => ops::Or::op2val(*x, *y),
+        (Float(x), Float(y)) => ops::Or::op2val(*x, *y),
+        _ => dispatch_to_atoms(AtomOp2::Or, x, y),
+    }
+}
+
+pub fn not(x: Val) -> Res<Val> {
+    use Val::*;
+    Ok(match x {
+        Int(x) => Int(1 - x),
+        Float(x) => Float(1.0 - x),
+        I64s(x) => I64s(Rc::new(match Rc::try_unwrap(x) {
+            Ok(x) => x.into_iter().map(|x| 1 - x).collect(),
+            Err(x) => x.iter().map(|x| 1 - x).collect(),
+        })),
+        F64s(x) => F64s(Rc::new(match Rc::try_unwrap(x) {
+            Ok(x) => x.into_iter().map(|x| 1.0 - x).collect(),
+            Err(x) => x.iter().map(|x| 1.0 - x).collect(),
+        })),
+        Vals(x) => Vals(Rc::new(match Rc::try_unwrap(x) {
+            Ok(x) => x.into_iter().map(not).collect::<Res<_>>()?,
+            Err(x) => x.iter().cloned().map(not).collect::<Res<_>>()?,
+        })),
+        x => return cold_err!("domain\nExpected a numeric value, got {}", x.type_name()),
+    })
+}
+
+pub fn negate(x: Val) -> Result<Val, String> {
+    use Val::*;
+    Ok(match x {
+        Int(x) => Int(-x),
+        Float(x) => Float(-x),
+        I64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => I64s(Rc::new(x.into_iter().map(|x| -x).collect())),
+            Err(x) => I64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
+        }
+        F64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => F64s(Rc::new(x.into_iter().map(|x| -x).collect())),
+            Err(x) => F64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
+        }
+        Vals(x) => match Rc::try_unwrap(x) {
+            Ok(x) => Vals(Rc::new(x.into_iter().map(negate).collect::<Result<_, _>>()?)),
+            Err(x) => Vals(Rc::new(x.as_slice().iter().cloned().map(negate).collect::<Result<_, _>>()?)),
+        }
+        x => return cold_err!("domain\nExpected a numeric value, got {}", x.type_name()),
+    })
 }
 
 pub fn sum(x: Val, y: Option<Val>) -> Res<Val> {
@@ -230,3 +285,94 @@ fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A, IntoIter: ExactSi
     let len = iter.len();
     iter.position(|x| x == y).unwrap_or(len) as i64
 }
+
+pub fn windows(x: &Val, y: &Val) -> Res<Val> {
+    use Val::*;
+    let mut single_aux = &mut [0];
+    let mut aux: Vec<i64>  = vec![];
+    let lengths = prep_lengths_for_windows_or_chunks(y, single_aux, &mut aux)?;
+
+    // TODO this is way better with slices
+    let x_len = x.len().unwrap_or(1);
+    Ok(Val::Vals(Rc::new(
+        lengths.iter().copied().cycle().take(x_len - 1).enumerate()
+            .map(|(i, len)| slice_val(x, i, len as usize))
+            .collect()
+    )))
+}
+
+pub fn chunks(x: &Val, y: &Val) -> Res<Val> {
+    let mut single_aux = &mut [0];
+    let mut aux: Vec<i64>  = vec![];
+    let lengths = prep_lengths_for_windows_or_chunks(y, single_aux, &mut aux)?;
+
+    // TODO this is way better with slices
+    let mut vals = vec![];
+    let x_len = x.len().unwrap_or(1);
+    let mut i = 0;
+    for len in lengths.iter().copied().map(|len| len as usize).cycle() {
+        if i >= x_len { break }
+        vals.push(slice_val(x, i, len));
+        i += len;
+    }
+    Ok(Val::Vals(Rc::new(vals)))
+}
+
+// May need auxiliary storage if `y` has a length of 1 or consists of floats
+// that need conversion.
+fn prep_lengths_for_windows_or_chunks<'a>(
+    y: &'a Val, one_aux: &'a mut [i64; 1], many_aux: &'a mut Vec<i64>
+) -> Res<&'a [i64]> {
+    use Val::*;
+
+    fn convert_float(f: f64) -> Res<i64> {
+        float_as_int(f).ok_or_else(
+            || cold(format!("domain\nExpected integer, got {f}\n(an int-convertible float would've worked)"))
+        )
+    }
+
+    let lengths = match y {
+        Int(y) => {
+            one_aux[0] = *y;
+            one_aux
+        }
+        I64s(y) => y.as_slice(),
+        Float(y) => {
+            one_aux[0] = convert_float(*y)?;
+            one_aux
+        }
+        F64s(y) => {
+            if y.as_slice().len() == 1 {
+                one_aux[0] = convert_float(y.as_slice()[0])?;
+                one_aux
+            } else {
+                *many_aux = y.as_slice().iter().copied().map(convert_float).collect::<Res<_>>()?;
+                &many_aux[..]
+            }
+        }
+        _ => return cold_err!("domain\nExpected integer, got {y:?}"),
+    };
+    
+    if lengths.is_empty() {
+        return cold_err!("length\nExpected non-empty y");
+    }
+
+    Ok(lengths)
+}
+
+fn slice_val(x: &Val, start: usize, count: usize) -> Val {
+    fn slice_to_iter<'a, A: Clone>(xs: &'a [A], start: usize, count: usize) -> impl Iterator<Item=A> + 'a {
+        xs[start .. cmp::min(xs.len(), start + count)].iter().cloned()
+    }
+    fn slice<A: Clone>(xs: &[A], start: usize, count: usize) -> Rc<Vec<A>> {
+        Rc::new(xs[start .. cmp::min(xs.len(), start + count)].to_vec())
+    }
+    match x {
+        atom!() => x.clone(),
+        Val::U8s(cs) => Val::U8s(slice(cs.as_slice(), start, count)),
+        Val::I64s(is) => Val::I64s(slice(is.as_slice(), start, count)),
+        Val::F64s(fs) => Val::F64s(slice(fs.as_slice(), start, count)),
+        Val::Vals(vals) => collect_list(slice_to_iter(vals.as_slice(), start, count).map(Ok::<Val, Empty>)).unwrap(),
+    }
+}
+

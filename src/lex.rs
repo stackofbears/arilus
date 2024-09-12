@@ -257,6 +257,8 @@ pub enum PrimVerb {
     EqualBang,  // =!
     At,  // @
     Comma,  // ,
+    CommaColon,  // ,:
+    DotColon,  // .:
     Plus,   // +
     Minus,  // -
     Asterisk,  // *
@@ -362,6 +364,8 @@ impl Display for PrimVerb {
             GreaterThanColon => ">:",
             At => "@",
             Comma => ",",
+            CommaColon => ",:",
+            DotColon => ".:",
             Plus => "+",
             Minus => "-",
             Asterisk => "*",
@@ -435,6 +439,8 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(Bang),
         PrimVerb(Caret),
         PrimVerb(Comma),
+        PrimVerb(CommaColon),
+        PrimVerb(DotColon),
         PrimVerb(Dollar),
         PrimVerb(DoubleAmpersand),
         PrimVerb(DoublePipe),

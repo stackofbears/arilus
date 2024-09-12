@@ -3,19 +3,16 @@
 \ This is partially a staging ground for new primitives, since it's easier to
 \ implement them here than in rust.
 
-Not: ~- 1
-NoMatch: == Not
+NoMatch: == !
 Has: ? < p#
 In: ~Has
 HasAny: `In \>:
 AnyIn: ~HasAny
 
-less lessAll: _== in '{P #: (`X Not)}
+less lessAll: _== in '{P #: (`X !)}
 
-Drop: P # (Q - p#)
-
-Cut1: { (y?->is) '(X Drop P # ~-) (is Drop 1,(y#)) }
-Cut_2: { 0,(y?->is+1) '(X Drop P # ~-) (is,(y#)) }
+Cut1: { (y?->is) '(X $ P # ~-) (is$1,(y#)) }
+Cut_2: { 0,(y?->is+1) '(X $ P # ~-) (is,(y#)) }
 
 \ We need p(#0) because [] and "" don't match (maybe they should)
 split splitAny: _== in '{P Cut_2 `X Less p(#0)}

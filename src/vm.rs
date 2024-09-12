@@ -652,16 +652,20 @@ impl Mem {
                         // TODO support?
                         return cold_err!("Attempt to call result of adverb `p' on {arg_count} arguments");
                     }
-                    self.stack.swap_remove(self.stack.len()-2);  // Take y out of the picture.
-                    arg_count = 1;
+                    if arg_count == 2 {
+                        // Take y out of the picture.
+                        self.stack.swap_remove(self.stack.len() - 2);
+                        arg_count = 1;
+                    }
                     calling = operand.clone();
                 }
                 Func::AdverbDerived { adverb: PrimAdverb::Q, operand } => {
                     if arg_count == 0 || arg_count > 2 {
                         // TODO support?
-                        return cold_err!("Attempt to call result of adverb `p' on {arg_count} arguments");
+                        return cold_err!("Attempt to call result of adverb `q' on {arg_count} arguments");
                     }
                     if arg_count == 2 {
+                        // Take y out of the picture.
                         self.pop();
                         arg_count = 1;
                     }
@@ -808,7 +812,8 @@ impl Mem {
         use PrimFunc::*;
         let result = match v {
             Identity | IdentityLeft | Verb(PrimVerb::P) | IdentityRight | Verb(PrimVerb::Q) => Ok(x),
-            Neg | Verb(PrimVerb::Minus) => prim_negate(x),
+            Neg | Verb(PrimVerb::Minus) => prim::negate(x),
+            Not | Verb(PrimVerb::Bang) => prim::not(x),
             Show => prim_show(x),
             GetLine => prim_get_line(),
             Print => self.prim_to_string(&x)
@@ -846,6 +851,7 @@ impl Mem {
         let result = match v {
             Identity | IdentityLeft | Verb(PrimVerb::P) => Ok(x),
             IdentityRight | Verb(PrimVerb::Q) => Ok(y),
+            Or | Verb(PrimVerb::Pipe) => prim::or(x, y),
             Add | Verb(PrimVerb::Plus) => prim::add(x, y),
             Sub | Verb(PrimVerb::Minus) => prim::subtract(x, y),
             Mul | Verb(PrimVerb::Asterisk) => prim::multiply(x, y),
@@ -854,8 +860,11 @@ impl Mem {
             Mod | Verb(PrimVerb::Percent) => prim::int_mod(x, y),
             Pow | Verb(PrimVerb::Caret) => prim::pow(x, y),
             Take | Verb(PrimVerb::Hash) => prim_take(x, &y),
+            Drop | Verb(PrimVerb::Dollar) => prim_drop(x, &y),
             Copy | Verb(PrimVerb::HashColon) => prim_copy(&x, &y),
             Append | Verb(PrimVerb::Comma) => prim_append(x, y),
+            Windows | Verb(PrimVerb::CommaColon) => prim::windows(&x, &y),
+            Chunks | Verb(PrimVerb::DotColon) => prim::chunks(&x, &y),
             Match | Verb(PrimVerb::DoubleEquals) => prim_match(&x, &y),
             // TODO take Val instead of &
             Equal | Verb(PrimVerb::Equals) => prim_compare(x, y, |ord| ord == Ordering::Equal),
@@ -872,7 +881,7 @@ impl Mem {
             In => Ok(Val::Int(prim::has(y, x) as i64)),
             FindSubseq | Verb(PrimVerb::QuestionColon) => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
 
-            Sum => prim::sum(x, Some(y)), // self.fold_val(Val::Function(Rc::new(Func::Prim(PrimFunc::Verb(PrimVerb::Plus)))), x, Some(y)), // TODO prim::sum(x, Some(y)),
+            Sum => prim::sum(x, Some(y)),
 
             _ => todo!("{x:?} {v:?} {y:?}"),
         };
@@ -1500,28 +1509,51 @@ fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
         &Val::Int(i) => i,
         _ => return cold_err!("Invalid right argument {y:?}"),
     };
+    take_with_i64(x, count)
+}
 
-    fn take_from_slice<A: Clone>(count: i64, xs: &[A]) -> Rc<Vec<A>> {
+fn take_with_i64(x: Val, count: i64) -> Result<Val, String> {
+    fn take_iter_from_slice<A: Clone>(count: i64, xs: &[A]) -> impl Iterator<Item=A> + '_ {
         let (start, count) = if count < 0 {
             let abs_count = (-count) as usize;
             (xs.len() - abs_count % xs.len(), abs_count)
         } else {
             (0, count as usize)
         };
-        Rc::new(xs.iter().cloned().cycle().skip(start).take(count).collect())
+        xs.iter().cloned().cycle().skip(start).take(count)
+    }
+
+    fn take_vec_from_slice<A: Clone>(count: i64, xs: &[A]) -> Rc<Vec<A>> {
+        Rc::new(take_iter_from_slice(count, xs).collect())
     }
 
     let result = match x.as_val() {
-        Val::U8s(cs) => Val::U8s(take_from_slice(count, cs)),
-        Val::I64s(is) => Val::I64s(take_from_slice(count, is)),
-        Val::F64s(fs) => Val::F64s(take_from_slice(count, fs)),
-        Val::Vals(vals) => Val::Vals(take_from_slice(count, vals)),
+        Val::U8s(cs) => Val::U8s(take_vec_from_slice(count, cs)),
+        Val::I64s(is) => Val::I64s(take_vec_from_slice(count, is)),
+        Val::F64s(fs) => Val::F64s(take_vec_from_slice(count, fs)),
+        Val::Vals(vals) => collect_list(take_iter_from_slice(count, vals).map(Ok::<Val, Empty>)).unwrap(),
+
         Val::Char(c) => Val::U8s(Rc::new(vec![*c; count.abs() as usize])),
         Val::Int(int) => Val::I64s(Rc::new(vec![*int; count.abs() as usize])),
         Val::Float(float) => Val::F64s(Rc::new(vec![*float; count.abs() as usize])),
         _ => Val::Vals(Rc::new(vec![x; count.abs() as usize])),
     };
     Ok(result)
+}
+
+// TODO list y?
+fn prim_drop(x: Val, y: &Val) -> Result<Val, String> {
+    let count = match y {
+        &Val::Int(i) => i,
+        _ => return cold_err!("Invalid right argument {y:?}"),
+    };
+    let len = x.len().unwrap_or(1) as i64;
+    let take_count = if count < 0 {
+        len + count
+    } else {
+        count - len
+    };
+    take_with_i64(x, take_count)
 }
 
 fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
@@ -1935,24 +1967,3 @@ fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
     Ok(Ok(ZippedVals { x, y, i: 0 }))
 }
 
-fn prim_negate(x: Val) -> Result<Val, String> {
-    use Val::*;
-    Ok(match x {
-        Int(x) => Int(-x),
-        Float(x) => Float(-x),
-        I64s(x) => match Rc::try_unwrap(x) {
-            Ok(x) => I64s(Rc::new(x.into_iter().map(|x| -x).collect())),
-            Err(x) => I64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
-        }
-        F64s(x) => match Rc::try_unwrap(x) {
-            Ok(x) => F64s(Rc::new(x.into_iter().map(|x| -x).collect())),
-            Err(x) => F64s(Rc::new(x.as_slice().iter().map(|x| -*x).collect())),
-        }
-        Vals(x) => match Rc::try_unwrap(x) {
-            Ok(x) => Vals(Rc::new(x.into_iter().map(prim_negate).collect::<Result<_, _>>()?)),
-            Err(x) => Vals(Rc::new(x.as_slice().iter().cloned().map(prim_negate).collect::<Result<_, _>>()?)),
-        }
-        x => return cold_err!("domain\nUnsupported argument: {}\nExpected a numeric value",
-                              x.type_name()),
-    })
-}

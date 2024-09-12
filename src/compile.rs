@@ -1156,5 +1156,6 @@ fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
         ("groupIndices", GroupIndices),
         ("sendToIndex", SendToIndex),
         ("runs", Runs),
+        ("or", Or),
     ])
 }

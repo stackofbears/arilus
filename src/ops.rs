@@ -15,6 +15,7 @@ pub enum AtomOp2 {
     IntDiv,
     Mod,
     Pow,
+    Or,
 }
 
 pub trait Op2<X, Y> {
@@ -213,6 +214,15 @@ impl_op2!(
     (x: f64, y: f64) -> Res<f64> { Ok(x.rem_euclid(y)) }
 );
 
+pub enum Or {}
+impl_op2!(
+    Or,
+    (x: i64, y: i64) -> Res<i64> { Ok(x+y - x*y) }
+    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 + y - x as f64 * y) }
+    (x: f64, y: i64) -> Res<f64> { Ok(x + y as f64 - x * y as f64) }
+    (x: f64, y: f64) -> Res<f64> { Ok(x+y - x*y) }
+);
+
 pub enum Pow {}
 pub enum Either<A, B> { Left(A), Right(B) }
 
@@ -268,13 +278,14 @@ impl_op2!(
 
 fn monomorph<X: NamedType, Y: NamedType>(op: AtomOp2, flip: bool, x: X, y: Y) -> Res<Val> {
     match op {
-        AtomOp2::Add    => if !flip { Add::op2val(x, y) }    else { Add::op2val(y, x) },
-        AtomOp2::Mul    => if !flip { Mul::op2val(x, y) }    else { Mul::op2val(y, x) },
-        AtomOp2::Sub    => if !flip { Sub::op2val(x, y) }    else { Sub::op2val(y, x) },
-        AtomOp2::Div    => if !flip { Div::op2val(x, y) }    else { Div::op2val(y, x) },
-        AtomOp2::IntDiv => if !flip { IntDiv::op2val(x, y) } else { IntDiv::op2val(y, x) },
-        AtomOp2::Mod    => if !flip { Mod::op2val(x, y) }    else { Mod::op2val(y, x) },
-        AtomOp2::Pow    => if !flip { Pow::op2val(x, y) }    else { Pow::op2val(y, x) },
+        AtomOp2::Add    => if !flip { Add::op2val(x, y) }    else { Add::op2val(y, x) }
+        AtomOp2::Mul    => if !flip { Mul::op2val(x, y) }    else { Mul::op2val(y, x) }
+        AtomOp2::Sub    => if !flip { Sub::op2val(x, y) }    else { Sub::op2val(y, x) }
+        AtomOp2::Div    => if !flip { Div::op2val(x, y) }    else { Div::op2val(y, x) }
+        AtomOp2::IntDiv => if !flip { IntDiv::op2val(x, y) } else { IntDiv::op2val(y, x) }
+        AtomOp2::Mod    => if !flip { Mod::op2val(x, y) }    else { Mod::op2val(y, x) }
+        AtomOp2::Pow    => if !flip { Pow::op2val(x, y) }    else { Pow::op2val(y, x) }
+        AtomOp2::Or     => if !flip { Or::op2val(x, y) }     else { Or::op2val(y, x) }
     }
 }
 
