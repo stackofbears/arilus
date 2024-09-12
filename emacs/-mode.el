@@ -50,7 +50,7 @@
   (regexp-opt (split-string "- @ , + * # / ^ | ! $ = < > % ? &")))
 
 (defconst -symbol-verbs-len-2
-  (regexp-opt (split-string "|| && == =! <: >: #: // <= >= ?:")))
+  (regexp-opt (split-string "|| && == =! <: >: #: // <= >= ?: ,: .:")))
 
 (defconst -symbol-adverbs-len-1
   (regexp-opt (split-string "| . ' ` ~ \\")))
