@@ -686,7 +686,10 @@ impl Mem {
                 Func::AdverbDerived { adverb: PrimAdverb::Dot, operand } => calling = operand.clone(),
                 Func::AdverbDerived { adverb: PrimAdverb::Tilde, operand } => {
                     match arg_count {
-                        1 => self.dup(),
+                        1 => {
+                            self.dup();
+                            arg_count = 2;
+                        }
                         2 => self.swap(),
                         _ => {
                             // TODO support?

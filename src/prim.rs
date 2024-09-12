@@ -1,8 +1,7 @@
 use std::cmp;
-use std::iter;
 use std::rc::Rc;
 
-use crate::ops::{self, IsVal, Op2Val, AtomOp2, dispatch_to_atoms};
+use crate::ops::{self, IsVal, ToVal, Op2Val, AtomOp2, dispatch_to_atoms};
 use crate::val::*;
 use crate::util::{cold, err, cold_err, float_as_int, Empty};
 
@@ -287,22 +286,24 @@ fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A, IntoIter: ExactSi
 }
 
 pub fn windows(x: &Val, y: &Val) -> Res<Val> {
-    use Val::*;
-    let mut single_aux = &mut [0];
+    let single_aux = &mut [0];
     let mut aux: Vec<i64>  = vec![];
     let lengths = prep_lengths_for_windows_or_chunks(y, single_aux, &mut aux)?;
 
     // TODO this is way better with slices
+    let mut vals = Vec::with_capacity(lengths.len());
     let x_len = x.len().unwrap_or(1);
-    Ok(Val::Vals(Rc::new(
-        lengths.iter().copied().cycle().take(x_len - 1).enumerate()
-            .map(|(i, len)| slice_val(x, i, len as usize))
-            .collect()
-    )))
+    let mut i = 0;
+    for len in lengths.iter().copied().map(|len| len as usize).cycle() {
+        if i >= x_len { break }
+        vals.push(slice_val(x, i, len));
+        i += len;
+    }
+    Ok(vals.to_val())
 }
 
 pub fn chunks(x: &Val, y: &Val) -> Res<Val> {
-    let mut single_aux = &mut [0];
+    let single_aux = &mut [0];
     let mut aux: Vec<i64>  = vec![];
     let lengths = prep_lengths_for_windows_or_chunks(y, single_aux, &mut aux)?;
 
@@ -315,7 +316,7 @@ pub fn chunks(x: &Val, y: &Val) -> Res<Val> {
         vals.push(slice_val(x, i, len));
         i += len;
     }
-    Ok(Val::Vals(Rc::new(vals)))
+    Ok(vals.to_val())
 }
 
 // May need auxiliary storage if `y` has a length of 1 or consists of floats
