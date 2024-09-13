@@ -1,5 +1,5 @@
 use crate::bytecode::PrimFunc;
-use crate::lex::{self, *};
+use crate::lex::*;
 use crate::util::*;
 
 // TODO better error type than string
@@ -152,6 +152,9 @@ pub enum Pattern {
 
     // Bracketed or stranded array
     Array(Vec<PatternElem>),
+
+    // F->pat
+    View(SmallVerb, Box<Pattern>),
 
     // Match two patterns at once, usually used to name the whole of a value
     // while also destructuring it, as in ( name->a b c ).
@@ -553,17 +556,31 @@ impl<'a> Parser<'a> {
                 self.consume_or_fail(&Token::RBracket)?;
                 Pattern::Array(elems)
             }
-            Some(Token::LParen) => {
-                self.skip();
-                let inner = match self.parse_pattern()? {
-                    Some(pat) => pat,
-                    None => return Err(self.expected(&"pattern")),
-                };
+            // Check for a verb before looking for a parenthesized pattern; it
+            // might be a verb in those parentheses.
+            _ => match self.parse_small_verb()? {
+                None => match self.peek() {
+                    Some(Token::LParen) => {
+                        self.skip();
+                        let inner = match self.parse_pattern()? {
+                            Some(pat) => pat,
+                            None => return Err(self.expected(&"pattern")),
+                        };
 
-                self.consume_or_fail(&Token::RParen)?;
-                inner
+                        self.consume_or_fail(&Token::RParen)?;
+                        inner
+                    }
+                    _ => return Ok(None),
+                }
+                Some(verb) => {
+                    self.consume_or_fail(&Token::RightArrow)?;
+                    let pattern = match self.parse_small_pattern()? {
+                        Some(pat) => pat,
+                        None => return Err(self.expected(&"pattern")),
+                    };
+                    Pattern::View(verb, Box::new(pattern))
+                }
             }
-            _ => return Ok(None),
         };
         Ok(Some(pattern))
     }
@@ -640,15 +657,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
-        // TODO predicate syntax  {|x?(pred)| ...},  {|x;y?(pred)|},  {|?(pred)| ...} if useful
         self.skip_newlines();
 
         // Allow an optional leading colon for uniformity with multiple cases.
         let initial_colon = self.consume(&Token::Colon) || self.consume(&Token::ColonAfterWhitespace);
         self.skip_newlines();
-        if !self.consume(&Token::PrimVerb(lex::PrimVerb::Pipe)) {
+        let args_present = self.consume(&Token::LBracket { after_whitespace: false }) ||
+                           initial_colon && self.consume(&Token::LBracket { after_whitespace: true });
+        if !args_present {
             if initial_colon {
-                return Err(self.expected(&"`|' and explicit arguments after `:'"));
+                return Err(self.expected(&"`[' and explicit arguments after `:'"));
             } else {
                 return Ok(None)
             }
@@ -656,7 +674,7 @@ impl<'a> Parser<'a> {
 
         self.skip_newlines();
         let patterns = self.parse_pattern_elems()?;
-        self.consume_or_fail(&Token::PrimVerb(lex::PrimVerb::Pipe))?;
+        self.consume_or_fail(&Token::RBracket)?;
 
         Ok(Some(ExplicitArgs(patterns)))
     }
@@ -677,7 +695,7 @@ impl<'a> Parser<'a> {
                 let lambda = match self.parse_explicit_args()? {
                     None => {
                         let exprs = self.parse_exprs()?;
-                        if exprs.is_empty() {  // TODO remove to enable {} or {|args|} parse
+                        if exprs.is_empty() {  // TODO remove to enable {} or {[args]} parse
                             return Err(self.expected(&"expression"))
                         }
                         Lambda::Short(exprs)
@@ -686,15 +704,13 @@ impl<'a> Parser<'a> {
                         let mut cases = vec![];
                         loop {
                             let exprs = self.parse_exprs()?;
-                            if exprs.is_empty() {  // TODO remove to enable {} or {|args|} parse
+                            if exprs.is_empty() {  // TODO remove to enable {} or {[args]} parse
                                 return Err(self.expected(&"expression"))
                             }
                             cases.push(LambdaCase(explicit_args, exprs));
-                            if !self.consume(&Token::ColonAfterWhitespace) { break }
-                            match self.parse_explicit_args()? {
-                                None => return Err(self.expected(&"explicit argument list after ` : '")),
-                                Some(new_args) => explicit_args = new_args,
-                            }
+                            if self.peek() != Some(&Token::ColonAfterWhitespace) { break }
+                            // parse_explicit_args is guaranteed to consume the colon.
+                            explicit_args = self.parse_explicit_args()?.unwrap();
                         }
                         Lambda::Cases(cases)
                     }

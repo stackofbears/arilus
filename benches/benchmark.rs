@@ -59,7 +59,7 @@ r#"
 
 bench!(naive_triangular_tail,
 r#"
-    Tri: {|x| x Rec 1 : |1;y| y : |x;y| x-1 Rec (y + x)}
+    Tri: {[x] x Rec 1 : [1;y] y : [x;y] x-1 Rec (y + x)}
     1e3 Tri
 "#);
 
@@ -69,14 +69,14 @@ bench!(int_sum, r"1e5/ \+");
 
 bench!(transpose,
 r#"
-    Transpose: {x@0#/ `{|i|x`@i}}
+    Transpose: {x@0#/ `{[i]x`@i}}
     a: 1e3#100 '/
     a Transpose
 "#);
 
 bench!(transpose_copies,
 r#"
-    Transpose: {x@0#/ `{|i|x`@i}}
+    Transpose: {x@0#/ `{[i]x`@i}}
     \ Rows share the same underlying array (reduced memory pressure)
     a: [1e3/]#100
     a Transpose
@@ -106,7 +106,7 @@ r#"
 bench!(spectral_norm,
 r#"
     A: { x+y*(x+y+1)/2+x+1 ~/ 1.0 }
-    Approximate: {|n|
+    Approximate: {[n]
       i: n/
       MultiplyAv: { i'(P A i * x \+) }
       MultiplyAtv: { i'(P ~A i * x \+) }
@@ -140,11 +140,11 @@ r#"
     zeros: 0 0
 
     \ Node: 2-item array: each item is 0 or another node
-    CreateTree: {|0| zeros : |depth| [depth-1 Rec; depth-1 Rec]}
+    CreateTree: {[0] zeros : [depth] [depth-1 Rec; depth-1 Rec]}
 
-    ComputeChecksum: { |0 0| 1 : |x| x 'rec \+ 1 }
+    ComputeChecksum: {[0 0] 1 : [x] x 'rec \+ 1 }
 
-    Main: {|minNodes; maxNodes|
+    Main: {[minNodes; maxNodes]
       stretchTree: maxNodes+1 CreateTree
       longLivedTree: minNodes CreateTree
 

@@ -53,7 +53,7 @@
   (regexp-opt (split-string "|| && == =! <: >: #: // <= >= ?: ,: .:")))
 
 (defconst -symbol-adverbs-len-1
-  (regexp-opt (split-string "| . ' ` ~ \\")))
+  (regexp-opt (split-string ". ' ` ~ \\")))
 
 (defconst -symbol-adverbs-len-2
   (regexp-opt (split-string "\\: `: @:")))
@@ -70,7 +70,7 @@
         ;; ("\\<[A-Za-z][A-Za-z_0-9]*:" . '-assigned-identifier-face)
 
         ("\\(\\<[A-Z][A-Za-z_0-9]*\\)\\(\\'\\|[^A-Za-z_0-9:]\\)" . (1 '-identifier-verb-face))
-        ("->\\|;" . '-punctuation-face)
+        ("->\\|;\\|\\[\\|\\]" . '-punctuation-face)
         (,-symbol-verbs-len-2 . '-symbol-verb-face)
         (,-symbol-adverbs-len-2 . '-adverb-face)
         (,-symbol-verbs-len-1 . '-symbol-verb-face)

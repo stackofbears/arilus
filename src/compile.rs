@@ -332,6 +332,11 @@ impl Compiler {
 
     fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep: bool) -> Result<(), String> {
         match pat {
+            Pattern::View(small_verb, pat) => {
+                let predicate = Predicate::VerbCall(Verb::SmallVerb(small_verb.clone()), None);
+                self.compile_predicate(&predicate, true)?;
+                self.compile_unpacking_assignment(pat, keep)?;
+            }
             Pattern::Constant(literal) => {
                 if keep { self.code.push(Instr::Dup) }
                 self.compile_small_noun(&SmallNoun::Constant(literal.clone()), true)?;
@@ -343,13 +348,11 @@ impl Compiler {
                 self.code.push(Instr::Assert);
             }
             Pattern::Wildcard => if !keep { self.code.push(Instr::Pop) }
-            Pattern::Name(name) => {
-                match self.fetch_var_in_current_scope(name) {
-                    NameValue::Prim(prim) => return cold_err!("Can't use primitive `{prim}' as a pattern"),
-                    NameValue::Var(dst) => {
-                        if keep { self.code.push(Instr::Dup) }
-                        self.code.push(Instr::StoreTo { dst });
-                    }
+            Pattern::Name(name) => match self.fetch_var_in_current_scope(name) {
+                NameValue::Prim(prim) => return cold_err!("Can't use primitive `{prim}' as a pattern"),
+                NameValue::Var(dst) => {
+                    if keep { self.code.push(Instr::Dup) }
+                    self.code.push(Instr::StoreTo { dst });
                 }
             }
             Pattern::As(pat, as_pat) => {
@@ -1007,7 +1010,6 @@ fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
 fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
     Ok(match pat {
         Pattern::Constant(literal) => SmallNoun::Constant(literal.clone()),
-        Pattern::Wildcard => return cold_err!("`_' wildcards can't be converted to expressions."),
         Pattern::As(pat1, _) => pattern_to_small_noun(pat1)?,
         Pattern::Name(name) => SmallNoun::LowerName(name.clone()),
         Pattern::Array(pat_elems) => SmallNoun::ArrayLiteral(
@@ -1015,6 +1017,9 @@ fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
                 .map(|pat_elem| pattern_elem_to_elem(pat_elem))
                 .collect::<Result<Vec<_>, String>>()?
         ),
+        // TODO lens?
+        Pattern::View(_, _) => return cold_err!("View patterns can't be converted to expressions."),
+        Pattern::Wildcard => return cold_err!("`_' wildcards can't be converted to expressions."),
     })
 }
 
