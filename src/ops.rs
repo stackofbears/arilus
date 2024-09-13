@@ -218,8 +218,8 @@ pub enum Or {}
 impl_op2!(
     Or,
     (x: i64, y: i64) -> Res<i64> { Ok(x+y - x*y) }
-    (x: i64, y: f64) -> Res<f64> { Ok(x as f64 + y - x as f64 * y) }
-    (x: f64, y: i64) -> Res<f64> { Ok(x + y as f64 - x * y as f64) }
+    (x: i64, y: f64) -> Res<f64> { let x = x as f64; Ok(x+y - x*y) }
+    (x: f64, y: i64) -> Res<f64> { let y = y as f64; Ok(x+y - x*y) }
     (x: f64, y: f64) -> Res<f64> { Ok(x+y - x*y) }
 );
 
