@@ -309,22 +309,36 @@ impl Mem {
                         ip = code_index;
                     }
                 }
-                CallPrimFunc1 { prim } => {
+                CallPrimFunc1 { prim } => if prim == PrimFunc::Rec {
+                    let frame = self.current_frame();
+                    if let Some(code_index) = self.call_explicit_or_get_jump_target(
+                        ip, 1, frame.code_index, frame.closure_env.clone()
+                    )? {
+                        ip = code_index;
+                    }
+                } else {
                     let x = self.pop();
                     let result = self.call_prim_monad(prim, x)?;
                     self.push(result);
                 }
-                CallPrimFunc2 { prim } => {
-                    let x = self.stack.swap_remove(self.stack.len() - 2);
-                    if prim == PrimFunc::Verb(PrimVerb::At) && x.is_func() && self.is_tail_call(ip) {
-                        if let Some(code_index) = self.call_or_get_jump_target(ip, x, 1)? {
-                            ip = code_index;
-                        }
-                    } else {
-                        let y = self.pop();
-                        let result = self.call_prim_dyad(prim, x, y)?;
-                        self.push(result);
+                CallPrimFunc2 { prim } => if prim == PrimFunc::Rec {
+                    self.swap();
+                    let frame = self.current_frame();
+                    if let Some(code_index) = self.call_explicit_or_get_jump_target(
+                        ip, 2, frame.code_index, frame.closure_env.clone()
+                    )? {
+                        ip = code_index;
                     }
+                } else if prim == PrimFunc::Verb(PrimVerb::At) && self.stack[self.stack.len() - 2].is_func() && self.is_tail_call(ip) {
+                    let x = self.stack.swap_remove(self.stack.len() - 2);
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, x, 1)? {
+                        ip = code_index;
+                    }
+                } else {
+                    let y = self.pop();
+                    let x = self.pop();
+                    let result = self.call_prim_dyad(prim, x, y)?;
+                    self.push(result);
                 }
                 MarkStack => self.push_marker(self.stack.len()),
                 Pop => { self.pop(); }
@@ -581,45 +595,40 @@ impl Mem {
     fn call_or_get_jump_target(&mut self, ip: usize, calling: Val, arg_count: usize) -> Result<Option<usize>, String> {
         match self.set_up_call(calling, arg_count)? {
             None => Ok(None),
-            Some((code_index, closure_env)) => {
-                let mut frame = StackFrame {
-                    code_index,
-                    closure_env,
-                    arg_count,
-                    next_header: None,
-                    locals_start: self.locals_stack.len(),
-                };
-
-                self.push_marker(self.stack.len() - arg_count);  // TODO should this be here or outside?
-
-                if self.is_tail_call(ip) {
-                    self.pop_locals();
-                    frame.locals_start = self.locals_stack.len();
-                    *self.current_frame_mut() = frame;
-                    Ok(Some(code_index))
-                } else {
-                    self.stack_frames.push(frame);
-                    self.execute(code_index)?;
-                    Ok(None)
-                }
-            }
+            Some((code_index, closure_env)) =>
+                self.call_explicit_or_get_jump_target(ip, arg_count, code_index, closure_env),
         }
     }
 
-    fn call(&mut self, calling: Val, arg_count: usize) -> Result<(), String> {
-        match self.set_up_call(calling, arg_count)? {
-            None => Ok(()),
-            Some((code_index, closure_env)) => {
-                self.stack_frames.push(StackFrame {
-                    code_index,
-                    closure_env,
-                    arg_count,
-                    next_header: None,
-                    locals_start: self.locals_stack.len(),
-                });
-                self.push_marker(self.stack.len() - arg_count);  // TODO should this be here or outside?
-                self.execute(code_index)
-            }
+    fn call_explicit(&mut self, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>) -> Result<(), String> {
+        self.stack_frames.push(StackFrame {
+            code_index,
+            closure_env,
+            arg_count,
+            next_header: None,
+            locals_start: self.locals_stack.len(),
+        });
+        self.push_marker(self.stack.len() - arg_count);
+        self.execute(code_index)
+    }
+
+    fn call_explicit_or_get_jump_target(
+        &mut self, ip: usize, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>
+    ) -> Result<Option<usize>, String> {
+        if self.is_tail_call(ip) {
+            self.pop_locals();
+            let locals_start = self.locals_stack.len();
+            *self.current_frame_mut() = StackFrame {
+                arg_count,
+                code_index,
+                closure_env,
+                locals_start,
+                next_header: None,
+            };
+            self.push_marker(self.stack.len() - arg_count);
+            Ok(Some(code_index))
+        } else {
+            self.call_explicit(arg_count, code_index, closure_env).map(|_| None)
         }
     }
 
@@ -642,6 +651,10 @@ impl Mem {
 
             match function {
                 Func::Explicit{code_index, closure_env} => return Ok(Some((*code_index, closure_env.clone()))),
+                Func::Prim(PrimFunc::Rec) => {
+                    let frame = self.current_frame();
+                    return Ok(Some((frame.code_index, frame.closure_env.clone())));
+                }
                 // TODO arg counts other than 2
                 Func::Prim(PrimFunc::Verb(PrimVerb::At)) if arg_count == 2 => {
                     arg_count = 1;
@@ -844,8 +857,16 @@ impl Mem {
             Type => Ok(Val::U8s(Rc::new(prim_type(x.as_val())))),
             GroupIndices => prim::group_indices(x),
             Exit => prim_exit(&x),
-
             Sum => prim::sum(x, None),
+            Rec => {
+                self.push(x);
+                let arg_count = 1;
+                let frame = self.current_frame();
+                let code_index = frame.code_index;
+                let closure_env = frame.closure_env.clone();
+                self.call_explicit(arg_count, code_index, closure_env)?;
+                Ok(self.pop())
+            }
 
             _ => todo!("{x:?} {v:?}")
         };
@@ -891,7 +912,16 @@ impl Mem {
             FindSubseq => Ok(Val::I64s(Rc::new(prim_subsequence_starts(x.as_val(), y.as_val())))),
 
             Sum => prim::sum(x, Some(y)),
-
+            Rec => {
+                self.push(y);
+                self.push(x);
+                let arg_count = 2;
+                let frame = self.current_frame();
+                let code_index = frame.code_index;
+                let closure_env = frame.closure_env.clone();
+                self.call_explicit(arg_count, code_index, closure_env)?;
+                Ok(self.pop())
+            }
             _ => todo!("{x:?} {v:?} {y:?}"),
         };
         result.map_err(|err| cold(format!("Error in `{v}': {err}")))
@@ -1207,16 +1237,7 @@ impl Mem {
     fn call_func(&mut self, f: &Func, arg_count: usize) -> Result<Val, String> {
         match f {
             &Func::Explicit { ref closure_env, code_index } => {
-                let frame = StackFrame {
-                    code_index,
-                    next_header: None,
-                    arg_count,
-                    closure_env: closure_env.clone(),
-                    locals_start: self.locals_stack.len(),
-                };
-                self.stack_frames.push(frame);
-                self.push_marker(self.stack.len() - arg_count);
-                self.execute(code_index)?;
+                self.call_explicit(arg_count, code_index, closure_env.clone())?;
                 Ok(self.pop())
             }
 

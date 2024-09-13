@@ -634,14 +634,8 @@ impl Compiler {
             Predicate::VerbCall(verb, maybe_y_arg) => {
                 let prim_func = self.form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
                 if prim_func.is_none() {
-                    match verb {
-                        Verb::SmallVerb(SmallVerb::PrimVerb(PrimFunc::Rec)) =>
-                                self.code.push(Instr::PushPrimFunc { prim: PrimFunc::Rec }),
-                        _ => {
-                            let arity = 1 + maybe_y_arg.is_some() as usize;
-                            self.compile_verb(verb, Some(arity), true)?;
-                        }
-                    }
+                    let arity = 1 + maybe_y_arg.is_some() as usize;
+                    self.compile_verb(verb, Some(arity), true)?;
                 }
 
                 match maybe_y_arg {
@@ -923,10 +917,7 @@ impl Compiler {
                 Some(2) => Some(PrimFunc::from_verb(prim, false)),
                 _ => Some(PrimFunc::Verb(prim)),
             }
-            // Rec is special-cased because we can't just compile it into a call to
-            // a prim verb; the bytecode interpreter would panic if we attempted to
-            // run CallPrimFuncX with it.
-            &SmallVerb::PrimVerb(prim_func) if prim_func != Rec => Some(prim_func),
+            &SmallVerb::PrimVerb(prim_func) => Some(prim_func),
             SmallVerb::PrimAdverbCall(PrimAdverb::Backslash, expr_box) =>
                 match self.form_prim_func_from_small_expr(expr_box, Some(2)) {
                     Some(PrimFunc::Add) => Some(PrimFunc::Sum),

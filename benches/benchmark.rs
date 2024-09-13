@@ -142,22 +142,19 @@ r#"
     \ Node: 2-item array: each item is 0 or another node
     CreateTree: {|0| zeros : |depth| [depth-1 Rec; depth-1 Rec]}
 
-    ComputeChecksum: { |0 0| 1 : |x| x 'rec \+ + 1 }
+    ComputeChecksum: { |0 0| 1 : |x| x 'rec \+ 1 }
 
-    Main: {
-      minNodes: 3
-      maxNodes: minNodes + 2 >: x
-
+    Main: {|minNodes; maxNodes|
       stretchTree: maxNodes+1 CreateTree
       longLivedTree: minNodes CreateTree
 
-      (maxNodes-minNodes+1)/+minNodes'{
+      maxNodes-minNodes+1/+minNodes'{
         iterations: 2 ^ x
         iterations/+1 '(CreateTree ComputeChecksum) \+
       }
     }
 
-    4 Main
+    2 Main 4
 "#);
 
 bench!(sum_ravel, r"[1e3/]#100 , \+");
