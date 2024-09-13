@@ -286,18 +286,23 @@ fn index_of<'a, A: 'a + PartialEq, I: IntoIterator<Item=&'a A, IntoIter: ExactSi
 }
 
 pub fn windows(x: &Val, y: &Val) -> Res<Val> {
+    let mut vals = vec![];
+
+    let x_len = x.len().unwrap_or(1);
+    if x_len == 0 { return Ok(vals.to_val()); }
+
     let single_aux = &mut [0];
     let mut aux: Vec<i64>  = vec![];
     let lengths = prep_lengths_for_windows_or_chunks(y, single_aux, &mut aux)?;
 
-    // TODO this is way better with slices
-    let mut vals = Vec::with_capacity(lengths.len());
-    let x_len = x.len().unwrap_or(1);
+    vals.reserve(lengths.len());
     let mut i = 0;
+
+    // TODO this is way better with slices
     for len in lengths.iter().copied().map(|len| len as usize).cycle() {
-        if i >= x_len { break }
         vals.push(slice_val(x, i, len));
-        i += len;
+        if i + len >= x_len { break }
+        i += 1;
     }
     Ok(vals.to_val())
 }
