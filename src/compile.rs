@@ -514,7 +514,7 @@ impl Compiler {
         // accessed.
         let splat = self.push(Instr::ArgCheckEq { count: 2 });
 
-        // TODO optimize away StoreTo(var); Pop; PushVarLastUse(var)
+        // TODO optimize away StoreTo(var); PushVarLastUse(var)
         let mut scope = HashMap::new();
         scope.insert("x".to_string(), local_var(0));
         self.code.push(Instr::StoreTo { dst: local_var(0) });
@@ -839,11 +839,19 @@ impl Compiler {
     // We may need to take special care to make sure this works if we add
     // imperative loops.
     fn mark_last_local_uses(&mut self, make_func_index: usize, num_local_vars_in_scope: usize) {
-        let mut inner_scope_skip_up = Vec::new();
+        // We start at the end of a function and go backwards, marking the first
+        // use we encounter of each local. The bodies of inner function
+        // definitions have already been processed, so we need to know where
+        // their ends are and how far back to go to skip to their start.
+        struct Span {
+            start: usize,  // Index of MakeFunc
+            end: usize,    // Index of instruction just after Return
+        }
+        let mut inner_definition_spans = Vec::new();
         let mut i = make_func_index + 1;
         while i < self.code.len() {
             if let Instr::MakeFunc { num_instructions } = self.code[i] {
-                inner_scope_skip_up.push(i);
+                inner_definition_spans.push(Span { start: i, end: i + num_instructions + 1 });
                 i += num_instructions;  // This points i at Return.
             }
             i += 1;
@@ -862,11 +870,13 @@ impl Compiler {
             v[slot] = val;
         }
 
+        // TODO if !get(..) ; ..; set(..)  ->  if encounter_var(..) ..
+
         let mut else_branch_last_uses = vec![];
         let mut last_use_seen = vec![false; num_local_vars_in_scope];
         let mut i = self.code.len() - 1;
         while i > make_func_index {
-            match self.code[i] {
+            match dbg!(self.code[i]) {
                 Instr::StoreTo { dst: Var { place: Place::Local, slot } } => set(&mut last_use_seen, slot, false),
                 Instr::PushVar { src: src@Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
                     self.code[i] = Instr::PushVarLastUse { src };
@@ -896,10 +906,16 @@ impl Compiler {
                         set(&mut last_use_seen, slot, true);
                     }
                 }
-                Instr::MakeClosure{..} => i = inner_scope_skip_up.pop().unwrap(),
-                Instr::MakeClosureFromStack{..} => i = inner_scope_skip_up.pop().unwrap(),
                 _ => {}
             }
+
+            if let Some(&Span{start, end}) = inner_definition_spans.last() {
+                if i == end {
+                    i = start;
+                    inner_definition_spans.pop();
+                }
+            }
+
             i -= 1;
         }
     }

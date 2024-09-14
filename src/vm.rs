@@ -403,33 +403,42 @@ impl Mem {
                     }
                 }
                 SplatReverseWithSplice { prefix_count, suffix_count, keep_splice } => {
-                    let x = self.top();
-                    let len = match x.len() {
-                        Some(len) => len,
-                        None => return cold_err!("Array unpacking failed; expected array, got atom."),
-                    };
+                    let actual_count = self.top().len();
 
                     let (prefix_count, suffix_count) = (prefix_count as usize, suffix_count as usize);
                     let min_expected_count = prefix_count + suffix_count;
-                    if len < min_expected_count {
-                        return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got {len}.");
-                    }
 
-                    let x = self.pop();  // Success: consume the value.
+                    let success = actual_count.is_some_and(|actual| actual >= min_expected_count);
+                    if !success {
+                        let frame = self.current_frame();
+                        match frame.next_header {
+                            None => match actual_count {
+                                None => return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got atom."),
+                                Some(actual) => return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got {actual}."),
+                            }
+                            Some(next_header_index) => {
+                                self.locals_stack.truncate(frame.locals_start);
+                                ip = next_header_index;
+                            }
+                        }
+                    } else {
+                        let x = self.pop();  // Success: consume the value.
+                        let len = actual_count.unwrap_or(1);
 
-                    self.stack.reserve(min_expected_count + keep_splice as usize);
-                    if suffix_count > 0 {
-                        self.stack.extend(ValIter { x: x.clone(), i: len - suffix_count, len }.rev());
-                    }
-                    if keep_splice {
-                        self.stack.push(
-                            collect_list(ValIter {
-                                x: x.clone(), i: prefix_count, len: len - suffix_count
-                            }.map(Ok::<Val, Empty>)).unwrap()
-                        )
-                    }
-                    if prefix_count > 0 {
-                        self.stack.extend(ValIter { x, i: 0, len: prefix_count }.rev());
+                        self.stack.reserve(min_expected_count + keep_splice as usize);
+                        if suffix_count > 0 {
+                            self.stack.extend(ValIter { x: x.clone(), i: len - suffix_count, len }.rev());
+                        }
+                        if keep_splice {
+                            self.stack.push(
+                                collect_list(ValIter {
+                                    x: x.clone(), i: prefix_count, len: len - suffix_count
+                                }.map(Ok::<Val, Empty>)).unwrap()
+                            )
+                        }
+                        if prefix_count > 0 {
+                            self.stack.extend(ValIter { x, i: 0, len: prefix_count }.rev());
+                        }
                     }
                 }
                 CallPrimAdverb { prim: adverb } => {

@@ -558,27 +558,40 @@ impl<'a> Parser<'a> {
             }
             // Check for a verb before looking for a parenthesized pattern; it
             // might be a verb in those parentheses.
-            _ => match self.parse_small_verb()? {
-                None => match self.peek() {
-                    Some(Token::LParen) => {
-                        self.skip();
-                        let inner = match self.parse_pattern()? {
-                            Some(pat) => pat,
-                            None => return Err(self.expected(&"pattern")),
-                        };
+            _ => {
+                let reset = self.token_index;
+                let parenthesized_pat = if let Some(Token::LParen) = self.peek() {
+                    self.skip();
+                    let pat =self.parse_pattern();
+                    pat
+                } else {
+                    Ok(None)
+                };
 
+                match parenthesized_pat {
+                    Ok(Some(pat)) => {
                         self.consume_or_fail(&Token::RParen)?;
-                        inner
+                        pat
                     }
-                    _ => return Ok(None),
-                }
-                Some(verb) => {
-                    self.consume_or_fail(&Token::RightArrow)?;
-                    let pattern = match self.parse_small_pattern()? {
-                        Some(pat) => pat,
-                        None => return Err(self.expected(&"pattern")),
-                    };
-                    Pattern::View(verb, Box::new(pattern))
+                    _ => {
+                        self.token_index = reset;
+                        match self.parse_small_verb() {
+                            Ok(None) => return parenthesized_pat,
+                            Ok(Some(verb)) => {
+                                self.consume_or_fail(&Token::RightArrow)?;
+                                let pattern = match self.parse_pattern()? {
+                                    Some(pat) => pat,
+                                    None => return Err(self.expected(&"pattern")),
+                                };
+                                Pattern::View(verb, Box::new(pattern))
+                            }
+                            Err(verb_err) => return if let Err(pat_err) = parenthesized_pat {
+                                cold_err!("{pat_err}\nor {verb_err}")
+                            } else {
+                                Err(verb_err)
+                            }
+                        }
+                    }
                 }
             }
         };
