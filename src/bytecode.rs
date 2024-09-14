@@ -242,7 +242,7 @@ impl PrimFunc {
             todo!("{} `{verb}'", if monad { "monadic" } else { "dyadic" })
         };
         match verb {
-            PrimVerb::At => if monad { fail() } else { Index }
+            PrimVerb::At => if monad { GroupIndices } else { Index }
             PrimVerb::Comma => if monad { Ravel } else { Append }
             PrimVerb::CommaColon => if monad { fail() } else { Windows }
             PrimVerb::DotColon => if monad { fail() }  else { Chunks }

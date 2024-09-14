@@ -2005,4 +2005,3 @@ fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
     }
     Ok(Ok(ZippedVals { x, y, i: 0 }))
 }
-
