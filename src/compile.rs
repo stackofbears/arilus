@@ -425,7 +425,7 @@ impl Compiler {
                 // TODO alloc locals?
 
                 match lambda {
-                    Lambda::Short(exprs) => self.compile_short_lambda(exprs)?,
+                    Lambda::Short(exprs) => self.compile_short_lambda(exprs, arity)?,
                     Lambda::Cases(cases) => self.compile_lambda_cases(cases)?,
                 }
 
@@ -506,35 +506,67 @@ impl Compiler {
         })
     }
 
-    fn compile_short_lambda(&mut self, exprs: &[Expr]) -> Result<(), String> {
-        // Assume the function is dyadic and then look at the generated code to see which arguments
-        // were actually accessed.
-        let splat = self.push(Instr::ArgCheckEq { count: 2 });
+    fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<usize>) -> Result<(), String> {
+        // If we don't know the arity, assume the function is dyadic and then look at the generated
+        // code to see which arguments were actually accessed.
+        //
+        // Note that we don't need an ArgCheck at all if we know the arity this function will be
+        // called at.
+        let arg_check_index = if arity.is_none() {
+            Some(self.push(Instr::ArgCheckEq { count: 2 }))
+        } else {
+            None
+        };
 
-        // TODO optimize away StoreTo(var); PushVarLastUse(var)
+        let assumed_arity = arity.unwrap_or(2);
+        if assumed_arity > 2 {
+            return cold_err!("Can't compile attempt to use implicit-arg lambda at arity {assumed_arity} > 2");
+        }
+        
         let mut scope = HashMap::new();
-        scope.insert("x".to_string(), local_var(0));
-        self.code.push(Instr::StoreTo { dst: local_var(0) });
 
-        scope.insert("y".to_string(), local_var(1));
-        let y_start = self.push(Instr::StoreTo { dst: local_var(1) });
+        if assumed_arity >= 1 {
+            scope.insert("x".to_string(), local_var(0));
+            // TODO eliminate StoreTo(var); PushVarLastUse(var)
+            self.code.push(Instr::StoreTo { dst: local_var(0) });
+        }
+
+        // y_start is the start of the instructions that should be replaced with Nops if y is never
+        // actually accessed.
+        let y_start = if assumed_arity == 2 {
+            scope.insert("y".to_string(), local_var(1));
+            Some(self.push(Instr::StoreTo { dst: local_var(1) }))
+        } else {
+            None
+        };
+
         self.scopes.push(scope);
 
         let body_start = self.code.len();
         self.compile_block(exprs, true)?;
         self.code.push(Instr::Return);
 
-        // TODO optimize nops away (would need to adjust offsets)
-        if !accessed(&self.code[body_start..], local_var(1)) {
-            decrement_locals(&mut self.code[body_start..], 1);
-            if !accessed(&self.code[body_start..], local_var(0)) {
-                decrement_locals(&mut self.code[body_start..], 0);
-                self.fill_with_nop(splat..body_start);
-            } else {
-                self.code[splat] = Instr::ArgCheckEq { count: 1 };
-                self.fill_with_nop(y_start..body_start);
+        if let (None, Some(y_start), Some(arg_check_index)) = (arity, y_start, arg_check_index) {
+            // We compiled at arity 2, but we don't actually know what arity this function will be
+            // called at. Scan the body to see what args were actually mentioned, and replace the
+            // instructions that prepare unmentioned args with Nops.
+            //
+            // TODO consider allowing but discarding extra args
+            // 
+            // TODO eliminate nops (would need to adjust offsets)
+            if !accessed(&self.code[body_start..], local_var(1)) {
+                decrement_locals(&mut self.code[body_start..], 1);
+                if !accessed(&self.code[body_start..], local_var(0)) {
+                    decrement_locals(&mut self.code[body_start..], 0);
+                    self.code[arg_check_index] = Instr::ArgCheckEq { count: 0 };
+                    self.fill_with_nop(arg_check_index+1..body_start);
+                } else {
+                    self.code[arg_check_index] = Instr::ArgCheckEq { count: 1 };
+                    self.fill_with_nop(y_start..body_start);
+                }
             }
         }
+
         Ok(())
     }
 
