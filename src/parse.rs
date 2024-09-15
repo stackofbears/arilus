@@ -6,7 +6,7 @@ use crate::util::*;
 
 // Ok(Some(_)): Successfuly parsed an A
 // Ok(None): Found no A and consumed no input
-// Err(_): Parse failed
+// Err(_): Parse failed (consumed input but couldn't fully parse)
 pub type Parsed<A> = Result<Option<A>, String>;
 pub type Many<A> = Result<Vec<A>, String>;
 
@@ -294,7 +294,7 @@ impl<'a> Parser<'a> {
                 Some(pat) => pat,
                 None => return Err(self.expected(&"pattern after `->'")),
             };
-            let predicate = self.parse_predicate()?;
+            let predicate = self.parse_predicates()?;
             return Ok(Some(Noun::ModifyingAssign(pattern, predicate)));
         }
 
@@ -319,7 +319,7 @@ impl<'a> Parser<'a> {
                 }
             }
             None => SmallNoun(small_noun),
-            _ => Sentence(small_noun, self.parse_predicate()?),
+            _ => Sentence(small_noun, self.parse_predicates()?),
         };
 
         Ok(Some(noun))
@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
         Ok(Some(small_noun))
     }
 
-    fn parse_predicate(&mut self) -> Many<Predicate> {
+    fn parse_predicates(&mut self) -> Many<Predicate> {
         let mut predicates = vec![];
         loop {
             if self.consume(&Token::RightArrow) {
@@ -556,42 +556,36 @@ impl<'a> Parser<'a> {
                 self.consume_or_fail(&Token::RBracket)?;
                 Pattern::Array(elems)
             }
-            // Check for a verb before looking for a parenthesized pattern; it
-            // might be a verb in those parentheses.
+            Some(Token::LParen) => {
+                self.skip();
+                let inner = match self.parse_pattern()? {
+                    Some(pat) => pat,
+                    None => return Err(self.expected(&"pattern")),
+                };
+                self.consume_or_fail(&Token::RParen)?;
+                inner
+            }
+
+            // We know we're not looking at `(' here. Note that we don't allow
+            // (verb)->pattern as a view pattern because it introduces parsing
+            // ambiguities; we don't know whether the `(' means (verb)->pattern
+            // or (pattern) until we've consumed it and tried to parse
+            // both. It's possible to try both and collect the errors if they
+            // fail, but that's more complicated than anything we do in parsing
+            // now.
             _ => {
                 let reset = self.token_index;
-                let parenthesized_pat = if let Some(Token::LParen) = self.peek() {
-                    self.skip();
-                    let pat =self.parse_pattern();
-                    pat
-                } else {
-                    Ok(None)
-                };
-
-                match parenthesized_pat {
-                    Ok(Some(pat)) => {
-                        self.consume_or_fail(&Token::RParen)?;
-                        pat
-                    }
-                    _ => {
-                        self.token_index = reset;
-                        match self.parse_small_verb() {
-                            Ok(None) => return parenthesized_pat,
-                            Ok(Some(verb)) => {
-                                self.consume_or_fail(&Token::RightArrow)?;
-                                let pattern = match self.parse_pattern()? {
-                                    Some(pat) => pat,
-                                    None => return Err(self.expected(&"pattern")),
-                                };
-                                Pattern::View(verb, Box::new(pattern))
-                            }
-                            Err(verb_err) => return if let Err(pat_err) = parenthesized_pat {
-                                cold_err!("{pat_err}\nor {verb_err}")
-                            } else {
-                                Err(verb_err)
-                            }
+                match self.parse_small_verb()? {
+                    Some(small_verb) => if self.consume(&Token::RightArrow) {
+                        match self.parse_pattern()? {
+                            Some(pat) => Pattern::View(small_verb, Box::new(pat)),
+                            None => return Err(self.expected("pattern")),
                         }
+                    } else {
+                        self.token_index = reset;
+                        return Ok(None)
                     }
+                    None => return Ok(None),
                 }
             }
         };
@@ -634,8 +628,8 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self) -> Parsed<Pattern> {
         let elem = match self.parse_small_pattern_elem()? {
-            None => return Ok(None),
             Some(small_pat) => small_pat,
+            None => return Ok(None),
         };
 
         let mut pat = match self.parse_small_pattern_elem()? {
