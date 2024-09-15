@@ -49,7 +49,7 @@ macro_rules! bench {
 
 criterion_main!(basic_recursion, linear_ops, misc);
 
-criterion_group!(basic_recursion, naive_triangular, naive_triangular_tail);
+criterion_group!(basic_recursion, naive_triangular, naive_triangular_cases, naive_triangular_tail, naive_triangular_cases_tail);
 
 bench!(naive_triangular,
 r#"
@@ -57,7 +57,19 @@ r#"
     1e3 Tri
 "#);
 
+bench!(naive_triangular_cases,
+r#"
+    Tri: {[1] 1 : [x] x-1 Rec + x}
+    1e3 Tri
+"#);
+
 bench!(naive_triangular_tail,
+r#"
+    Tri: {if(x=1; y; x-1 Rec (y+x))}
+    1e3 Tri 1
+"#);
+
+bench!(naive_triangular_cases_tail,
 r#"
     Tri: {[x] x Rec 1 : [1;y] y : [x;y] x-1 Rec (y + x)}
     1e3 Tri

@@ -592,13 +592,6 @@ impl<'a> Parser<'a> {
         Ok(Some(pattern))
     }
 
-    fn parse_pattern_elem(&mut self) -> Parsed<PatternElem> {
-        match self.parse_subarray_pattern()? {
-            Some(pat) => Ok(Some(pat)),
-            None => Ok(self.parse_pattern()?.map(PatternElem::Pattern)),
-        }
-    }
-
     fn parse_small_pattern_elem(&mut self) -> Parsed<PatternElem> {
         match self.parse_subarray_pattern()? {
             Some(pat) => Ok(Some(pat)),
@@ -627,6 +620,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern(&mut self) -> Parsed<Pattern> {
+        match self.parse_pattern_elem()? {
+            None => Ok(None),
+            Some(PatternElem::Pattern(pat)) => Ok(Some(pat)),
+            Some(PatternElem::Subarray(_)) => cold_err!("`..' is only allowed in array patterns"),
+        }
+    }
+
+    fn parse_pattern_elem(&mut self) -> Parsed<PatternElem> {
         let elem = match self.parse_small_pattern_elem()? {
             Some(small_pat) => small_pat,
             None => return Ok(None),
@@ -634,7 +635,7 @@ impl<'a> Parser<'a> {
 
         let mut pat = match self.parse_small_pattern_elem()? {
             None => match elem {
-                PatternElem::Subarray(_) => return cold_err!("`..' is only allowed in array patterns"),
+                PatternElem::Subarray(_) => return Ok(Some(elem)),
                 PatternElem::Pattern(pat) => pat
             }
 
@@ -660,7 +661,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Some(pat))
+        Ok(Some(PatternElem::Pattern(pat)))
     }
 
     fn parse_explicit_args(&mut self) -> Parsed<ExplicitArgs> {
