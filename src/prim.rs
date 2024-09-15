@@ -267,7 +267,7 @@ pub fn has(x: Val, y: Val) -> bool {
 pub fn find(x: &Val, y: &Val) -> i64 {
     use Val::*;
     match (x, y) {
-        (atom!(), _) => if x == y { 0 } else { 1 },
+        (atom!(), _) => if x == y { 0 } else { 1 }
         (U8s(xs), Char(c)) => index_of(&**xs, c),
         (I64s(xs), Int(i)) => index_of(&**xs, i),
         (I64s(xs), Float(f)) =>
@@ -324,8 +324,7 @@ pub fn chunks(x: &Val, y: &Val) -> Res<Val> {
     Ok(vals.to_val())
 }
 
-// May need auxiliary storage if `y` has a length of 1 or consists of floats
-// that need conversion.
+// May need auxiliary storage if `y` has a length of 1 or consists of floats that need conversion.
 fn prep_lengths_for_windows_or_chunks<'a>(
     y: &'a Val, one_aux: &'a mut [i64; 1], many_aux: &'a mut Vec<i64>
 ) -> Res<&'a [i64]> {

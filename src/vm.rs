@@ -17,8 +17,8 @@ use crate::val::*;
 enum PrecedenceContext {
     Toplevel,
 
-    // Comments are cumulative; if parentheses are needed for one variant,
-    // they're also needed for the variants that follow.
+    // These comments are cumulative; if parentheses are needed for one variant, they're also needed
+    // for the variants that follow.
 
     // Parentheses needed for trains.
     Small,
@@ -35,8 +35,8 @@ struct StackFrame {
     // The first instruction of this function.
     code_index: usize,
 
-    // The index of the next header to try if this one fails, or None if there
-    // are no headers left to try.
+    // The index of the next header to try if this one fails, or None if there are no headers left
+    // to try.
     //
     // TODO: use Option<NonZero>
     next_header: Option<usize>,
@@ -49,24 +49,23 @@ struct StackFrame {
     locals_start: usize,
 }
 
+// The VM is called `Mem` because, as data, it's just the machine's storage.
 pub struct Mem {
     pub code: Vec<Instr>,
 
     pub stack: Vec<Val>,
 
-    // Indices into `stack` that mark the start of a sequence of related stack
-    // elements; for example, the elements of an array literal. We don't
-    // statically know the length of the result since it may include splices, so
-    // we set a marker, continue execution, and then collect the elements at or
-    // above the marker at the end. Stack markers are created by MarkStack and
+    // Indices into `stack` that mark the start of a sequence of related stack elements; for
+    // example, the elements of an array literal. We don't statically know the length of the result
+    // since it may include splices, so we set a marker, continue execution, and then collect the
+    // elements at or above the marker at the end. Stack markers are created by MarkStack and
     // consumed as needed by other instructions.
     stack_markers: Vec<usize>,
 
     // Stack of local scopes.
     locals_stack: Vec<Val>,
 
-    // Details about the explicit function (or global scope) we're currently
-    // in. Never empty!
+    // Details about the explicit function (or global scope) we're currently in. Never empty!
     stack_frames: Vec<StackFrame>,
 }
 
@@ -203,10 +202,9 @@ impl Mem {
                 ArgCheckEq { count } => {
                     let arg_count = self.current_frame().arg_count;
                     if arg_count != count {
-                        // We don't need to try jumping to the next case on
-                        // failure because this instruction is only executed
-                        // directly if this is the last or only case; otherwise,
-                        // Header would have taken care of it and skipped this
+                        // We don't need to try jumping to the next case on failure because this
+                        // instruction is only executed directly if this is the last or only case;
+                        // otherwise, Header would have taken care of it and skipped this
                         // instruction.
                         return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
                     }
@@ -216,10 +214,9 @@ impl Mem {
                 ArgCheckGe { count } => {
                     let arg_count = self.current_frame().arg_count;
                     if !(arg_count >= count) {
-                        // We don't need to try jumping to the next case on
-                        // failure because this instruction is only executed
-                        // directly if this is the last or only case; otherwise,
-                        // Header would have taken care of it and skipped this
+                        // We don't need to try jumping to the next case on failure because this
+                        // instruction is only executed directly if this is the last or only case;
+                        // otherwise, Header would have taken care of it and skipped this
                         // instruction.
                         return cold_err!("Arity mismatch; expected at least {count} args, got {arg_count}")
                     }
@@ -387,8 +384,8 @@ impl Mem {
                         self.push(x);
                         let frame = self.current_frame();
                         match frame.next_header {
-                            // Either we're not in a header, or this is the
-                            // function's last (or only) case.
+                            // Either we're not in a header, or this is the function's last (or
+                            // only) case.
                             None => match actual_count {
                                 None => return cold_err!("Array unpacking failed; expected {count} elements, got atom."),
                                 Some(actual) => return cold_err!("Array unpacking failed; expected {count} elements, got {actual}"),
@@ -598,9 +595,8 @@ impl Mem {
         matches!(self.code.get(ip), Some(Instr::Return))
     }
 
-    // Returns None, meaning `calling` has been called and its return value is
-    // on the stack, or Some(code_index), meaning the caller should jump directly
-    // to code_index.
+    // Returns None, meaning `calling` has been called and its return value is on the stack, or
+    // Some(code_index), meaning the caller should jump directly to code_index.
     fn call_or_get_jump_target(&mut self, ip: usize, calling: Val, arg_count: usize) -> Result<Option<usize>, String> {
         match self.set_up_call(calling, arg_count)? {
             None => Ok(None),
@@ -790,7 +786,7 @@ impl Mem {
             Q => match maybe_y {
                 Some(y) => self.call_monad(operand, y)?,
                 None => self.call_monad(operand, x)?,
-            },
+            }
             SingleQuote => match maybe_y {
                 None => for_each(self, operand, x)?,
                 Some(y) => match zip_vals(x, y) {
@@ -962,7 +958,7 @@ impl Mem {
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
                 Ok(s) => write_or!(out, "{s}")?,
                 Err(err) => return cold(Err(err.to_string())),
-            },
+            }
             Val::I64s(is) => {
                 if is.is_empty() {
                     write_or!(out, "[]")
@@ -1066,7 +1062,7 @@ impl Mem {
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
                 Ok(s) => write_or!(out, "{s:?}")?,
                 Err(err) => return cold(Err(err.to_string())),
-            },
+            }
             _ => self.prim_fmt(prec, x, out)?,
         }
         Ok(())
@@ -1421,7 +1417,7 @@ fn prim_suffixes(x: &Val) -> Vec<Val> {
 fn prim_choose_atoms<F>(x: Val, y: Val, f: F) -> Result<Val, String>
 where F: Copy + Fn(&Val, &Val) -> bool {
     Ok(match zip_vals(x, y) {
-        Err((x, y)) => if f(&x, &y) { x } else { y },
+        Err((x, y)) => if f(&x, &y) { x } else { y }
         Ok(iter) => collect_list(iter?.map(|(x, y)| prim_choose_atoms(x, y, f)))?
     })
 }
@@ -2000,7 +1996,7 @@ fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Result<Val, String> {
 fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
     match (x.len(), y.len()) {
         (None, None) => return Err((x, y)),
-        (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Ok(Err(err)) },
+        (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Ok(Err(err)) }
         _ => {}
     }
     Ok(Ok(ZippedVals { x, y, i: 0 }))

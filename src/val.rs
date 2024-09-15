@@ -8,77 +8,16 @@ use crate::lex::*;
 use crate::util::{cold, float_as_int};
 use crate::bytecode::PrimFunc;
 
-// Maybe we go back to moving lists to the heap when they're sliced (and in
-// general moving vals to the heap when they're referenced).
-// Does this work for e.g. x '# 2
-//   Would want to increment rc when creating slices
-//   Could re-traverse after whole operation and inc rcs?
-//    But how would we know which refs were there before and which are new?
-//    Could dec beforehand w/o deletion and then inc all after
+// The Val representation isn't very efficient for now.
 //
-// Preventing cycles: including element at equal or greater depth triggers copy?
-
-// alt formulation: two heaps, one for most vals & one for array vecs
-//
-// alt: Slice becomes raw heap slot (for rc)+ptr to start+len. we just agree that vector elements can't be moved (or mutated?) through a non-unique reference
-
-/*
-problem: some vals need to go on heap for refs
-
-
-
-o1: put everything on heap, just use heap indices as values
-  pro
-o2: move val to heap when ref is taken
-  [1;2;3]
-o3: arrays (ie dyn sized objects) always on heap, others off or on (default off, values move on when ref taken)
-actually, maybe o2 since arrays aren't *actually* expensive to move
-the difference is that capturing lists by value would always elicit a move to heap, unlike slices/ints/refs, so why not put them there in the first place?
-
-[1;2;3]->a  \ a is Val:Ints(Vec)
-a#2  \ Val:Ints moves to heap w/ rc 2, a becomes Val:Slice(0,len,slot), result is Val:Slice(0,2,slot)
-
-a: retaking reference to array x
-
-[1;2;3]->a
-a#2->b
-c:ref a
-
-a:points to array
-b:slice of a
-c:
-
-
-question:
-a:1
-F:{a:a+1}
-G:F
-[]F  \ a=2
-[]G  \ ? Does G share F's environment? If not, then you can't mutate closure envs by eg sending them to functions
-
-f{[]X}
-
-maybe closure envs are refs by default
-
-*/
-
-// TODO save an alloc+indirection: move small values out so RcVal is Small | Rc<BigVal>
-// Possible val format (nan-boxed):
-// Val {
-//    Char(u8),
-//    Int(i64),
-//    Float(f64),
-//    Ints(ptr to [rc; N; elem1; elem2; ...; elemN]),
-//    Prim(usize),
-//    Function(ptr to [rc; code idx; N; closureVal1; closureVal2; ...; closureValN]),
-// }
-
+// TODO NaN-box
+// TODO switch to custom reference counting so we can store the count inline with array data
+// 
 // TODO Ref
-// TODO Box to say functions shouldn't pervade
 #[derive(Debug, Clone)]
 pub enum Val {
     Char(u8),
-    Int(i64),  // TODO TwoInts, ThreeInts
+    Int(i64),
     Float(f64),
     Function(Rc<Func>),
     U8s(Rc<Vec<u8>>),
@@ -96,24 +35,19 @@ pub enum Func {
         operand: Val,
     },
 
-    // TODO decide if closures should refer to a shared environment or be value
-    // types (copying copies environment. Currently, we hold a reference to the env.
-    //   a:1; F:{a:a+1}; G:F
-    //   []F  \ 2
-    //   []G  \ Currently this returns 3. Should G have its own copy of the env, making this 2?
     Explicit {
         // The function's first instruction (ALWAYS points after MakeFunc, so
         // you can get the function's instruction count with
         // code[func.code_index-1]
         code_index: usize,
 
+        // TODO closure environments should be immutable, but right now they act like mutable
+        // references (confusing).
         closure_env: Rc<RefCell<Vec<Val>>>,
     },
-
-    // TODO(c) needed?
-    // Bound { func: Val, y: Val },
 }
 
+// Pattern for matching atoms
 macro_rules! atom {
     () => {
         Val::Char(_) | Val::Int(_) | Val::Float(_) | Val::Function(_)
@@ -128,6 +62,10 @@ impl Val {
     }
 
     pub fn as_val(&self) -> &Self { &self }
+
+    pub fn is_func(&self) -> bool {
+        matches!(self, Val::Function(_))
+    }
 
     pub fn is_constant_function(&self) -> bool {
         if let Val::Function(func) = self {
@@ -148,10 +86,6 @@ impl Val {
             Val::Vals(_) => &"val list",
             Val::Function(_) => &"function",
         }
-    }
-
-    pub fn is_func(&self) -> bool {
-        matches!(self, Val::Function(_))
     }
 
     pub fn is_falsy(&self) -> bool {
@@ -180,7 +114,7 @@ impl Val {
     }
 }
 
-// Val instances for sorting.
+// impls for sorting.
 
 impl PartialEq for Val {
     fn eq(&self, other: &Val) -> bool {

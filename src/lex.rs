@@ -118,9 +118,9 @@ impl Lexer {
                                 'x' => match chars.next().and_then(hex_digit_to_value).zip(chars.next().and_then(hex_digit_to_value)) {
                                     Some((hex1, hex2)) => char::from(hex1 * 16 + hex2),
                                     None => return err!("Expected two hex digits after `\\x' escape in string literal"),
-                                },
+                                }
                                 _ => c2,  // Just ignore the escape.
-                            },
+                            }
                         }
                     }
                     literal.push(c);

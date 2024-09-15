@@ -39,8 +39,8 @@ pub struct Compiler {
 
     // (code index right after LoadModule, module vars)
     //
-    // TODO in REPL use, allow cache entries to become dirty if a module or one
-    // of its transitive imports changes.
+    // TODO in REPL use, allow cache entries to become dirty if a module or one of its transitive
+    // imports changes.
     module_cache: HashMap<String, (usize, HashMap<String, Var>)>,
 }
 
@@ -80,8 +80,8 @@ impl Compiler {
             (i as i64 + 1 + offset) as usize
         }
 
-        // When we see a chain of unconditional jumps that eventually lead to a
-        // return, return directly instead.
+        // When we see a chain of unconditional jumps that eventually lead to a return, return
+        // directly instead.
         //
         // This can happen in nested ifs, as in:
         //     { if(c1; if(c2; t2; e2); e1) }
@@ -97,17 +97,15 @@ impl Compiler {
         // L3: eval e1
         // L4: return
         //
-        // If c1 and c2 are true, then after evaluating t2 we want to jump to
-        // the instruction immediately after e2. That instruction itself is a
-        // jump to the instruction immediately after e1. Put another way, the
-        // else-skipping jump of the outer `if` jumps to the else-skipping jump
-        // of the inner `if`.
+        // If c1 and c2 are true, then after evaluating t2 we want to jump to the instruction
+        // immediately after e2. That instruction itself is a jump to the instruction immediately
+        // after e1. Put another way, the else-skipping jump of the outer `if` jumps to the
+        // else-skipping jump of the inner `if`.
         //
-        // Eliminiating these chains is an optimization, but the interpreter
-        // also assumes that it's been done when it's identifying tail calls
-        // made from within `if` expressions; since we do this, it can just
-        // check if the next instruction is a return. We could rewrite it to
-        // follow these chains itself, but it's better to pay the cost once.
+        // Eliminiating these chains is an optimization, but the interpreter also assumes that it's
+        // been done when identifying tail calls made from within `if` expressions; since we do
+        // this, it can just check if the next instruction is a return instead of having to follow
+        // the chains itself.
         for i in (0..self.code.len()).rev() {
             match self.code[i] {
                 JumpRelative { offset } => match self.code.get(next_ip(i, offset)) {
@@ -128,13 +126,13 @@ impl Compiler {
                         self.code[i] = JumpRelativeUnless { offset: offset + offset2 + 1 },
 
                     _ => {}
-                },
+                }
 
                 JumpRelativeUnless { offset } => match self.code.get(next_ip(i, offset)) {
                     Some(JumpRelative { offset: offset2 }) =>
                         self.code[i] = JumpRelativeUnless { offset: offset + offset2 + 1 },
                     _ => {}
-                },
+                }
 
                 _ => {}
             }
@@ -509,9 +507,8 @@ impl Compiler {
     }
 
     fn compile_short_lambda(&mut self, exprs: &[Expr]) -> Result<(), String> {
-        // Assume the function is dyadic and then look at the
-        // generated code to see which arguments were actually
-        // accessed.
+        // Assume the function is dyadic and then look at the generated code to see which arguments
+        // were actually accessed.
         let splat = self.push(Instr::ArgCheckEq { count: 2 });
 
         // TODO optimize away StoreTo(var); PushVarLastUse(var)
@@ -680,7 +677,7 @@ impl Compiler {
         let jump_unless_index = self.push(Instr::Nop);
 
         // TODO keep local names that are defined in both branches? They'd need
-        // to be get the same slot.
+        // to get the same slot.
         {
             let in_branch_locals_start = next_local_slot(self.get_local_scope());
             self.compile_expr(then, keep)?;
@@ -826,7 +823,6 @@ impl Compiler {
         }
     }
 
-
     fn fill_with_nop(&mut self, range: std::ops::Range<usize>) {
         for i in range { self.code[i] = Instr::Nop }
     }
@@ -836,13 +832,14 @@ impl Compiler {
         scope.retain(|_, var| var.place == Place::ClosureEnv || var.slot < too_high);
     }
 
-    // We may need to take special care to make sure this works if we add
-    // imperative loops.
+    // Mark the last uses of locals in the function that was just compiled. This starts at the end
+    // of self.code and works backwards.
+    // 
+    // We may need to take special care to make sure this works if we add imperative loops.
     fn mark_last_local_uses(&mut self, make_func_index: usize, num_local_vars_in_scope: usize) {
-        // We start at the end of a function and go backwards, marking the first
-        // use we encounter of each local. The bodies of inner function
-        // definitions have already been processed, so we need to know where
-        // their ends are and how far back to go to skip to their start.
+        // We start at the end of a function and go backwards, marking the first use we encounter of
+        // each local. The bodies of inner function definitions have already been processed, so we
+        // need to know where their ends are and how far back to go to skip to their start.
         struct Span {
             start: usize,  // Index of MakeFunc
             end: usize,    // Index of instruction just after Return
@@ -857,61 +854,77 @@ impl Compiler {
             i += 1;
         }
 
-        fn get(v: &mut Vec<bool>, slot: usize) -> bool {
-            if slot >= v.len() {
-                v.resize(slot + 1, false);
-            }
-            v[slot]
-        }
-        fn set(v: &mut Vec<bool>, slot: usize, val: bool) {
-            if slot >= v.len() {
-                v.resize(slot + 1, false);
-            }
-            v[slot] = val;
-        }
-
-        // TODO if !get(..) ; ..; set(..)  ->  if encounter_var(..) ..
-
-        let mut else_branch_last_uses = vec![];
+        // True if we've already enountered the last use of a local (remember that we go backwards,
+        // so the last use is actually the first time we see it).
+        //
+        // This may need to grow beyond its initial length. `num_local_vars_in_scope' denotes the
+        // number of active locals at the function's end, but variables can enter and exit scope
+        // over the course of a function (e.g. due to an `if` branch), resulting in more locals to
+        // account for somewhere in the middle than at the end.
         let mut last_use_seen = vec![false; num_local_vars_in_scope];
+
+        // Returns the old value.
+        fn set(v: &mut Vec<bool>, slot: usize, val: bool) -> bool {
+            if slot >= v.len() {
+                v.resize(slot + 1, false);
+            }
+            std::mem::replace(&mut v[slot], val)
+        }
+
+        // Returns true if it's the first time we've seen this local.
+        fn first_encounter(v: &mut Vec<bool>, slot: usize) -> bool {
+            !set(v, slot, true)
+        }
+
+        // The last element is the list of slots last seen in the `else` alternative of this `then`
+        // branch.
+        let mut else_branch_last_uses: Vec<Vec<usize>> = vec![];
+
         let mut i = self.code.len() - 1;
         while i > make_func_index {
-            match dbg!(self.code[i]) {
-                Instr::StoreTo { dst: Var { place: Place::Local, slot } } => set(&mut last_use_seen, slot, false),
-                Instr::PushVar { src: src@Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
-                    self.code[i] = Instr::PushVarLastUse { src };
-                    set(&mut last_use_seen, slot, true);
-                }
-                Instr::TuckVar { src: src@Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
-                    self.code[i] = Instr::TuckVarLastUse { src };
-                    set(&mut last_use_seen, slot, true);
-                }
-                Instr::CallOnArgs { var: Var { place: Place::Local, slot } } if !get(&mut last_use_seen, slot) => {
-                    // There's not currently a LastUse variant for CallOnArgs.
-                    set(&mut last_use_seen, slot, true);
-                }
+            match self.code[i] {
+                Instr::StoreTo { dst } if dst.is_local() => { set(&mut last_use_seen, dst.slot, false); }
+
+                Instr::PushVar { src } if src.is_local() && first_encounter(&mut last_use_seen, src.slot) =>
+                    self.code[i] = Instr::PushVarLastUse { src },
+
+                Instr::TuckVar { src } if src.is_local() && first_encounter(&mut last_use_seen, src.slot) =>
+                    self.code[i] = Instr::TuckVarLastUse { src },
+
+                // There's not currently a LastUse variant for CallOnArgs.
+                Instr::CallOnArgs { var } if var.is_local() => { set(&mut last_use_seen, var.slot, true); }
+
                 Instr::JumpRelative { offset } if offset > 0 => {
+                    // Scan the `else` branch we just went through, record the slots last seen in
+                    // it, and unsee them so we can mark last uses in the `then` branch.
                     let mut last_uses_in_else = vec![];
                     for j in (i+1)..(i+offset as usize) {
                         if let Instr::PushVarLastUse { src: Var { slot, .. } } = self.code[j] {
-                            set(&mut last_use_seen, slot, false);
+                            last_use_seen[slot] = false;
                             last_uses_in_else.push(slot);
                         }
                     }
                     else_branch_last_uses.push(last_uses_in_else);
                 }
+
                 Instr::JumpRelativeUnless { offset } if offset > 0 => {
+                    // Now that we're exiting the `then` branch, re-see all the slots last used in
+                    // the `else` branch. Some of them might have been seen in the `then`, but
+                    // that's not necessarily true.
                     let last_uses_in_else = else_branch_last_uses.pop().unwrap();
                     for slot in last_uses_in_else {
-                        set(&mut last_use_seen, slot, true);
+                        last_use_seen[slot] = true;
                     }
                 }
+
                 _ => {}
             }
 
+            // If an inner function definition ends here, skip its body. (TODO consider rearranging
+            // this loop into nested loops so we don't need to check this every iteration).
             if let Some(&Span{start, end}) = inner_definition_spans.last() {
                 if i == end {
-                    i = start;
+                    i = start;  // i now points at MakeFunc
                     inner_definition_spans.pop();
                 }
             }
@@ -972,9 +985,9 @@ fn closure_var(slot: usize) -> Var {
     Var { place: Place::ClosureEnv, slot }
 }
 
-// Note that the next local slot isn't always the same as the number of local
-// slots in the scope; loading a module can add a var to the scope that has the
-// same name but a different slot number, shadowing the current local.
+// Note that the next local slot isn't always the same as the number of local slots in the scope;
+// loading a module can add a var to the scope that has the same name but a different slot number,
+// shadowing the current local.
 //
 // For example:
 //
@@ -986,11 +999,10 @@ fn closure_var(slot: usize) -> Var {
 //   load mod
 //   a Print
 //
-// After `a: 5` executes, the scope is {"a": Local(0)}. Then `mod` is loaded;
-// inside, `a` is local slot 0, but when it's imported to the program, it's
-// offset by 1 to put it after the current locals. The scope is
-// {"a": Local(1)}. The next local slot would be 2, even though there's only one
-// local in scope.
+// After `a: 5` executes, the scope is {"a": Local(0)}. Then `mod` is loaded; inside, `a` is local
+// slot 0, but when it's imported to the program, it's offset by 1 to put it after the current
+// locals. The scope is {"a": Local(1)}. The next local slot would be 2, even though there's only
+// one local in scope.
 fn next_local_slot(scope: &HashMap<String, Var>) -> usize {
     scope.values()
         .filter_map(|v| if v.place == Place::Local { Some(v.slot) } else { None })
