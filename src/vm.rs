@@ -896,11 +896,13 @@ impl Mem {
             Pow => prim::pow(x, y),
             Take => prim_take(x, &y),
             Drop => prim_drop(x, &y),
+            Remove => Ok(prim::remove(x, &y)),
             Copy => prim_copy(&x, &y),
             Append => prim_append(x, y),
             Windows => prim::windows(&x, &y),
             Chunks => prim::chunks(&x, &y),
             Match => prim_match(&x, &y),
+            NotMatch => prim_not_match(&x, &y),
             // TODO take Val instead of &
             Equal => prim_compare(x, y, |ord| ord == Ordering::Equal),
             NotEqual => prim_compare(x, y, |ord| ord != Ordering::Equal),
@@ -1211,7 +1213,7 @@ impl Mem {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
                 Some(first) => (first, 1),
-                None => return cold_err!("Error: scan with no input"),
+                None => return Ok(Val::empty_list_of_same_type(&x)),
             }
         };
 
@@ -1872,6 +1874,10 @@ fn prim_match(x: &Val, y: &Val) -> Result<Val, String> {
     Ok(Val::Int((x == y) as i64))
 }
 
+fn prim_not_match(x: &Val, y: &Val) -> Result<Val, String> {
+    Ok(Val::Int((x != y) as i64))
+}
+
 fn replicate<A: Clone>(a: A, n: usize) -> impl Iterator<Item=A> {
     std::iter::repeat(a).take(n)
 }
@@ -1921,62 +1927,6 @@ where F: FnMut(&X) -> Result<A, E> {
     }
 }
 
-#[derive(Clone)]
-struct ValIter {
-    x: Val,
-    i: usize,
-    len: usize,
-}
-
-fn iter_non_atom(x: Val) -> Option<ValIter> {
-    let len = x.len()?;
-    Some(ValIter { x, i: 0, len })
-}
-
-fn iter_val(x: Val) -> ValIter {
-    let len = x.len().unwrap_or(1);
-    ValIter { x, i: 0, len }
-}
-
-impl Iterator for ValIter {
-    type Item = Val;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.i == self.len { return None }
-        self.i += 1;
-        index_or_cycle_val(&self.x, self.i - 1)
-    }
-}
-
-impl ExactSizeIterator for ValIter {
-    fn len(&self) -> usize {
-        self.len - self.i
-    }
-}
-
-impl DoubleEndedIterator for ValIter {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.i == self.len { return None }
-        self.len -= 1;
-        index_or_cycle_val(&self.x, self.len)
-    }
-}
-
-struct ZippedVals {
-    x: Val,
-    y: Val,
-    i: usize,
-}
-
-impl Iterator for ZippedVals {
-    type Item = (Val, Val);
-    fn next(&mut self) -> Option<Self::Item> {
-        let x_val = index_or_cycle_val(&self.x, self.i)?;
-        let y_val = index_or_cycle_val(&self.y, self.i)?;
-        self.i += 1;
-        Some((x_val, y_val))
-    }
-}
-
 // TODO dyadic
 fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Result<Val, String> {
     use crate::ops::{SingleValConsumer, IsVal};
@@ -1991,13 +1941,4 @@ fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Result<Val, String> {
         }
     }
     x.dispatch_for_each(ForEach { mem, f })
-}
-
-fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
-    match (x.len(), y.len()) {
-        (None, None) => return Err((x, y)),
-        (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Ok(Err(err)) }
-        _ => {}
-    }
-    Ok(Ok(ZippedVals { x, y, i: 0 }))
 }

@@ -4,29 +4,19 @@ use std::{
 };
 
 use crate::bytecode::*;
-use crate::lex::{self, *};
+use crate::lex::*;
 use crate::parse::*;
 use crate::util::*;
-
-// TODO better error than string
-pub fn compile(lexer: Lexer, exprs: &[Expr]) -> Result<Vec<Instr>, String> {
-    let mut compiler = Compiler::new(lexer);
-    compiler.compile(exprs)?;
-    Ok(compiler.code)
-}
-
-// Compile program text.
-pub fn compile_string(text: &str) -> Result<Vec<Instr>, String> {
-    let lexer = lex::Lexer::new();
-    let tokens = lexer.tokenize_to_vec(text)?;
-    let exprs = parse(&tokens)?;
-    let code = compile(lexer, &exprs)?;
-    Ok(code)
-}
 
 enum NameValue {
     Var(Var),
     Prim(PrimFunc),
+}
+
+pub fn compile_string(text: &str) -> Result<Vec<Instr>, String> {
+    let mut compiler = Compiler::new();
+    compiler.compile_string(text)?;
+    Ok(compiler.code)
 }
 
 // Invariants: `scopes` non-empty after `new`.
@@ -47,7 +37,11 @@ pub struct Compiler {
 // TODO be able to compile globals for repl
 // TODO adverb nounification (') (for ultimate adverb verbification)
 impl Compiler {
-    pub fn new(lexer: Lexer) -> Self {
+    pub fn new() -> Self {
+        Self::with_lexer(Lexer::new())
+    }
+
+    pub fn with_lexer(lexer: Lexer) -> Self {
         let mut globals = HashMap::new();
         for (i, name) in get_stdlib_names().iter().enumerate() {
             globals.insert(name.to_string(), Var { place: Place::Local, slot: i });
@@ -58,6 +52,14 @@ impl Compiler {
                scopes: vec![globals],
                primitive_identifiers: make_primitive_identifier_map(),
                module_cache: HashMap::new() }
+    }
+
+    // Compile program text.
+    pub fn compile_string(&mut self, text: &str) -> Result<(), String> {
+        let tokens = self.lexer.tokenize_to_vec(text)?;
+        if tokens.is_empty() { return Ok(()) }
+        let exprs = parse(&tokens)?;
+        self.compile(&exprs)
     }
 
     pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
@@ -554,6 +556,10 @@ impl Compiler {
             // TODO consider allowing but discarding extra args
             // 
             // TODO eliminate nops (would need to adjust offsets)
+            //
+            // TODO looking at generated code won't work if we skip generating push instrs for
+            // completely unused args, e.g. {y; x + 1} should be dyadic, but we might not generate
+            // code for pushing y.
             if !accessed(&self.code[body_start..], local_var(1)) {
                 decrement_locals(&mut self.code[body_start..], 1);
                 if !accessed(&self.code[body_start..], local_var(0)) {
@@ -1161,6 +1167,7 @@ fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
         ("printBytecode", PrintBytecode),
         ("take", Take),
         ("drop", Drop),
+        ("remove", Remove),
         ("rot", Rot),
         ("find", Find),
         ("findAll", FindAll),

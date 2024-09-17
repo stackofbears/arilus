@@ -1,12 +1,10 @@
 [profile.release]
-debug=1
+debug = 0
 
 [package]
-name = "ltr-rs"
+name = "arilus"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dev-dependencies]
 criterion = "0.5"

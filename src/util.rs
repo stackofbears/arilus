@@ -8,6 +8,7 @@ macro_rules! irrefutable {
 }
 pub(crate) use irrefutable;
 
+#[macro_export]
 macro_rules! err {
     ($($arg:tt)*) => {
         Err(format!($($arg)*))

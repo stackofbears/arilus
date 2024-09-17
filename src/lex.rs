@@ -6,9 +6,8 @@ use std::{
 use crate::util::*;
 
 pub struct Lexer {
-    // Tokens that are never a prefix of another token, other than tokens also
-    // in this list. Longer-length tokens appear first so e.g. "->" lexes as
-    // "->" and not "-" then ">".
+    // Tokens that are never a prefix of another token, other than tokens also in this
+    // list. Longer-length tokens appear first so e.g. "->" lexes as "->" and not "-" then ">".
     literal_symbol_tokens: Vec<(String, Token)>,
 
     // Primitives that would otherwise lex as identifiers.
@@ -37,9 +36,8 @@ impl Lexer {
             let is_after_whitespace = {
                 let len = text.len();
                 text = text.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
-                // The first character in the input is considered to be "after
-                // whitespace". If it's '[', it should start an array literal,
-                // not an arg list.
+                // The first character in the input is considered to be "after whitespace". If it's
+                // '[', it should start an array literal, not an arg list.
                 len == full_text_len || len != text.len() || tokens.last().is_some_and(|t| matches!(t, Newline))
             };
             if text.is_empty() { break }
@@ -213,12 +211,8 @@ fn lex_number(mut text: &str) -> Result<Option<(Token, &str)>, String> {
     Ok(Some((token, text)))
 }
 
-// TODO unused but possible tokens:
-//   ## (length of length / length of take / train:take of length (possible) / train:take of take (possible but unlikely (pad w/0)))
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    // TODO floats, DoubleQuestion (??), BangEqual (!=)
-
     RightArrow,  // ->
     Load,  // load
     IfUpper,  // If
@@ -261,6 +255,7 @@ pub enum PrimVerb {
     DotColon,  // .:
     Plus,   // +
     Minus,  // -
+    MinusColon,  // -:
     Asterisk,  // *
     Hash,   // #
     HashColon,  // #:
@@ -284,9 +279,6 @@ pub enum PrimVerb {
 
     P,
     Q,
-
-    // Hidden primitives below; these have no string representation and
-    // shouldn't be in the token enum. TODO move these to compilation.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +360,7 @@ impl Display for PrimVerb {
             DotColon => ".:",
             Plus => "+",
             Minus => "-",
+            MinusColon => "-:",
             Asterisk => "*",
             Hash => "#",
             HashColon => "#:",
@@ -456,6 +449,7 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimVerb(GreaterThanColon),
         PrimVerb(GreaterThanEquals),
         PrimVerb(Minus),
+        PrimVerb(MinusColon),
         PrimVerb(Percent),
         PrimVerb(Pipe),
         PrimVerb(Plus),
@@ -474,8 +468,6 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimAdverb(Tilde),
     ].iter().map(|t| (t.to_string(), t.clone())).collect();
 
-    // It would be cool to replace this with a compile-time assertion that the
-    // array is sorted, but it doesn't matter enough.
     ret.sort_unstable_by_key(|(s, _)| -(s.len() as i32));
     ret
 }

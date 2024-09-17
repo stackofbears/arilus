@@ -381,3 +381,7 @@ fn slice_val(x: &Val, start: usize, count: usize) -> Val {
     }
 }
 
+pub fn remove(x: Val, y: &Val) -> Val {
+    collect_list(iter_val(x).filter(|x| x != y).map(Ok::<Val, Empty>)).unwrap()
+}
+    

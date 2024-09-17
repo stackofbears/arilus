@@ -1,57 +1,4 @@
-#![feature(iterator_try_reduce)]
-#![feature(min_specialization)]
-
-// - Multi-arg functions
-// - Partial application with F[...] syntax?
-//
-// mutable references; boolean type; regex; output formatting; idiom recognition; train syntax; make dyad cases fail when called as monad (or pass ()?); error messages (incl. argument errors for commutative primitives, which may output argument info in the wrong order)
-//
-// FIX: [] shows as "", []#n is just []
-//
-// Possible primitive symbol changes:
-//   ^ head/take, Pow/** for pow, $ last/drop, ^: prefixes/windows overlapping (adverb), $: suffixes/windows non-overlapping (adverb), x#y filter
-//   =: for match, >: for gt, <: for lt, !: for not/not-equal (what about `!'? abs?), |: for or (short-circuit), &: for and (short-circuit) (how do these work?), /: for integer-divide
-//
-// Still need: cut, each-atom, each-list
-//
-// Think about whether arrays should always be indexed when called - right now
-// x@y indexes x, while x I and x .i treat i as a constant function.
-//
-// possible match conjunction (also usable as monad/dyad) (after arg syntax)
-// {(xpat [;ypat] ["&"["&"] exprs]} ) stuff}::more::more
-//
-// e.g.
-// Add:{(x) x + 1}::{(x;y) x + y}
-// MoveFirstToEnd:{([x;..rest]) rest,[x]}::{x}
-
-// Grammar
-// expr:
-//  small (verb small?)+ | name ":" expr
-// small:
-//  lit | name | "(" block ")" | indexed
-//  # | projection
-// verb:
-//  prim | Name | "{"("("args")")? block "}" | "(" verb ")" | adv any | any conj any
-//  # | Name ":" verb
-// any:
-//   small | verb | (name | Name) ":" any
-// block:
-//  expr sepby ";"
-// indexed:
-//  # block instead?
-//  small "[" expr "]"
-// lit:
-//  num | "{"("(" args ")")? block "}"
-
-mod bytecode;
-mod compile;
-mod lex;
-mod ops;
-mod parse;
-mod prim;
-mod util;
-mod val;
-mod vm;
+extern crate arilus;
 
 use std::{
     io::{self, Write},
@@ -59,25 +6,15 @@ use std::{
     mem::swap,
 };
 
-use crate::util::{cold, err};
+use arilus::*;
 
 fn main() -> io::Result<()> {
-    // Read command line
-    //   No options? Start repl (one-line tokenize, parse -> if in delayed spot (fn def, branch, line continuation, nested in parens) then wait for more, else run)
-    //   File given? Run file (whole-file tokenize, parse, run)
-    //     Maybe includes other files, though! File <-> line
-    // General form: (env, string) -> (mutated env, val result?)
-
     let args: Vec<String> = std::env::args().collect();
-    if let Err(s) = match &args[..] {
+    match &args[..] {
         [_] => run_repl(),
-        [_, file] => go(&fs::read_to_string(&file)?),
+        [_, file] => run_program(&fs::read_to_string(&file)?),
         _ => err!("Too many command-line options"),
-    } {
-        eprintln!("{s}");
-    }
-
-    Ok(())
+    }.map_err(io::Error::other)
 }
 
 struct ReplSession {
@@ -99,7 +36,7 @@ impl ReplSession {
         Self {
             line: String::new(),
             tokens: Vec::new(),
-            compiler: compile::Compiler::new(lex::Lexer::new()),
+            compiler: compile::Compiler::new(),
             mem,
         }
     }
@@ -177,7 +114,6 @@ fn run_repl() -> Result<(), String> {
     let mut session = ReplSession::new();
     loop {
         if let Err(err) = session.run_line() {
-            cold(());
             eprintln!("{}", err)
         }
     }
@@ -196,9 +132,8 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
     level
 }
 
-fn go(text: &str) -> Result<(), String> {
+fn run_program(text: &str) -> Result<(), String> {
     let code = compile::compile_string(text)?;
-    dbg!(&code);
     let mut mem = vm::Mem::new();
     mem.code = code;
     mem.execute_from_toplevel(0)?;

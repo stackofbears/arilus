@@ -1,0 +1,31 @@
+\ This is partially a staging ground for new primitives, since it's easier to
+\ implement them here than in rust.
+
+HasAny: `In \|
+AnyIn: ~HasAny
+
+split splitAny: [==; In] '{[cmp]
+  P Runs[#:] (`Cmp !) -: []
+}
+
+Get: GetLine $ _1  \ chomp
+
+\ x Times[100; DoThing]
+Times: {[n;f]
+  Loop: {if(y=0; x; x F Rec (y-1))}
+  {x Loop n}
+}
+
+Iterate: {[n;f]
+  {c0#n \:{[x;_] x F} x}
+}
+
+\ Row lengths must match x@0#
+XposeF: {[f] {x@0#/ `{[i] x`@i F}}}
+Xpose: XposeF[{x}]
+
+\ Post-multiply: kxm MulMM nxk -> nxm
+MulMM: ~{x `{[r] y XposeF[P * r \+]}}
+
+MulMV: { x MulMM [y]}
+MulVM: { [x] MulMM y}

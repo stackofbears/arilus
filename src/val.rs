@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::lex::*;
-use crate::util::{cold, float_as_int};
+use crate::util::{cold, float_as_int, match_lengths};
 use crate::bytecode::PrimFunc;
 
 // The Val representation isn't very efficient for now.
@@ -59,6 +59,16 @@ impl Val {
     pub fn empty_list() -> Val {
         // TODO
         Val::I64s(Rc::new(vec![]))
+    }
+
+    pub fn empty_list_of_same_type(val: &Val) -> Val {
+        use Val::*;
+        match val {
+            Char(_) | U8s(_) => U8s(Rc::new(vec![])),
+            Int(_) | I64s(_) => I64s(Rc::new(vec![])),
+            Float(_) | F64s(_) => F64s(Rc::new(vec![])),
+            Function(_) | Vals(_) => Vals(Rc::new(vec![])),
+        }
     }
 
     pub fn as_val(&self) -> &Self { &self }
@@ -250,7 +260,11 @@ impl Ord for Val {
 
             (Function(f), Function(g)) => f.cmp(g),
 
-            _ => key_variant(self).cmp(&key_variant(other)),
+            _ => if let (Some(0), Some(0)) = (self.len(), other.len()) {
+                Ordering::Equal
+            } else {
+                key_variant(self).cmp(&key_variant(other))
+            }
         }
     }
 }
@@ -376,4 +390,69 @@ pub fn collect_list<E, I: Iterator<Item=Result<Val, E>>>(mut it: I) -> Result<Va
         List::F64s(fs) => Val::F64s(Rc::new(fs)),
         List::Vals(vals) => Val::Vals(Rc::new(vals)),
     })
+}
+
+#[derive(Clone)]
+pub struct ValIter {
+    pub x: Val,
+    pub i: usize,
+    pub len: usize,
+}
+
+pub fn iter_non_atom(x: Val) -> Option<ValIter> {
+    let len = x.len()?;
+    Some(ValIter { x, i: 0, len })
+}
+
+pub fn iter_val(x: Val) -> ValIter {
+    let len = x.len().unwrap_or(1);
+    ValIter { x, i: 0, len }
+}
+
+impl Iterator for ValIter {
+    type Item = Val;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i == self.len { return None }
+        self.i += 1;
+        index_or_cycle_val(&self.x, self.i - 1)
+    }
+}
+
+impl ExactSizeIterator for ValIter {
+    fn len(&self) -> usize {
+        self.len - self.i
+    }
+}
+
+impl DoubleEndedIterator for ValIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.i == self.len { return None }
+        self.len -= 1;
+        index_or_cycle_val(&self.x, self.len)
+    }
+}
+
+pub struct ZippedVals {
+    pub x: Val,
+    pub y: Val,
+    pub i: usize,
+}
+
+impl Iterator for ZippedVals {
+    type Item = (Val, Val);
+    fn next(&mut self) -> Option<Self::Item> {
+        let x_val = index_or_cycle_val(&self.x, self.i)?;
+        let y_val = index_or_cycle_val(&self.y, self.i)?;
+        self.i += 1;
+        Some((x_val, y_val))
+    }
+}
+
+pub fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
+    match (x.len(), y.len()) {
+        (None, None) => return Err((x, y)),
+        (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Ok(Err(err)) }
+        _ => {}
+    }
+    Ok(Ok(ZippedVals { x, y, i: 0 }))
 }

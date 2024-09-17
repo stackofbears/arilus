@@ -279,6 +279,7 @@ pub enum PrimFunc {
     Take,
     Drop,
     Rot,
+    Remove,
     Find,
     FindAll,
     FindSubseq,
@@ -343,6 +344,7 @@ impl PrimFunc {
             PrimVerb::DotColon => if monad { fail() }  else { Chunks }
             PrimVerb::Plus => if monad { fail() } else { Add }
             PrimVerb::Minus => if monad { Neg } else { Sub }
+            PrimVerb::MinusColon => if monad { fail() } else { Remove }
             PrimVerb::Asterisk => if monad { fail() } else { Mul }
             PrimVerb::Slash => if monad { Ints } else { Div }
             PrimVerb::DoubleSlash => if monad { fail() } else { IntDiv }

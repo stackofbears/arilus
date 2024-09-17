@@ -2,15 +2,15 @@ use crate::bytecode::PrimFunc;
 use crate::lex::*;
 use crate::util::*;
 
-// TODO better error type than string
-
 // Ok(Some(_)): Successfuly parsed an A
 // Ok(None): Found no A and consumed no input
 // Err(_): Parse failed (consumed input but couldn't fully parse)
 pub type Parsed<A> = Result<Option<A>, String>;
+
 pub type Many<A> = Result<Vec<A>, String>;
 
 pub fn parse(tokens: &[Token]) -> Many<Expr> {
+    if tokens.is_empty() { return Ok(vec![]) }
     let mut parser = Parser::new(tokens);
     let parsed = parser.parse_exprs()?;
     if parser.token_index < parser.tokens.len() - 1 {
@@ -24,16 +24,35 @@ pub fn parse(tokens: &[Token]) -> Many<Expr> {
 pub enum Expr {
     Noun(Noun),
     Verb(Verb),
-
     PragmaLoad(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum Noun {
+    SmallNoun(SmallNoun),
     LowerAssign(Pattern, Box<Noun>),
     ModifyingAssign(Pattern, Vec<Predicate>),
-    SmallNoun(SmallNoun),
     Sentence(SmallNoun, Vec<Predicate>),
+}
+
+#[derive(Debug, Clone)]
+pub enum SmallNoun {
+    If3(Box<Expr>, Box<Expr>, Box<Expr>),
+    LowerName(String),
+    NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
+
+    Constant(Literal),
+
+    // The underscore is parsed like an adverb, but unlike other adverbs, it
+    // produces something parsed like a noun - that's the whole point - so it's
+    // treated specially here.
+    Underscored(Box<SmallExpr>),
+
+    // [a; b; c] or a b c
+    ArrayLiteral(Vec<Elem>),
+
+    // a[i1; i2;...; iN]
+    Indexed(Box<SmallNoun>, Vec<Elem>),
 }
 
 #[derive(Debug, Clone)]
@@ -55,26 +74,6 @@ pub enum Verb {
 pub enum TrainPart {
     Fork(SmallVerb, SmallExpr),
     Atop(SmallVerb),
-}
-
-#[derive(Debug, Clone)]
-pub enum SmallNoun {
-    If3(Box<Expr>, Box<Expr>, Box<Expr>),
-    LowerName(String),
-    NounBlock(Vec<Expr>, Box<Noun>),  // parenthesized
-
-    Constant(Literal),
-
-    // The underscore is parsed like an adverb, but unlike other adverbs, it
-    // produces something parsed like a noun - that's the whole point - so it's
-    // treated specially here.
-    Underscored(Box<SmallExpr>),
-
-    // [a; b; c] or a b c
-    ArrayLiteral(Vec<Elem>),
-
-    // a[i1; i2;...; iN]
-    Indexed(Box<SmallNoun>, Vec<Elem>),
 }
 
 #[derive(Debug, Clone)]
@@ -104,9 +103,8 @@ pub enum Elem {
     // A single expression: one item of the array or argument list.
     Expr(Expr),
 
-    // A splicing of another array; this expands to 0 or more indvidual items.
-    // .. is parsed like an adverb, but it can only be used in array literals
-    // and function arguments.
+    // A splicing of another array; this expands to 0 or more indvidual items. .. is parsed like an
+    // adverb, but it can only be used in array literals and function arguments.
     Spliced(SmallExpr),
 }
 
@@ -130,14 +128,12 @@ pub enum Lambda {
 pub struct LambdaCase(pub ExplicitArgs, pub Vec<Expr>);
 
 // Explicit argument syntax:
-//   - Naming x: {|xPat| ...}
-//   - Naming x and y: {|xPat; yPat| ...}
+//   - Naming x: {[xPat] ...}
+//   - Naming x and y: {[xPat; yPat] ...}
 //
-// Note that this brings about a syntactic weirdness where a lambda can't use
-// the primitive verb | as the first statement without parenthesizing it:
-//   Valid:   ( ReturnsPlus: {+} )
-//   Invalid: ( ReturnsReverse: {|} )
-//   Valid:   ( ReturnsReverse: {(|)} )
+// Note that this brings about a syntactic weirdness where a lambda can't start immediately with a
+// bracketed array literal; it can start with whitespace, parenthesize the array, or use a stranded
+// array instead.
 #[derive(Debug, Clone)]
 pub struct ExplicitArgs(pub Vec<PatternElem>);
 
@@ -176,8 +172,8 @@ pub enum SmallExpr {
     Verb(SmallVerb),
 }
 
-// `Elem` as it's allowed to appear in a stranded array literal. This isn't held
-// in the syntax tree, just used intermediately.
+// `Elem` as it's allowed to appear in a stranded array literal. This isn't stored in the syntax
+// tree, just used intermediately.
 enum StrandedElem {
     Single(SmallNoun),
     Spliced(SmallExpr),
@@ -252,7 +248,7 @@ impl<'a> Parser<'a> {
 
     fn parse_sequenced<A, F: Fn(&mut Self) -> Parsed<A>>(&mut self, parse: F) -> Many<A> {
         self.skip_newlines();
-        let mut ret = vec![];  // TODO reserve
+        let mut ret = Vec::with_capacity(2);  // arbitrary
         let mut next_required = false;
         loop {
             match parse(self)? {
@@ -306,7 +302,7 @@ impl<'a> Parser<'a> {
 
         let noun = match self.peek() {
             Some(Token::Colon) => {
-                // Oh! `small_noun` wasn't a noun, it was a pattern.
+                // Oh! Turns out `small_noun` wasn't a noun, it was a pattern.
                 self.token_index = before_small_noun;
                 let pattern = match self.parse_pattern()? {
                     Some(pattern) => pattern,
@@ -373,24 +369,26 @@ impl<'a> Parser<'a> {
     fn parse_small_noun_no_stranding(&mut self) -> Parsed<SmallNoun> {
         // TODO prim nouns
         let mut small_noun = match self.peek() {
-            Some(Token::C0Lower) => Constant(Literal::Char(0)),
+            Some(Token::C0Lower) => {
+                self.skip();
+                Constant(Literal::Char(0))
+            }
             Some(&Token::IfLower) => {
                 self.skip();
 
                 self.consume_or_fail(&Token::LParen)?;
-                let mut exprs = self.parse_exprs()?;
-                if exprs.len() < 3 {
-                    return cold_err!("Not enough arguments to `if'; expected 3")
-                }
-                if exprs.len() > 3 {
-                    return cold_err!("Too many arguments to `if'; expected 3")
-                }
-                self.consume_or_fail(&Token::RParen)?;
 
-                let else_ = exprs.pop().unwrap();
-                let then = exprs.pop().unwrap();
-                let cond = exprs.pop().unwrap();
-                If3(Box::new(cond), Box::new(then), Box::new(else_))
+                match <[Expr; 3]>::try_from(self.parse_exprs()?) {
+                    Ok([cond, then, else_]) => {
+                        self.consume_or_fail(&Token::RParen)?;
+                        Ok(If3(Box::new(cond), Box::new(then), Box::new(else_)))
+                    }
+                    Err(exprs) => if exprs.len() < 3 {
+                        cold_err!("Not enough arguments to `if'; expected 3")
+                    } else {
+                        cold_err!("Too many arguments to `if'; expected 3")
+                    }
+                }?
             }
             Some(Token::PrimAdverb(PrimAdverb::Underscore)) => {
                 self.skip();
@@ -469,18 +467,17 @@ impl<'a> Parser<'a> {
                 predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
             } else if self.consume(&Token::IfUpper) {
                 self.consume_or_fail(&Token::LParen)?;
-                let mut exprs = self.parse_exprs()?;
-                if exprs.len() < 2 {
-                    return cold_err!("Not enough arguments to `if'; expected 2")
+                match <[Expr; 2]>::try_from(self.parse_exprs()?) {
+                    Ok([then, else_]) => {
+                        self.consume_or_fail(&Token::RParen)?;
+                        predicates.push(Predicate::If2(Box::new(then), Box::new(else_)));
+                    }
+                    Err(exprs) => return if exprs.len() < 2 {
+                        cold_err!("Not enough arguments to `if'; expected 2")
+                    } else {
+                        cold_err!("Too many arguments to `if'; expected 2")
+                    }
                 }
-                if exprs.len() > 2 {
-                    return cold_err!("Too many arguments to `if'; expected 2")
-                }
-                self.consume_or_fail(&Token::RParen)?;
-
-                let else_ = exprs.pop().unwrap();
-                let then = exprs.pop().unwrap();
-                predicates.push(Predicate::If2(Box::new(then), Box::new(else_)))
             } else {
                 break
             }
@@ -689,10 +686,13 @@ impl<'a> Parser<'a> {
 
     fn parse_small_verb(&mut self) -> Parsed<SmallVerb> {
         let mut small_verb = match self.peek() {
-            Some(Token::C0Upper) => SmallVerb::PrimAdverbCall(
-                PrimAdverb::Dot,
-                Box::new(SmallExpr::Noun(SmallNoun::Constant(Literal::Char(0))))
-            ),
+            Some(Token::C0Upper) => {
+                self.skip();
+                SmallVerb::PrimAdverbCall(
+                    PrimAdverb::Dot,
+                    Box::new(SmallExpr::Noun(SmallNoun::Constant(Literal::Char(0))))
+                )
+            }
             Some(Token::UpperName(name)) => {
                 let upper_name = name.clone();
                 self.skip();
