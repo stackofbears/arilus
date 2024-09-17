@@ -9,7 +9,7 @@ It's insufficiently documented, it lacks tests, and the language itself isn't
 very user-friendly to boot. If you want to figure out what's going on, sadly,
 you'll have to read the source code.
 
-TODO: include a full example program in the language
+TODO: include a full example program
 
 # How to try it
 
