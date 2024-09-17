@@ -5,9 +5,9 @@ use crate::util::*;
 // Ok(Some(_)): Successfuly parsed an A
 // Ok(None): Found no A and consumed no input
 // Err(_): Parse failed (consumed input but couldn't fully parse)
-pub type Parsed<A> = Result<Option<A>, String>;
+pub type Parsed<A> = Res<Option<A>>;
 
-pub type Many<A> = Result<Vec<A>, String>;
+pub type Many<A> = Res<Vec<A>>;
 
 pub fn parse(tokens: &[Token]) -> Many<Expr> {
     if tokens.is_empty() { return Ok(vec![]) }
@@ -211,7 +211,7 @@ impl<'a> Parser<'a> {
         else { false }
     }
 
-    fn consume_or_fail(&mut self, tok: &Token) -> Result<(), String> {
+    fn consume_or_fail(&mut self, tok: &Token) -> Res<()> {
         if self.consume(tok) {
             Ok(())
         } else {

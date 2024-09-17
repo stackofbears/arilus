@@ -1,3 +1,6 @@
+// TODO better error than string
+pub type Res<A> = Result<A, String>;
+
 #[derive(Debug)]
 pub enum Empty {}
 

@@ -1,10 +1,8 @@
 use std::iter;
 use std::rc::Rc;
 
-use crate::util::{length_mismatch_error, match_lengths};
+use crate::util::{length_mismatch_error, match_lengths, Res};
 use crate::val::*;
-
-type Res<A> = Result<A, String>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AtomOp2 {

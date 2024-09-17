@@ -13,7 +13,7 @@ enum NameValue {
     Prim(PrimFunc),
 }
 
-pub fn compile_string(text: &str) -> Result<Vec<Instr>, String> {
+pub fn compile_string(text: &str) -> Res<Vec<Instr>> {
     let mut compiler = Compiler::new();
     compiler.compile_string(text)?;
     Ok(compiler.code)
@@ -55,14 +55,14 @@ impl Compiler {
     }
 
     // Compile program text.
-    pub fn compile_string(&mut self, text: &str) -> Result<(), String> {
+    pub fn compile_string(&mut self, text: &str) -> Res<()> {
         let tokens = self.lexer.tokenize_to_vec(text)?;
         if tokens.is_empty() { return Ok(()) }
         let exprs = parse(&tokens)?;
         self.compile(&exprs)
     }
 
-    pub fn compile(&mut self, exprs: &[Expr]) -> Result<(), String> {
+    pub fn compile(&mut self, exprs: &[Expr]) -> Res<()> {
         let result = self.compile_block(exprs, true);
         self.scopes.truncate(1);  // Move back to global scope
 
@@ -141,13 +141,13 @@ impl Compiler {
         }
     }
 
-    fn parse_file(&self, filepath: &str) -> Result<Vec<Expr>, String> {
+    fn parse_file(&self, filepath: &str) -> Res<Vec<Expr>> {
         let file_contents = fs::read_to_string(filepath).map_err(|err| cold(err.to_string()))?;
         let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
         parse(&tokens)
     }
 
-    fn compile_with_fresh_scopes(&mut self, exprs: &[Expr]) -> Result<HashMap<String, Var>, String> {
+    fn compile_with_fresh_scopes(&mut self, exprs: &[Expr]) -> Res<HashMap<String, Var>> {
         let mut saved_scopes = vec![HashMap::new()];
         std::mem::swap(&mut self.scopes, &mut saved_scopes);
         self.compile(&exprs)?;
@@ -156,7 +156,7 @@ impl Compiler {
         Ok(saved_scopes.into_iter().next().unwrap())
     }
 
-    fn compile_block(&mut self, exprs: &[Expr], keep: bool) -> Result<(), String> {
+    fn compile_block(&mut self, exprs: &[Expr], keep: bool) -> Res<()> {
         match exprs.split_last() {
             None => todo!("Compile ()"),
             Some((last, init)) => {
@@ -173,7 +173,7 @@ impl Compiler {
         self.code.len() - 1
     }
 
-    fn ensure_module_loaded<'a>(&'a mut self, mod_name: &str) -> Result<(usize, &'a HashMap<String, Var>), String> {
+    fn ensure_module_loaded<'a>(&'a mut self, mod_name: &str) -> Res<(usize, &'a HashMap<String, Var>)> {
         // This double-lookup is a workaround for problem case 3 in the NLL RFC:
         // https://github.com/rust-lang/rfcs/blob/master/text/2094-nll.md#problem-case-3-conditional-control-flow-across-functions. We
         // could use the entry API, but that would mean a clone of `mod_name`
@@ -200,12 +200,12 @@ impl Compiler {
         Ok((*code_index, scope))
     }
 
-    fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<usize>, keep: bool) -> Result<(), String> {
+    fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<usize>, keep: bool) -> Res<()> {
         if let Expr::Verb(verb) = expr { self.compile_verb(verb, arity, keep) }
         else { self.compile_expr(expr, keep) }
     }
 
-    fn compile_expr(&mut self, expr: &Expr, keep: bool) -> Result<(), String> {
+    fn compile_expr(&mut self, expr: &Expr, keep: bool) -> Res<()> {
         match expr {
             Expr::Noun(noun) => self.compile_noun(noun, keep),
             Expr::Verb(verb) => self.compile_verb(verb, None, keep),
@@ -235,7 +235,7 @@ impl Compiler {
         }
     }
 
-    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>, keep: bool) -> Result<(), String> {
+    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>, keep: bool) -> Res<()> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs, arity, true)?;
@@ -253,7 +253,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_train_as_explicit(&mut self, f: &SmallVerb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Result<(), String> {
+    fn compile_train_as_explicit(&mut self, f: &SmallVerb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Res<()> {
         self.compile_small_verb(f, arity, true)?;
 
         let mut last_slot_called_on_args = 0;
@@ -330,7 +330,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep: bool) -> Result<(), String> {
+    fn compile_unpacking_assignment(&mut self, pat: &Pattern, keep: bool) -> Res<()> {
         match pat {
             Pattern::View(small_verb, pat) => {
                 let predicate = Predicate::VerbCall(Verb::SmallVerb(small_verb.clone()), None);
@@ -394,7 +394,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>, keep: bool) -> Result<(), String> {
+    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>, keep: bool) -> Res<()> {
         if let Some(prim) = self.form_prim_func_from_small_verb(small_verb, arity) {
             if keep { self.code.push(Instr::PushPrimFunc { prim }); }
             return Ok(());
@@ -508,7 +508,7 @@ impl Compiler {
         })
     }
 
-    fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<usize>) -> Result<(), String> {
+    fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<usize>) -> Res<()> {
         // If we don't know the arity, assume the function is dyadic and then look at the generated
         // code to see which arguments were actually accessed.
         //
@@ -576,7 +576,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_lambda_cases(&mut self, cases: &[LambdaCase]) -> Result<(), String> {
+    fn compile_lambda_cases(&mut self, cases: &[LambdaCase]) -> Res<()> {
         self.scopes.push(HashMap::new());
         for i in 0..cases.len() {
             let LambdaCase(ExplicitArgs(pats), exprs) = &cases[i];
@@ -639,7 +639,7 @@ impl Compiler {
     }
 
     // Leaves the compiled noun's value in subject1
-    fn compile_noun(&mut self, noun: &Noun, keep: bool) -> Result<(), String> {
+    fn compile_noun(&mut self, noun: &Noun, keep: bool) -> Res<()> {
         match noun {
             Noun::SmallNoun(small_noun) => self.compile_small_noun(small_noun, keep)?,
             Noun::LowerAssign(pat, rhs) => {
@@ -667,7 +667,7 @@ impl Compiler {
     }
 
     // Before calling, add the code to put the x argument on the stack
-    fn compile_predicate(&mut self, predicate: &Predicate, keep: bool) -> Result<(), String> {
+    fn compile_predicate(&mut self, predicate: &Predicate, keep: bool) -> Res<()> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
                 let prim_func = self.form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
@@ -701,7 +701,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_if(&mut self, then: &Expr, else_: &Expr, keep: bool) -> Result<(), String> {
+    fn compile_if(&mut self, then: &Expr, else_: &Expr, keep: bool) -> Res<()> {
         // s: start;  t: #then;  e: #else     offset = target      - (index+1)
         //
         // s          JumpUnless(t+1) --,     t+1    = (s+t+2)     - (ip=s+1)
@@ -757,7 +757,7 @@ impl Compiler {
 
     // If name isn't defined in the current scope, updates all intervening
     // scopes to include it in their closure environment.
-    fn fetch_var(&mut self, name: &str) -> Result<NameValue, String> {
+    fn fetch_var(&mut self, name: &str) -> Res<NameValue> {
         if let Some(prim) = self.primitive_identifiers.get(name) {
             return Ok(NameValue::Prim(*prim))
         }
@@ -777,7 +777,7 @@ impl Compiler {
         cold_err!("Undefined name: `{name}'")
     }
 
-    fn compile_small_noun(&mut self, small_noun: &SmallNoun, keep: bool) -> Result<(), String> {
+    fn compile_small_noun(&mut self, small_noun: &SmallNoun, keep: bool) -> Res<()> {
         // TODO currently V N pushes N but doesn't pop it unless another
         // expression follows (e.g. the program "+ 3" is push prim; pop verb; push literal)
         use SmallNoun::*;
@@ -847,7 +847,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_elem(&mut self, elem: &Elem) -> Result<(), String> {
+    fn compile_elem(&mut self, elem: &Elem) -> Res<()> {
         match elem {
             Elem::Expr(expr) => self.compile_expr(expr, true),
             Elem::Spliced(small_expr) => {
@@ -1065,7 +1065,7 @@ fn get_stdlib_names() -> &'static [&'static str] {
     ]
 }
 
-fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
+fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Res<Elem> {
     Ok(match pat_elem {
         PatternElem::Pattern(pat) => Elem::Expr(Expr::Noun(Noun::SmallNoun(pattern_to_small_noun(pat)?))),
         PatternElem::Subarray(Some(name)) => Elem::Spliced(SmallExpr::Noun(SmallNoun::LowerName(name.clone()))),
@@ -1073,7 +1073,7 @@ fn pattern_elem_to_elem(pat_elem: &PatternElem) -> Result<Elem, String> {
     })
 }
 
-fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
+fn pattern_to_small_noun(pat: &Pattern) -> Res<SmallNoun> {
     Ok(match pat {
         Pattern::Constant(literal) => SmallNoun::Constant(literal.clone()),
         Pattern::As(pat1, _) => pattern_to_small_noun(pat1)?,
@@ -1081,7 +1081,7 @@ fn pattern_to_small_noun(pat: &Pattern) -> Result<SmallNoun, String> {
         Pattern::Array(pat_elems) => SmallNoun::ArrayLiteral(
             pat_elems.iter()
                 .map(|pat_elem| pattern_elem_to_elem(pat_elem))
-                .collect::<Result<Vec<_>, String>>()?
+                .collect::<Res<Vec<_>>>()?
         ),
         // TODO lens?
         Pattern::View(_, _) => return cold_err!("View patterns can't be converted to expressions."),

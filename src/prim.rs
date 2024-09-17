@@ -3,9 +3,7 @@ use std::rc::Rc;
 
 use crate::ops::{self, IsVal, ToVal, Op2Val, AtomOp2, dispatch_to_atoms};
 use crate::val::*;
-use crate::util::{cold, err, cold_err, float_as_int, Empty};
-
-type Res<A> = Result<A, String>;
+use crate::util::{cold, err, cold_err, float_as_int, Empty, Res};
 
 pub fn add<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
     use Val::*;
@@ -119,7 +117,7 @@ pub fn not(x: Val) -> Res<Val> {
     })
 }
 
-pub fn negate(x: Val) -> Result<Val, String> {
+pub fn negate(x: Val) -> Res<Val> {
     use Val::*;
     Ok(match x {
         Int(x) => Int(-x),

@@ -86,7 +86,7 @@ impl Mem {
         }
     }
 
-    pub fn execute_from_toplevel(&mut self, ip: usize) -> Result<(), String> {
+    pub fn execute_from_toplevel(&mut self, ip: usize) -> Res<()> {
         let result = self.execute(ip);
         if result.is_err() {
             self.stack.clear();
@@ -99,7 +99,7 @@ impl Mem {
         result
     }
 
-    fn execute(&mut self, mut ip: usize) -> Result<(), String> {
+    fn execute(&mut self, mut ip: usize) -> Res<()> {
         use Instr::*;
 
         while ip < self.code.len() {
@@ -132,8 +132,13 @@ impl Mem {
                 }
                 ModuleEnd => return Ok(()),
                 Dup => self.dup(),
-                MakeClosure{..} => panic!("Malformed code at ip {}: reached MakeClosure not immediately following a MakeFunc's Return.", ip - 1),
-                MakeClosureFromStack{..} => panic!("Malformed code at ip {}: reached MakeClosureFromStack not immediately following a MakeFunc's Return.", ip - 1),
+                MakeClosure{..} => panic!(concat!("Malformed code at ip {}: reached MakeClosure ",
+                                                  "not immediately following a MakeFunc's Return."),
+                                          ip - 1),
+                MakeClosureFromStack{..} =>
+                    panic!(concat!("Malformed code at ip {}: reached MakeClosureFromStack not ",
+                                   "immediately following a MakeFunc's Return."),
+                           ip - 1),
                 MakeFunc { num_instructions } => {
                     let code_index = ip;
                     ip += num_instructions;
@@ -153,8 +158,11 @@ impl Mem {
                                         ip += 1;
                                         closure_data.push(self.consuming_load(src));
                                     }
-                                    _ => panic!("Malformed code at ip {ip}: expected PushVar after MakeClosure, but found {:?}",
-                                                self.code[ip]),
+                                    _ => panic!(
+                                        concat!("Malformed code at ip {}: expected PushVar ",
+                                                "after MakeClosure, but found {:?}"),
+                                        ip, self.code[ip]
+                                    ),
                                 }
                             }
                             closure_data
@@ -185,7 +193,8 @@ impl Mem {
                         if have < arg_count {
                             self.stack.extend_from_within(args_start+have .. args_start+arg_count);
                         }
-                        self.current_frame_mut().next_header = Some((ip as i64 + next_case_offset) as usize);
+                        let next_header_index = (ip as i64 + next_case_offset) as usize;
+                        self.current_frame_mut().next_header = Some(next_header_index);
                         ip += 1;  // Skip arg check instruction
                     } else {
                         ip = (ip as i64 + next_case_offset) as usize;
@@ -226,9 +235,12 @@ impl Mem {
                 CollectArgs { suffix_count, keep } => {
                     let arg_count = self.current_frame().arg_count;
                     let args_start = self.peek_marker();
-                    let vals_start = args_start + suffix_count as usize + arg_count * self.current_frame().next_header.is_some() as usize;
+                    let have_saved_args = self.current_frame().next_header.is_some() as usize;
+                    let vals_start = args_start + suffix_count as usize + arg_count * have_saved_args;
                     if keep {
-                        let array = collect_list(self.stack.drain(vals_start..).map(Ok::<Val, Empty>).rev()).unwrap();
+                        let array = collect_list(
+                            self.stack.drain(vals_start..).map(Ok::<Val, Empty>).rev()
+                        ).unwrap();
                         self.push(array);
                     } else {
                         self.stack.truncate(vals_start);
@@ -326,7 +338,9 @@ impl Mem {
                     )? {
                         ip = code_index;
                     }
-                } else if prim == PrimFunc::Verb(PrimVerb::At) && self.stack[self.stack.len() - 2].is_func() && self.is_tail_call(ip) {
+                } else if prim == PrimFunc::Verb(PrimVerb::At) &&
+                          self.stack[self.stack.len() - 2].is_func() &&
+                          self.is_tail_call(ip) {
                     let x = self.stack.swap_remove(self.stack.len() - 2);
                     if let Some(code_index) = self.call_or_get_jump_target(ip, x, 1)? {
                         ip = code_index;
@@ -345,7 +359,8 @@ impl Mem {
                 }
                 Splat => {
                     match iter_non_atom(self.pop()) {
-                        None => return cold_err!("Splice failed; expected array, got atom."),  // TODO just push the atom?
+                        // TODO just push the atom?
+                        None => return cold_err!("Splice failed; expected array, got atom."),
                         Some(val_iter) => self.stack.extend(val_iter),
                     }
                 }
@@ -386,11 +401,10 @@ impl Mem {
                         match frame.next_header {
                             // Either we're not in a header, or this is the function's last (or
                             // only) case.
-                            None => match actual_count {
-                                None => return cold_err!("Array unpacking failed; expected {count} elements, got atom."),
-                                Some(actual) => return cold_err!("Array unpacking failed; expected {count} elements, got {actual}"),
-                            }
-
+                            None => return cold_err!(
+                                "Array unpacking failed; expected {count} elements, got {}",
+                                to_string_or(actual_count, "atom")
+                            ),
                             // There's another case to try.
                             Some(next_header_index) => {
                                 self.locals_stack.truncate(frame.locals_start);
@@ -409,10 +423,10 @@ impl Mem {
                     if !success {
                         let frame = self.current_frame();
                         match frame.next_header {
-                            None => match actual_count {
-                                None => return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got atom."),
-                                Some(actual) => return cold_err!("Array unpacking failed; expected at least {min_expected_count} elements, got {actual}."),
-                            }
+                            None => return cold_err!(
+                                "Array unpacking failed; expected at least {} elements, got {}",
+                                min_expected_count, to_string_or(actual_count, "atom")
+                            ),
                             Some(next_header_index) => {
                                 self.locals_stack.truncate(frame.locals_start);
                                 ip = next_header_index;
@@ -424,7 +438,9 @@ impl Mem {
 
                         self.stack.reserve(min_expected_count + keep_splice as usize);
                         if suffix_count > 0 {
-                            self.stack.extend(ValIter { x: x.clone(), i: len - suffix_count, len }.rev());
+                            self.stack.extend(
+                                ValIter { x: x.clone(), i: len - suffix_count, len }.rev()
+                            );
                         }
                         if keep_splice {
                             self.stack.push(
@@ -597,7 +613,9 @@ impl Mem {
 
     // Returns None, meaning `calling` has been called and its return value is on the stack, or
     // Some(code_index), meaning the caller should jump directly to code_index.
-    fn call_or_get_jump_target(&mut self, ip: usize, calling: Val, arg_count: usize) -> Result<Option<usize>, String> {
+    fn call_or_get_jump_target(
+        &mut self, ip: usize, calling: Val, arg_count: usize
+    ) -> Res<Option<usize>> {
         match self.set_up_call(calling, arg_count)? {
             None => Ok(None),
             Some((code_index, closure_env)) =>
@@ -605,7 +623,9 @@ impl Mem {
         }
     }
 
-    fn call_explicit(&mut self, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>) -> Result<(), String> {
+    fn call_explicit(
+        &mut self, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>
+    ) -> Res<()> {
         self.stack_frames.push(StackFrame {
             code_index,
             closure_env,
@@ -619,7 +639,7 @@ impl Mem {
 
     fn call_explicit_or_get_jump_target(
         &mut self, ip: usize, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>
-    ) -> Result<Option<usize>, String> {
+    ) -> Res<Option<usize>> {
         if self.is_tail_call(ip) {
             self.pop_locals();
             let locals_start = self.locals_stack.len();
@@ -642,8 +662,9 @@ impl Mem {
     //   - execute a primitive and push its result, returning None.
     //
     // Arguments should be on the stack in reverse order (first argument on top).
-    fn set_up_call(&mut self, mut calling: Val, mut arg_count: usize)
-                   -> Result<Option<(usize, Rc<RefCell<Vec<Val>>>)>, String> {
+    fn set_up_call(
+        &mut self, mut calling: Val, mut arg_count: usize
+    ) -> Res<Option<(usize, Rc<RefCell<Vec<Val>>>)>> {
         loop {
             let function = match &calling {
                 Val::Function(rc) => &**rc,
@@ -749,26 +770,24 @@ impl Mem {
         }
     }
 
-    fn call_val(&mut self, val: &Val, x: Val, y: Option<Val>) -> Result<Val, String> {
+    fn call_val(&mut self, val: &Val, x: Val, y: Option<Val>) -> Res<Val> {
         if let Some(y) = y { self.call_dyad(val, x, y) } else { self.call_monad(val, x) }
     }
 
-    fn call_monad(&mut self, val: &Val, x: Val) -> Result<Val, String> {
+    fn call_monad(&mut self, val: &Val, x: Val) -> Res<Val> {
         self.push(x);
         self.index_or_call(val, 1)
     }
 
-    fn call_dyad(&mut self, val: &Val, x: Val, y: Val) -> Result<Val, String> {
+    fn call_dyad(&mut self, val: &Val, x: Val, y: Val) -> Res<Val> {
         self.push(y);
         self.push(x);
         self.index_or_call(val, 2)
     }
 
-    fn call_prim_adverb(&mut self,
-                        adverb: PrimAdverb,
-                        operand: &Val,
-                        x: Val,
-                        maybe_y: Option<Val>) -> Result<Val, String> {
+    fn call_prim_adverb(
+        &mut self, adverb: PrimAdverb, operand: &Val, x: Val, maybe_y: Option<Val>
+    ) -> Res<Val> {
         use PrimAdverb::*;
         let result = match adverb {
             Runs => match maybe_y {
@@ -829,7 +848,7 @@ impl Mem {
         Ok(result)
     }
 
-    fn call_prim_monad(&mut self, mut v: PrimFunc, x: Val) -> Result<Val, String> {
+    fn call_prim_monad(&mut self, mut v: PrimFunc, x: Val) -> Res<Val> {
         use PrimFunc::*;
         if let Verb(verb) = v {
             v = PrimFunc::from_verb(verb, true);
@@ -878,7 +897,7 @@ impl Mem {
         result.map_err(|err| cold(format!("Error in `{v}': {err}")))
     }
 
-    fn call_prim_dyad(&mut self, mut v: PrimFunc, x: Val, y: Val) -> Result<Val, String> {
+    fn call_prim_dyad(&mut self, mut v: PrimFunc, x: Val, y: Val) -> Res<Val> {
         use PrimFunc::*;
         if let Verb(verb) = v {
             v = PrimFunc::from_verb(verb, false);
@@ -936,7 +955,7 @@ impl Mem {
 
     // TODO output formatting (take indent as arg)
     // TODO singleton lists print incorrectly ([1] prints as 1).
-    fn prim_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
+    fn prim_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Res<()> {
         macro_rules! write_or {
             ($($arg:tt)*) => {
                 write!($($arg)*).map_err(|err| cold(err.to_string()))
@@ -945,8 +964,8 @@ impl Mem {
 
         use PrecedenceContext::*;
 
-        fn parenthesized_if<F>(cond: bool, out: &mut String, f: F) -> Result<(), String>
-        where F: FnOnce(&mut String) -> Result<(), String> {
+        fn parenthesized_if<F>(cond: bool, out: &mut String, f: F) -> Res<()>
+        where F: FnOnce(&mut String) -> Res<()> {
             if cond { write_or!(out, "(")?; }
             f(out)?;
             if cond { write_or!(out, ")")?; }
@@ -1012,7 +1031,7 @@ impl Mem {
                 //     prec >= Small, out, |out| {
                 //         self.prim_fmt(Toplevel, f_func, out)?;
                 //         write_or!(out, " ")?;
-                //         || -> Result<(), String> {
+                //         || -> Res<()> {
                 //             if let Val::Function(rc) = g_func {
                 //                 if let Func::Bound { func, y } = &**rc {
                 //                     self.prim_fmt(Small, func, out)?;
@@ -1052,7 +1071,7 @@ impl Mem {
     }
 
     // TODO output formatting
-    fn prim_debug_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Result<(), String> {
+    fn prim_debug_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Res<()> {
         macro_rules! write_or {
             ($($arg:tt)*) => {
                 write!($($arg)*).map_err(|err| cold(err.to_string()))
@@ -1070,19 +1089,19 @@ impl Mem {
         Ok(())
     }
 
-    fn prim_to_string(&self, x: &Val) -> Result<String, String> {
+    fn prim_to_string(&self, x: &Val) -> Res<String> {
         let mut s = String::new();
         self.prim_fmt(PrecedenceContext::Toplevel, x, &mut s)?;
         Ok(s)
     }
 
-    fn prim_to_debug_string(&self, x: &Val) -> Result<String, String> {
+    fn prim_to_debug_string(&self, x: &Val) -> Res<String> {
         let mut s = String::new();
         self.prim_debug_fmt(PrecedenceContext::Toplevel, x, &mut s)?;
         Ok(s)
     }
 
-    fn prim_print_bytecode(&self, x: &Val) -> Result<(), String> {
+    fn prim_print_bytecode(&self, x: &Val) -> Res<()> {
         if let Val::Function(rc) = x {
             if let Func::Explicit { code_index, closure_env } = &**rc {
                 if closure_env.borrow().is_empty() {
@@ -1111,7 +1130,7 @@ impl Mem {
                   self.prim_to_debug_string(x)?)
     }
 
-    pub fn prim_runs_monad(&mut self, f: &Val, x: Val) -> Result<Val, String> {
+    pub fn prim_runs_monad(&mut self, f: &Val, x: Val) -> Res<Val> {
         struct Runs<'a> {
             mem: &'a mut Mem,
             f: &'a Val,
@@ -1120,7 +1139,7 @@ impl Mem {
         }
 
         impl Iterator for Runs<'_> {
-            type Item = Result<Val, String>;
+            type Item = Res<Val>;
             fn next(&mut self) -> Option<Self::Item> {
                 let current = index_or_cycle_val(&self.x, self.i)?;
                 let start = self.i;
@@ -1140,7 +1159,7 @@ impl Mem {
     }
 
     // TODO returns a singleton list of x and y are atoms; think about this?
-    pub fn prim_runs_dyad(&mut self, f: &Val, x: Val, y: Val) -> Result<Val, String> {
+    pub fn prim_runs_dyad(&mut self, f: &Val, x: Val, y: Val) -> Res<Val> {
         use Val::*;
         match_lengths(x.len().unwrap_or(1), y.len().unwrap_or(1))?;
         
@@ -1168,7 +1187,7 @@ impl Mem {
         }
 
         impl Iterator for Runs<'_> {
-            type Item = Result<Val, String>;
+            type Item = Res<Val>;
             fn next(&mut self) -> Option<Self::Item> {
                 let current = self.current.take()?;
                 let x_start = self.x_start;
@@ -1191,7 +1210,7 @@ impl Mem {
         collect_list(Runs { mem: self, f, x, iter_y, current, x_start: 0 })
     }
 
-    fn fold_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
+    fn fold_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Res<Val> {
         let (mut seed, start) = match maybe_y {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
@@ -1208,7 +1227,7 @@ impl Mem {
     }
     
     // TODO bad code
-    fn scan_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Result<Val, String> {
+    fn scan_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Res<Val> {
         let (mut seed, start) = match maybe_y {
             Some(y) => (y, 0),
             None => match index_or_cycle_val(&x, 0) {
@@ -1231,7 +1250,7 @@ impl Mem {
     }
 
     // Args should be on the stack in reverse order (first argument on top).
-    fn index_or_call(&mut self, f: &Val, arg_count: usize) -> Result<Val, String> {
+    fn index_or_call(&mut self, f: &Val, arg_count: usize) -> Res<Val> {
         use Val::*;
         if let Function(func) = f {
             self.call_func(func, arg_count)
@@ -1241,7 +1260,7 @@ impl Mem {
     }
 
     // Args should be on the stack in reverse order.
-    fn call_func(&mut self, f: &Func, arg_count: usize) -> Result<Val, String> {
+    fn call_func(&mut self, f: &Func, arg_count: usize) -> Res<Val> {
         match f {
             &Func::Explicit { ref closure_env, code_index } => {
                 self.call_explicit(arg_count, code_index, closure_env.clone())?;
@@ -1277,7 +1296,7 @@ impl Mem {
     }
 
     // Args should be on the stack in reverse order.
-    fn progressive_index(&mut self, x: &Val, arg_count: usize) -> Result<Val, String> {
+    fn progressive_index(&mut self, x: &Val, arg_count: usize) -> Res<Val> {
         if arg_count == 0 { return Ok(x.clone()) }
         let arg = self.pop();
         for_each_atom_retaining_shape(
@@ -1290,7 +1309,7 @@ impl Mem {
     }
 
     // TODO index by float when int-convertible.
-    fn prim_index(&mut self, x: &Val, y: &Val) -> Result<Val, String> {
+    fn prim_index(&mut self, x: &Val, y: &Val) -> Res<Val> {
         #[cold]
         fn oob(i: i64, len: usize) -> String {
             format!("index out of bounds\nRequested index {i}, but length is {len}")
@@ -1298,10 +1317,10 @@ impl Mem {
         fn to_index(i: i64, len: usize) -> usize {
             if i >= 0 { i as usize } else { (len as i64 + i) as usize }  // TODO overflow?
         }
-        fn index<A>(slice: &[A], i: i64) -> Result<&A, String> {
+        fn index<A>(slice: &[A], i: i64) -> Res<&A> {
             slice.get(to_index(i, slice.len())).ok_or_else(|| oob(i, slice.len()))
         }
-        fn index_atom<A: Clone>(atom: &A, i: i64) -> Result<A, String> {
+        fn index_atom<A: Clone>(atom: &A, i: i64) -> Res<A> {
             let len = 1;
             if to_index(i, len) == 0 { Ok(atom.clone()) } else { Err(oob(i, len)) }
         }
@@ -1320,17 +1339,16 @@ impl Mem {
             (F64s(xs), I64s(is)) => F64s(Rc::new(traverse(&**is, |i| index(xs, *i).copied())?)),
             (Vals(vs), &Int(i)) => return Ok(index(vs, i)?.clone()),
             (Vals(vs), I64s(is)) => collect_list(is.iter().map(|i| index(vs, *i).cloned()))?,
-            (Char(_) | Int(_) | Float(_) | U8s(_) | I64s(_) | F64s(_) | Vals(_), Vals(is)) => collect_list(
-                is.iter().map(|i| self.prim_index(x, i))
-            )?,
+            (Char(_) | Int(_) | Float(_) | U8s(_) | I64s(_) | F64s(_) | Vals(_), Vals(is)) =>
+                collect_list(is.iter().map(|i| self.prim_index(x, i)))?,
             _ => return self.call_monad(&x, y.clone()),
         };
         Ok(val)
     }
 }
 
-fn for_each_atom_retaining_shape<F>(x: Val, mut f: F) -> Result<Val, String>
-where F: FnMut(&Val) -> Result<Val, String> {
+fn for_each_atom_retaining_shape<F>(x: Val, mut f: F) -> Res<Val>
+where F: FnMut(&Val) -> Res<Val> {
     match x {
         atom!() => f(&x),
         Val::U8s(x) => collect_list(x.as_slice().iter().map(|x| f(&Val::Char(*x)))),
@@ -1342,7 +1360,7 @@ where F: FnMut(&Val) -> Result<Val, String> {
 
 // Primitives
 
-fn prim_get_line() -> Result<Val, String> {
+fn prim_get_line() -> Res<Val> {
     let mut line = String::new();
     if let Err(err) = std::io::stdin().read_line(&mut line) {
         return Err(cold(err.to_string()))
@@ -1354,7 +1372,7 @@ fn prim_type(x: &Val) -> Vec<u8> {
     x.type_name().as_bytes().to_vec()
 }
 
-fn prim_show(x: Val) -> Result<Val, String> {
+fn prim_show(x: Val) -> Res<Val> {
     fn as_bytes<A: ToString>(a: A) -> Val {
         Val::U8s(Rc::new(a.to_string().into_bytes()))
     }
@@ -1372,7 +1390,7 @@ fn prim_show(x: Val) -> Result<Val, String> {
     Ok(ret)
 }
 
-fn prim_exit(x: &Val) -> Result<Val, String> {
+fn prim_exit(x: &Val) -> Res<Val> {
     use std::process::exit;
 
     match x.as_val() {
@@ -1416,7 +1434,7 @@ fn prim_suffixes(x: &Val) -> Vec<Val> {
     }
 }
 
-fn prim_choose_atoms<F>(x: Val, y: Val, f: F) -> Result<Val, String>
+fn prim_choose_atoms<F>(x: Val, y: Val, f: F) -> Res<Val>
 where F: Copy + Fn(&Val, &Val) -> bool {
     Ok(match zip_vals(x, y) {
         Err((x, y)) => if f(&x, &y) { x } else { y }
@@ -1424,7 +1442,7 @@ where F: Copy + Fn(&Val, &Val) -> bool {
     })
 }
 
-fn prim_where(x: &Val) -> Result<Val, String> {
+fn prim_where(x: &Val) -> Res<Val> {
     use Val::*;
     let val = match x {
         Int(i) => Val::I64s(Rc::new(replicate_with_i64(0, *i)?.collect())),
@@ -1509,7 +1527,7 @@ fn prim_subsequence_starts(x: &Val, y: &Val) -> Vec<i64> {
     starts
 }
 
-fn prim_read_file(x: &Val) -> Result<Val, String> {
+fn prim_read_file(x: &Val) -> Res<Val> {
     let mut byte: [u8; 1] = [0; 1];
     let path = std::str::from_utf8(
         match x {
@@ -1541,7 +1559,7 @@ fn prim_reverse(x: Val) -> Val {
 }
 
 // TODO reshape on list y
-fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
+fn prim_take(x: Val, y: &Val) -> Res<Val> {
     let count = match y {
         &Val::Int(i) => i,
         _ => return cold_err!("Invalid right argument {y:?}"),
@@ -1549,7 +1567,7 @@ fn prim_take(x: Val, y: &Val) -> Result<Val, String> {
     take_with_i64(x, count)
 }
 
-fn take_with_i64(x: Val, count: i64) -> Result<Val, String> {
+fn take_with_i64(x: Val, count: i64) -> Res<Val> {
     fn take_iter_from_slice<A: Clone>(count: i64, xs: &[A]) -> impl Iterator<Item=A> + '_ {
         let (start, count) = if count < 0 {
             let abs_count = (-count) as usize;
@@ -1579,7 +1597,7 @@ fn take_with_i64(x: Val, count: i64) -> Result<Val, String> {
 }
 
 // TODO list y?
-fn prim_drop(x: Val, y: &Val) -> Result<Val, String> {
+fn prim_drop(x: Val, y: &Val) -> Res<Val> {
     let count = match y {
         &Val::Int(i) => i,
         _ => return cold_err!("Invalid right argument {y:?}"),
@@ -1593,7 +1611,7 @@ fn prim_drop(x: Val, y: &Val) -> Result<Val, String> {
     take_with_i64(x, take_count)
 }
 
-fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
+fn prim_copy(x: &Val, y: &Val) -> Res<Val> {
     use Val::*;
     #[cold]
     fn unexpected_y(y: &Val) -> String {
@@ -1611,7 +1629,7 @@ fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
 
     fn replicate_each<A: Clone, Y: ExactSizeIterator<Item=usize>>(
         xs: &[A], ys: Y, count: usize
-    ) -> Result<Vec<A>, String> {
+    ) -> Res<Vec<A>> {
         match_lengths(xs.len(), ys.len())?;
         let mut vec = Vec::with_capacity(count);
         for (x, y) in xs.iter().zip(ys) {
@@ -1633,7 +1651,7 @@ fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
         }
     }
 
-    fn run_many<Y>(x: &Val, y: Y) -> Result<Val, String>
+    fn run_many<Y>(x: &Val, y: Y) -> Res<Val>
     where Y: Clone + ExactSizeIterator<Item=usize> {
         let count = y.clone().sum();
         let val = match x.as_val() {
@@ -1649,11 +1667,11 @@ fn prim_copy(x: &Val, y: &Val) -> Result<Val, String> {
         Ok(val)
     }
 
-    fn int_as_usize(i: i64) -> Result<usize, String> {
+    fn int_as_usize(i: i64) -> Res<usize> {
         i.try_into().map_err(|_| unexpected_y(&Val::Int(i)))
     }
 
-    fn float_as_usize(f: f64) -> Result<usize, String> {
+    fn float_as_usize(f: f64) -> Res<usize> {
         if f >= 0.0 && f.trunc() == f {
             Ok(f as usize)
         } else {
@@ -1754,7 +1772,7 @@ fn prim_sort(x: Val, down: bool) -> Val {
     }
 }
 
-fn prim_append(x: Val, y: Val) -> Result<Val, String> {
+fn prim_append(x: Val, y: Val) -> Res<Val> {
     use std::iter::once;
     use Val::*;
 
@@ -1789,7 +1807,8 @@ fn prim_append(x: Val, y: Val) -> Result<Val, String> {
         }
     }
 
-    fn extend_or_clone<A: Clone, Y: IntoIterator<IntoIter: ExactSizeIterator<Item=A>>>(mut x: Rc<Vec<A>>, y: Y) -> Rc<Vec<A>> {
+    fn extend_or_clone<A: Clone, Y>(mut x: Rc<Vec<A>>, y: Y) -> Rc<Vec<A>>
+    where Y: IntoIterator<IntoIter: ExactSizeIterator<Item=A>> {
         match Rc::get_mut(&mut x) {
             Some(vec) => { vec.extend(y.into_iter()); x }
             None => many_then_many(clones(&x), y.into_iter()),
@@ -1851,7 +1870,7 @@ fn prim_ravel(x: Val) -> Val {
     }
 }
 
-fn prim_compare<F: Fn(Ordering) -> bool + Copy>(x: Val, y: Val, op: F) -> Result<Val, String> {
+fn prim_compare<F: Fn(Ordering) -> bool + Copy>(x: Val, y: Val, op: F) -> Res<Val> {
     use Val::*;
     let result = match zip_vals(x, y) {
         Err((x, y)) => Int(op(x.cmp(&y)) as i64),
@@ -1870,11 +1889,11 @@ fn iota(x: &Val) -> Val {
 }
 
 // TODO should [] == "" be 1?
-fn prim_match(x: &Val, y: &Val) -> Result<Val, String> {
+fn prim_match(x: &Val, y: &Val) -> Res<Val> {
     Ok(Val::Int((x == y) as i64))
 }
 
-fn prim_not_match(x: &Val, y: &Val) -> Result<Val, String> {
+fn prim_not_match(x: &Val, y: &Val) -> Res<Val> {
     Ok(Val::Int((x != y) as i64))
 }
 
@@ -1882,14 +1901,14 @@ fn replicate<A: Clone>(a: A, n: usize) -> impl Iterator<Item=A> {
     std::iter::repeat(a).take(n)
 }
 
-fn replicate_with_float<A: Clone>(a: A, f: f64) -> Result<impl Iterator<Item=A>, String> {
+fn replicate_with_float<A: Clone>(a: A, f: f64) -> Res<impl Iterator<Item=A>> {
     match float_as_int(f) {
         Some(n) => replicate_with_i64(a, n),
         _ => cold_err!("domain\nExpected non-negative integer, got {f}"),
     }
 }
 
-fn replicate_with_i64<A: Clone>(a: A, n: i64) -> Result<impl Iterator<Item=A>, String> {
+fn replicate_with_i64<A: Clone>(a: A, n: i64) -> Res<impl Iterator<Item=A>> {
     if n >= 0 {
         Ok(replicate(a, n as usize))
     } else {
@@ -1928,17 +1947,21 @@ where F: FnMut(&X) -> Result<A, E> {
 }
 
 // TODO dyadic
-fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Result<Val, String> {
+fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Res<Val> {
     use crate::ops::{SingleValConsumer, IsVal};
 
     struct ForEach<'a> { mem: &'a mut Mem, f: &'a Val }
     impl<'a> SingleValConsumer for ForEach<'a> {
-        fn eat_val(&mut self, val: Val) -> Result<Val, String> {
+        fn eat_val(&mut self, val: Val) -> Res<Val> {
             self.mem.call_monad(&self.f, val)
         }
-        fn eat_val_ref(&mut self, val: &Val) -> Result<Val, String> {
+        fn eat_val_ref(&mut self, val: &Val) -> Res<Val> {
             self.mem.call_monad(&self.f, val.clone())
         }
     }
     x.dispatch_for_each(ForEach { mem, f })
+}
+
+fn to_string_or<A: ToString>(thing: Option<A>, def: &str) -> String {
+    thing.map_or_else(|| def.to_string(), |x| x.to_string())
 }

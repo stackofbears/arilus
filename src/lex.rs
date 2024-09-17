@@ -22,14 +22,14 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize_to_vec(&self, text: &str) -> Result<Vec<Token>, String> {
+    pub fn tokenize_to_vec(&self, text: &str) -> Res<Vec<Token>> {
         let mut tokens = Vec::with_capacity(text.len() / 4);  // Guess
         self.tokenize(text, &mut tokens)?;
         Ok(tokens)
     }
 
     // TODO better error than String
-    pub fn tokenize(&self, mut text: &str, tokens: &mut Vec<Token>) -> Result<(), String> {
+    pub fn tokenize(&self, mut text: &str, tokens: &mut Vec<Token>) -> Res<()> {
         use Token::*;
         let full_text_len = text.len();
         'next_token: loop {
@@ -135,10 +135,10 @@ impl Lexer {
 
 
 
-fn lex_number(mut text: &str) -> Result<Option<(Token, &str)>, String> {
+fn lex_number(mut text: &str) -> Res<Option<(Token, &str)>> {
     use std::str::FromStr;
     // TODO hex/arbitrary base
-    fn parse<A: FromStr>(s: &str) -> Result<A, String>
+    fn parse<A: FromStr>(s: &str) -> Res<A>
     where A::Err: Display {
         s.parse::<A>().map_err(|err| err.to_string())
     }
