@@ -11,6 +11,24 @@ you'll have to read the source code.
 
 TODO: include a full example program
 
+# Features
+
+- Operations on scalars (e.g. arithmetic) automatically scale up to arrays,
+  pairing up elements.
+- Full lexical scoping with closures.
+- Guaranteed tail call elimination.
+- Pattern matching in assignment and function parameter lists, including array
+  destructuring and view patterns.
+- Limited support for tacit programming.
+
+This implementation consists of a compiler, bytecode instruction set, and
+virtual machine. In comparison to other array languages, this one
+
+- uses the ASCII character set (for now?)
+- uses a list-based array model (for now?)
+- executes left-to-right instead of right-to-left (forever)
+- can be parsed before execution (no comment)
+
 # Installation
 
 This codebase is written in Rust. See [the Rust
@@ -31,27 +49,7 @@ Then, clone (or just download and unzip) and build this repository:
 From here, run `target/release/arilus` to open a repl, or `target/release/arilus
 filepath` to run code from file `filepath`.
 
-# About
-
-This implementation consists of a compiler, bytecode instruction set, and
-virtual machine. In comparison to other array languages, this one
-
-- uses the ASCII character set (for now?)
-- uses a list-based array model (for now?)
-- executes left-to-right instead of right-to-left (forever)
-- can be parsed before execution (no comment)
-
-## Features
-
-- Operations on scalars (e.g. arithmetic) automatically scale up to arrays,
-  pairing up elements.
-- Full lexical scoping with closures.
-- Guaranteed tail call elimination.
-- Pattern matching in assignment and function parameter lists, including array
-  destructuring and view patterns.
-- Limited support for tacit programming.
-
-## Example
+# Example
 
 Here's an example of a simple REPL session that calculates parenthesis nesting
 depth. `\` followed by whitespace introduces a comment until the line ends. User
@@ -73,7 +71,7 @@ of an expression, but note that assignments don't display their results.
 If you're not familiar with array languages, code like that might come as a
 shock. The symbols!
 
-## Codebase overview
+# Codebase overview
 
 - `src/`
     - [`main.rs`](src/main.rs) - entrypoint
