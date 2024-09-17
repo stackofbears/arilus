@@ -11,19 +11,30 @@ you'll have to read the source code.
 
 TODO: include a full example program
 
-# How to try it
+# Installation
 
-Download the code, enter the root directory, and `cargo run --release` to open
-the repl, or `cargo run --release -- filepath` to run code from file
-`filepath`. The release profile has no dependencies beyond the Rust standard
-library. I'm currently using rustc 1.82.0-nightly; this project uses the nightly
-features `iterator_try_reduce` and `min_specialization`.
+This codebase is written in Rust. See [the Rust
+website](https://www.rust-lang.org/tools/install) for how to install `rustup`,
+which manages installations of Rust and Cargo, the Rust build tool. This project
+uses the nightly features `iterator_try_reduce` and `min_specialization`,
+available on the nightly channel. In a terminal, run
+
+    rustup update
+    rustup default nightly
+
+Then, clone (or just download and unzip) and build this repository:
+
+    git clone https://github.com/stackofbears/arilus.git
+    cd arilus
+    cargo build --release
+
+From here, run `target/release/arilus` to open a repl, or `target/release/arilus
+filepath` to run code from file `filepath`.
 
 # About
 
 This implementation consists of a compiler, bytecode instruction set, and
-virtual machine all written in Rust. In comparison to other array languages,
-this one
+virtual machine. In comparison to other array languages, this one
 
 - uses the ASCII character set (for now?)
 - uses a list-based array model (for now?)
