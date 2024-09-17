@@ -206,6 +206,19 @@ impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&Token> { self.tokens.get(self.token_index) }
     fn skip(&mut self) { self.token_index += 1; }
 
+    fn consume(&mut self, tok: &Token) -> bool {
+        if self.peek() == Some(tok) { self.skip(); true }
+        else { false }
+    }
+
+    fn consume_or_fail(&mut self, tok: &Token) -> Result<(), String> {
+        if self.consume(tok) {
+            Ok(())
+        } else {
+            Err(self.expected(&format!("`{tok}'")))
+        }
+    }
+
     fn expected(&self, expected: &str) -> String {
         match self.peek() {
             Some(Token::Newline) => format!("Unexpected newline; expected {expected}"),
@@ -222,38 +235,26 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_exprs(&mut self) -> Many<Expr> {
-        self.parse_sequenced(Self::parse_expr)
+        self.parse_sequenced(&"expression", Self::parse_expr)
     }
 
     fn parse_elems(&mut self) -> Many<Elem> {
-        self.parse_sequenced(Self::parse_elem)
+        self.parse_sequenced(&"expression", Self::parse_elem)
     }
 
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
-        self.parse_sequenced(Self::parse_pattern_elem)
+        self.parse_sequenced(&"pattern", Self::parse_pattern_elem)
     }
 
-    fn consume(&mut self, tok: &Token) -> bool {
-        if self.peek() == Some(tok) { self.skip(); true }
-        else { false }
-    }
-
-    fn consume_or_fail(&mut self, tok: &Token) -> Result<(), String> {
-        if self.consume(tok) {
-            Ok(())
-        } else {
-            Err(self.expected(&format!("`{tok}'")))
-        }
-    }
-
-    fn parse_sequenced<A, F: Fn(&mut Self) -> Parsed<A>>(&mut self, parse: F) -> Many<A> {
+    fn parse_sequenced<A, F>(&mut self, expected_label: &str, parse: F) -> Many<A>
+    where F: Fn(&mut Self) -> Parsed<A> {
         self.skip_newlines();
         let mut ret = Vec::with_capacity(2);  // arbitrary
         let mut next_required = false;
         loop {
             match parse(self)? {
                 Some(parsed) => ret.push(parsed),
-                None if next_required => return Err(self.expected(&"expression")),
+                None if next_required => return Err(self.expected(expected_label)),
                 _ => break,
             }
 
@@ -288,7 +289,7 @@ impl<'a> Parser<'a> {
         if self.consume(&Token::RightArrow) {
             let pattern = match self.parse_pattern()? {
                 Some(pat) => pat,
-                None => return Err(self.expected(&"pattern after `->'")),
+                None => return Err(self.expected("pattern after `->'")),
             };
             let predicate = self.parse_predicates()?;
             return Ok(Some(Noun::ModifyingAssign(pattern, predicate)));
@@ -306,12 +307,12 @@ impl<'a> Parser<'a> {
                 self.token_index = before_small_noun;
                 let pattern = match self.parse_pattern()? {
                     Some(pattern) => pattern,
-                    None => return Err(self.expected(&"pattern")),
+                    None => return Err(self.expected("pattern")),
                 };
                 assert!(self.consume(&Token::Colon));
                 match self.parse_noun()? {
                     Some(rhs) => LowerAssign(pattern, Box::new(rhs)),
-                    None => return Err(self.expected(&"RHS of noun assignment")),
+                    None => return Err(self.expected("RHS of noun assignment")),
                 }
             }
             None => SmallNoun(small_noun),
@@ -461,7 +462,7 @@ impl<'a> Parser<'a> {
             if self.consume(&Token::RightArrow) {
                 match self.parse_pattern()? {
                     Some(pat) => predicates.push(Predicate::ForwardAssignment(pat)),
-                    None => return Err(self.expected(&"pattern after `->'")),
+                    None => return Err(self.expected("pattern after `->'")),
                 }
             } else if let Some(verb) = self.parse_small_verb()? {
                 predicates.push(Predicate::VerbCall(Verb::SmallVerb(verb), self.parse_small_noun()?))
@@ -495,7 +496,7 @@ impl<'a> Parser<'a> {
             return match small_verb {
                 UpperName(name) => match self.parse_verb()? {
                     Some(rhs) => Ok(Some(UpperAssign(name, Box::new(rhs)))),
-                    None => Err(self.expected(&"RHS of verb assignment")),
+                    None => Err(self.expected("RHS of verb assignment")),
                 }
                 _ => cold_err!("Invalid verb assignment target: {small_verb:?}"),
             }
@@ -557,7 +558,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 let inner = match self.parse_pattern()? {
                     Some(pat) => pat,
-                    None => return Err(self.expected(&"pattern")),
+                    None => return Err(self.expected("pattern")),
                 };
                 self.consume_or_fail(&Token::RParen)?;
                 inner
@@ -654,7 +655,7 @@ impl<'a> Parser<'a> {
         while self.consume(&Token::RightArrow) {
             match self.parse_pattern()? {
                 Some(next_pat) => pat = Pattern::As(Box::new(pat), Box::new(next_pat)),
-                None => return Err(self.expected(&"pattern after `->'")),
+                None => return Err(self.expected("pattern after `->'")),
             }
         }
 
@@ -671,7 +672,7 @@ impl<'a> Parser<'a> {
                            initial_colon && self.consume(&Token::LBracket { after_whitespace: true });
         if !args_present {
             if initial_colon {
-                return Err(self.expected(&"`[' and explicit arguments after `:'"));
+                return Err(self.expected("`[' and explicit arguments after `:'"));
             } else {
                 return Ok(None)
             }
@@ -704,7 +705,7 @@ impl<'a> Parser<'a> {
                     None => {
                         let exprs = self.parse_exprs()?;
                         if exprs.is_empty() {  // TODO remove to enable {} or {[args]} parse
-                            return Err(self.expected(&"expression"))
+                            return Err(self.expected("expression"))
                         }
                         Lambda::Short(exprs)
                     }
@@ -713,7 +714,7 @@ impl<'a> Parser<'a> {
                         loop {
                             let exprs = self.parse_exprs()?;
                             if exprs.is_empty() {  // TODO remove to enable {} or {[args]} parse
-                                return Err(self.expected(&"expression"))
+                                return Err(self.expected("expression"))
                             }
                             cases.push(LambdaCase(explicit_args, exprs));
                             if self.peek() != Some(&Token::ColonAfterWhitespace) { break }
