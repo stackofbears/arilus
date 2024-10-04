@@ -5,6 +5,7 @@ use std::{
 
 use crate::util::*;
 
+#[derive(Debug)]
 pub struct Lexer {
     // Tokens that are never a prefix of another token, other than tokens also in this
     // list. Longer-length tokens appear first so e.g. "->" lexes as "->" and not "-" then ">".

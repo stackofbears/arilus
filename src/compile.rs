@@ -20,6 +20,7 @@ pub fn compile_string(text: &str) -> Res<Vec<Instr>> {
 }
 
 // Invariants: `scopes` non-empty after `new`.
+#[derive(Debug)]
 pub struct Compiler {
     pub code: Vec<Instr>,
     pub lexer: Lexer,
@@ -27,7 +28,7 @@ pub struct Compiler {
     scopes: Vec<HashMap<String, Var>>,
     primitive_identifiers: HashMap<&'static str, PrimFunc>,
 
-    // (code index right after LoadModule, module vars)
+    // (code index of module code (right after LoadModule), module vars)
     //
     // TODO in REPL use, allow cache entries to become dirty if a module or one of its transitive
     // imports changes.
@@ -63,11 +64,16 @@ impl Compiler {
     }
 
     pub fn compile(&mut self, exprs: &[Expr]) -> Res<()> {
+        let start_of_new_code = self.code.len();
         let result = self.compile_block(exprs, true);
-        self.scopes.truncate(1);  // Move back to global scope
-
-        self.eliminate_unconditional_jump_chains();
-
+        if result.is_ok() {
+            self.eliminate_unconditional_jump_chains();
+        } else {
+            // Clean up everything compiled during this invocation.
+            self.scopes.truncate(1);  // Reset to global scope
+            self.code.truncate(start_of_new_code);
+            self.module_cache.retain(|_, (code_index, _)| *code_index < start_of_new_code);
+        }
         result
     }
 
@@ -142,7 +148,9 @@ impl Compiler {
     }
 
     fn parse_file(&self, filepath: &str) -> Res<Vec<Expr>> {
-        let file_contents = fs::read_to_string(filepath).map_err(|err| cold(err.to_string()))?;
+        let file_contents = fs::read_to_string(filepath).map_err(
+            |err| cold(format!("\"{filepath}\": {err}"))
+        )?;
         let tokens = self.lexer.tokenize_to_vec(&file_contents)?;
         parse(&tokens)
     }
@@ -150,8 +158,9 @@ impl Compiler {
     fn compile_with_fresh_scopes(&mut self, exprs: &[Expr]) -> Res<HashMap<String, Var>> {
         let mut saved_scopes = vec![HashMap::new()];
         std::mem::swap(&mut self.scopes, &mut saved_scopes);
-        self.compile(&exprs)?;
+        let res = self.compile(&exprs);
         std::mem::swap(&mut self.scopes, &mut saved_scopes);
+        res?;
         assert!(saved_scopes.len() == 1);
         Ok(saved_scopes.into_iter().next().unwrap())
     }
@@ -173,31 +182,25 @@ impl Compiler {
         self.code.len() - 1
     }
 
-    fn ensure_module_loaded<'a>(&'a mut self, mod_name: &str) -> Res<(usize, &'a HashMap<String, Var>)> {
+    // If this returns Ok, then module_cache.contains_key(mod_name) is guaranteed.
+    fn ensure_module_loaded(&mut self, mod_name: &str) -> Res<()> {
         // This double-lookup is a workaround for problem case 3 in the NLL RFC:
         // https://github.com/rust-lang/rfcs/blob/master/text/2094-nll.md#problem-case-3-conditional-control-flow-across-functions. We
         // could use the entry API, but that would mean a clone of `mod_name`
         // even when it's already in the cache.
-        let (code_index, scope) = if self.module_cache.contains_key(mod_name) {
-            self.module_cache.get(mod_name).unwrap()
-        } else {
-            let mod_start_index = self.push(Instr::Nop);
-            let mod_exprs = self.parse_file(mod_name).inspect_err(
-                |_| self.code.truncate(mod_start_index)
-            )?;
-            let mod_scope = self.compile_with_fresh_scopes(&mod_exprs).inspect_err(
-                |_| self.code.truncate(mod_start_index)
-            )?;
-            let mod_end_index = self.push(Instr::ModuleEnd);
-            self.code[mod_start_index] = Instr::ModuleStart {
-                num_instructions: mod_end_index - mod_start_index
-            };
-            self.module_cache.entry(mod_name.to_string())
-                // The code index, used in LoadModule, points right after
-                // ModuleStart.
-                .or_insert((mod_start_index + 1, mod_scope))
+        if self.module_cache.contains_key(mod_name) { return Ok(()); }
+
+        let mod_start_index = self.push(Instr::Nop);
+        let mod_exprs = self.parse_file(mod_name)?;
+        let mod_scope = self.compile_with_fresh_scopes(&mod_exprs)?;
+        let mod_end_index = self.push(Instr::ModuleEnd);
+        self.code[mod_start_index] = Instr::ModuleStart {
+            num_instructions: mod_end_index - mod_start_index
         };
-        Ok((*code_index, scope))
+
+        // The code index, used in LoadModule, points right after ModuleStart.
+        self.module_cache.insert(mod_name.to_string(), (mod_start_index + 1, mod_scope));
+        Ok(())
     }
 
     fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<usize>, keep: bool) -> Res<()> {
@@ -210,16 +213,12 @@ impl Compiler {
             Expr::Noun(noun) => self.compile_noun(noun, keep),
             Expr::Verb(verb) => self.compile_verb(verb, None, keep),
             Expr::PragmaLoad(mod_name) => {
-                let load_module_index = self.push(Instr::Nop);
+                self.ensure_module_loaded(mod_name)?;
+
                 let mut local_scope = self.scopes.pop().unwrap();
                 let mod_locals_base_slot = next_local_slot(&local_scope);
-                let (code_index, mod_scope) = match self.ensure_module_loaded(mod_name) {
-                    Ok(res) => res,
-                    Err(err) => {
-                        self.scopes.push(local_scope);
-                        return Err(err);
-                    }
-                };
+
+                let (code_index, mod_scope) = self.module_cache.get(mod_name).unwrap();
                 for (name, mut var) in mod_scope.iter().map(|(name, var)| (name.clone(), *var)) {
                     var.slot += mod_locals_base_slot;
                     match var.place {
@@ -228,7 +227,7 @@ impl Compiler {
                     };
                 }
                 self.scopes.push(local_scope);
-                self.code[load_module_index] = Instr::LoadModule { code_index };
+                self.code.push(Instr::LoadModule { code_index: *code_index });
                 self.code.push(Instr::PushLiteralInteger(0));  // TODO return module/unit/something
                 Ok(())
             }
@@ -239,7 +238,7 @@ impl Compiler {
         match verb {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs, arity, true)?;
-                match self.fetch_var_in_current_scope(name) {
+                match self.fetch_name_in_current_scope(name) {
                     NameValue::Prim(prim) => return cold_err!("Invalid assignment to primitive `{prim}'"),
                     NameValue::Var(dst) => {
                         if keep { self.code.push(Instr::Dup) }
@@ -348,7 +347,7 @@ impl Compiler {
                 self.code.push(Instr::Assert);
             }
             Pattern::Wildcard => if !keep { self.code.push(Instr::Pop) }
-            Pattern::Name(name) => match self.fetch_var_in_current_scope(name) {
+            Pattern::Name(name) => match self.fetch_name_in_current_scope(name) {
                 NameValue::Prim(prim) => return cold_err!("Can't use primitive `{prim}' as a pattern"),
                 NameValue::Var(dst) => {
                     if keep { self.code.push(Instr::Dup) }
@@ -407,7 +406,7 @@ impl Compiler {
                 }
                 if keep { self.code.push(Instr::PushPrimFunc { prim }) }
             }
-            SmallVerb::UpperName(name) => match self.fetch_var(name)? {
+            SmallVerb::UpperName(name) => match self.fetch_name(name)? {
                 NameValue::Prim(prim) => {
                     if prim == PrimFunc::Rec && self.scopes.len() < 2 {
                         return cold_err!("Can't use `Rec` outside of an explicit definition")
@@ -445,7 +444,7 @@ impl Compiler {
                     self.code.push(Instr::MakeClosure { num_closure_vars: closure_vars.len() });
                     closure_vars.sort_unstable_by_key(|(_, var)| var.slot);
                     for (name, _) in &closure_vars {
-                        irrefutable!(self.fetch_var(name)?,
+                        irrefutable!(self.fetch_name(name)?,
                                      NameValue::Var(src) => self.code.push(Instr::PushVar { src }));
                     }
                 }
@@ -741,7 +740,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn fetch_var_in_current_scope(&mut self, name: &str) -> NameValue {
+    fn fetch_name_in_current_scope(&mut self, name: &str) -> NameValue {
         if let Some(prim) = self.primitive_identifiers.get(name) {
             return NameValue::Prim(*prim)
         }
@@ -757,7 +756,7 @@ impl Compiler {
 
     // If name isn't defined in the current scope, updates all intervening
     // scopes to include it in their closure environment.
-    fn fetch_var(&mut self, name: &str) -> Res<NameValue> {
+    fn fetch_name(&mut self, name: &str) -> Res<NameValue> {
         if let Some(prim) = self.primitive_identifiers.get(name) {
             return Ok(NameValue::Prim(*prim))
         }
@@ -787,7 +786,7 @@ impl Compiler {
                 self.compile_if(&*then, &*else_, keep)?;
             }
             LowerName(name) => {
-                match self.fetch_var(name)? {
+                match self.fetch_name(name)? {
                     NameValue::Prim(prim) => {
                         if prim == PrimFunc::Rec && self.scopes.len() < 2 {
                             return cold_err!("Can't use `rec` outside of an explicit definition")

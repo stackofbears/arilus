@@ -30,6 +30,7 @@ pub enum Instr {
     Nop,
 
     // Followed by the module's instructions (`num_instructions` instructions, including ModuleEnd).
+    // If encountered in execution, the machine simply skips the module's body.
     ModuleStart { num_instructions: usize },
 
     // `code_index` points right after the ModuleStart of the module to load
@@ -365,7 +366,7 @@ impl PrimFunc {
             PrimVerb::GreaterThanColon => if monad { Desc } else { Max }
             PrimVerb::GreaterThanEquals => if monad { fail() } else { GreaterThanEqual }
             PrimVerb::Question => if monad { Where } else { Find }
-            PrimVerb::QuestionColon => if monad { fail() } else { FindAll }
+            PrimVerb::QuestionColon => if monad { fail() } else { FindSubseq }
             PrimVerb::P => if monad { Identity } else { IdentityLeft }
             PrimVerb::Q => if monad { Identity } else { IdentityRight }
             PrimVerb::DoublePipe => fail(),
