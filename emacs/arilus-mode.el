@@ -38,7 +38,9 @@
 
 (defconst arilus-syntax-table
   (let ((table (make-syntax-table)))
+    ;; word
     (modify-syntax-entry ?_ "w" table)
+    ;; punctuation
     (modify-syntax-entry ?$ "." table)
     (modify-syntax-entry ?% "." table)
     table))

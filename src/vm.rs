@@ -1293,13 +1293,20 @@ impl Mem {
 
     // Args should be on the stack in reverse order.
     fn progressive_index(&mut self, x: &Val, arg_count: usize) -> Res<Val> {
-        if arg_count == 0 { return Ok(x.clone()) }
-        let arg = self.pop();
+        let ret = self.progressive_index_loop(x, arg_count, 0);
+        self.stack.truncate(self.stack.len() - arg_count);
+        ret
+    }
+
+    // `i` indexes from the top of the stack, so i=0 is stack.top().
+    fn progressive_index_loop(&mut self, x: &Val, arg_count: usize, i: usize) -> Res<Val> {
+        if i == arg_count { return Ok(x.clone()); }
+        let arg = self.stack[self.stack.len() - 1 - i].clone();
         for_each_atom_retaining_shape(
             arg,
             |atom| {
                 let elem = self.prim_index(&x, atom)?;
-                self.progressive_index(&elem, arg_count - 1)
+                self.progressive_index_loop(&elem, arg_count, i + 1)
             }
         )
     }
