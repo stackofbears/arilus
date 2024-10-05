@@ -977,12 +977,18 @@ impl Mem {
             Val::Int(i) => write_or!(out, "{i}")?,
             Val::Float(float) => write_or!(out, "{float}")?,
             Val::U8s(cs) => match std::str::from_utf8(cs) {  // TODO unicode
-                Ok(s) => write_or!(out, "{s}")?,
+                Ok(s) => if s.len() == 1 {
+                    write_or!(out, "[{s}]")?
+                } else {
+                    write_or!(out, "{s}")?
+                }
                 Err(err) => return cold(Err(err.to_string())),
             }
             Val::I64s(is) => {
                 if is.is_empty() {
                     write_or!(out, "[]")
+                } else if is.len() == 1 {
+                    write_or!(out, "[{}]", is[0])
                 } else {
                     parenthesized_if(prec >= AdverbOperand, out, |out| {
                         write_or!(out, "{}", is[0])?;
@@ -994,6 +1000,8 @@ impl Mem {
             Val::F64s(fs) => {
                 if fs.is_empty() {
                     write_or!(out, "[]")
+                } else if fs.len() == 1 {
+                    write_or!(out, "[{}]", fs[0])
                 } else {
                     parenthesized_if(prec >= AdverbOperand, out, |out| {
                         write_or!(out, "{}", fs[0])?;
@@ -1568,6 +1576,8 @@ fn prim_take(x: Val, y: &Val) -> Res<Val> {
 }
 
 fn take_with_i64(x: Val, count: i64) -> Res<Val> {
+    if x.len().is_some_and(|len| len == 0) { return Ok(x) }
+
     fn take_iter_from_slice<A: Clone>(count: i64, xs: &[A]) -> impl Iterator<Item=A> + '_ {
         let (start, count) = if count < 0 {
             let abs_count = (-count) as usize;
