@@ -43,9 +43,8 @@ pub enum SmallNoun {
 
     Constant(Literal),
 
-    // The underscore is parsed like an adverb, but unlike other adverbs, it
-    // produces something parsed like a noun - that's the whole point - so it's
-    // treated specially here.
+    // The underscore is parsed like an adverb, but unlike other adverbs, it produces something
+    // parsed like a noun - that's the whole point - so it's treated specially here.
     Underscored(Box<SmallExpr>),
 
     // [a; b; c] or a b c
@@ -376,9 +375,7 @@ impl<'a> Parser<'a> {
             }
             Some(&Token::IfLower) => {
                 self.skip();
-
                 self.consume_or_fail(&Token::LParen)?;
-
                 match <[Expr; 3]>::try_from(self.parse_exprs()?) {
                     Ok([cond, then, else_]) => {
                         self.consume_or_fail(&Token::RParen)?;
@@ -421,10 +418,9 @@ impl<'a> Parser<'a> {
                 Constant(literal)
             }
             Some(Token::LParen) => {
-                // TODO backtracking can be inefficient if we have to go deep
-                // repeatedly. Instead we can look ahead at the tokens of the
-                // last expression in the block, or refactor to accept parsing a
-                // small noun *or* small verb here.
+                // TODO backtracking can be inefficient if we have to go deep repeatedly. Instead we
+                // can look ahead at the tokens of the last expression in the block, or refactor to
+                // accept parsing a small noun *or* small verb here.
                 let reset = self.token_index;
                 self.skip();
                 let mut exprs = self.parse_exprs()?;
@@ -564,13 +560,11 @@ impl<'a> Parser<'a> {
                 inner
             }
 
-            // We know we're not looking at `(' here. Note that we don't allow
-            // (verb)->pattern as a view pattern because it introduces parsing
-            // ambiguities; we don't know whether the `(' means (verb)->pattern
-            // or (pattern) until we've consumed it and tried to parse
-            // both. It's possible to try both and collect the errors if they
-            // fail, but that's more complicated than anything we do in parsing
-            // now.
+            // We know we're not looking at `(' here. Note that we don't allow (verb)->pattern as a
+            // view pattern because it introduces parsing ambiguities; we don't know whether the `('
+            // means (verb)->pattern or (pattern) until we've consumed it and tried to parse
+            // both. It's possible to try both and collect the errors if they fail, but that's more
+            // complicated than anything we do in parsing now.
             _ => {
                 let reset = self.token_index;
                 match self.parse_small_verb()? {
@@ -736,19 +730,17 @@ impl<'a> Parser<'a> {
             }
             Some(&Token::PrimAdverb(prim_adverb)) => {
                 self.skip();
-                // TODO: we have a problem; x .(func...) y parses as x
-                // .((func...) y), a monadic invocation of a .-derived verb
-                // whose operand is a stranded array of two elements
+                // TODO: we have a problem; x .(func...) y parses as x .((func...) y), a monadic
+                // invocation of a .-derived verb whose operand is a stranded array of two elements
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(adverb_operand) => PrimAdverbCall(prim_adverb, Box::new(adverb_operand)),
                     None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
                 }
             }
             Some(Token::LParen) => {
-                // TODO backtracking can be inefficient if we have to go deep
-                // repeatedly. Instead we can look ahead at the tokens of the
-                // last expression in the block, or refactor to accept parsing a
-                // small noun *or* small verb here.
+                // TODO backtracking can be inefficient if we have to go deep repeatedly. Instead we
+                // can look ahead at the tokens of the last expression in the block, or refactor to
+                // accept parsing a small noun *or* small verb here.
                 let reset = self.token_index;
                 self.skip();
                 let mut exprs = self.parse_exprs()?;
