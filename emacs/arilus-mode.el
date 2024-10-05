@@ -78,6 +78,7 @@
         ("\"\\([^\"\\\\]\\|\\\\.\\)*\"" . 'font-lock-string-face)))
 
 (define-derived-mode arilus-mode fundamental-mode "arilus-mode"
-  "major mode for editing Arilus code."
+  "Major mode for editing Arilus code."
   (set-syntax-table arilus-syntax-table)
-  (setq font-lock-defaults '(arilus-mode-fontlock)))
+  (setq font-lock-defaults '(arilus-mode-fontlock))
+  (setq comment-start "\\ "))
