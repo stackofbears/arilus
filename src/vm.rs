@@ -109,11 +109,10 @@ impl Mem {
                 Assert => {
                     let val = self.pop();
                     if val.is_falsy() {
-                        let frame = self.current_frame();
-                        match frame.next_header {
+                        match self.current_frame_mut().next_header.take() {
                             None => return cold_err!("Assertion failed"),  // TODO better (+custom) messages
                             Some(next_header_index) => {
-                                self.locals_stack.truncate(frame.locals_start);
+                                self.pop_locals();
                                 ip = next_header_index;
                             }
                         }
@@ -397,8 +396,7 @@ impl Mem {
                     let success = actual_count.is_some_and(|actual| actual == count);
                     if !success {
                         self.push(x);
-                        let frame = self.current_frame();
-                        match frame.next_header {
+                        match self.current_frame_mut().next_header.take() {
                             // Either we're not in a header, or this is the function's last (or
                             // only) case.
                             None => return cold_err!(
@@ -407,7 +405,7 @@ impl Mem {
                             ),
                             // There's another case to try.
                             Some(next_header_index) => {
-                                self.locals_stack.truncate(frame.locals_start);
+                                self.pop_locals();
                                 ip = next_header_index;
                             }
                         }
@@ -421,14 +419,13 @@ impl Mem {
 
                     let success = actual_count.is_some_and(|actual| actual >= min_expected_count);
                     if !success {
-                        let frame = self.current_frame();
-                        match frame.next_header {
+                        match self.current_frame_mut().next_header.take() {
                             None => return cold_err!(
                                 "Array unpacking failed; expected at least {} elements, got {}",
                                 min_expected_count, to_string_or(actual_count, "atom")
                             ),
                             Some(next_header_index) => {
-                                self.locals_stack.truncate(frame.locals_start);
+                                self.pop_locals();
                                 ip = next_header_index;
                             }
                         }
@@ -562,8 +559,9 @@ impl Mem {
         self.stack_frames.last_mut().unwrap()
     }
 
+    #[inline]
     fn pop_locals(&mut self) {
-        let frame = self.current_frame_mut();
+        let frame = self.current_frame();
         let locals_start = frame.locals_start;
         self.locals_stack.truncate(locals_start);
     }
