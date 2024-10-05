@@ -1,5 +1,3 @@
-;; TODO come up with a name for the language so we can name all this properly
-
 ;;; Code:
 
 (defgroup arilus-faces nil "Faces for arilus-mode")
