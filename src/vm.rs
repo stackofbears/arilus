@@ -109,13 +109,8 @@ impl Mem {
                 Assert => {
                     let val = self.pop();
                     if val.is_falsy() {
-                        match self.current_frame_mut().next_header.take() {
-                            None => return cold_err!("Assertion failed"),  // TODO better (+custom) messages
-                            Some(next_header_index) => {
-                                self.pop_locals();
-                                ip = next_header_index;
-                            }
-                        }
+                        // TODO better (+custom) messages
+                        ip = self.jump_to_next_case_or_fail(|| "Assertion failed".to_string())?;
                     }
                 }
                 LoadModule { code_index } => {
@@ -396,19 +391,10 @@ impl Mem {
                     let success = actual_count.is_some_and(|actual| actual == count);
                     if !success {
                         self.push(x);
-                        match self.current_frame_mut().next_header.take() {
-                            // Either we're not in a header, or this is the function's last (or
-                            // only) case.
-                            None => return cold_err!(
-                                "Array unpacking failed; expected {count} elements, got {}",
-                                to_string_or(actual_count, "atom")
-                            ),
-                            // There's another case to try.
-                            Some(next_header_index) => {
-                                self.pop_locals();
-                                ip = next_header_index;
-                            }
-                        }
+                        ip = self.jump_to_next_case_or_fail(
+                            || format!("Array unpacking failed; expected {count} elements, got {}",
+                                       to_string_or(actual_count, "atom"))
+                        )?;
                     }
                 }
                 SplatReverseWithSplice { prefix_count, suffix_count, keep_splice } => {
@@ -419,16 +405,10 @@ impl Mem {
 
                     let success = actual_count.is_some_and(|actual| actual >= min_expected_count);
                     if !success {
-                        match self.current_frame_mut().next_header.take() {
-                            None => return cold_err!(
-                                "Array unpacking failed; expected at least {} elements, got {}",
-                                min_expected_count, to_string_or(actual_count, "atom")
-                            ),
-                            Some(next_header_index) => {
-                                self.pop_locals();
-                                ip = next_header_index;
-                            }
-                        }
+                        ip = self.jump_to_next_case_or_fail(
+                            || format!("Array unpacking failed; expected at least {} elements, got {}",
+                                       min_expected_count, to_string_or(actual_count, "atom"))
+                        )?;
                     } else {
                         let x = self.pop();  // Success: consume the value.
                         let len = actual_count.unwrap_or(1);
@@ -564,6 +544,16 @@ impl Mem {
         let frame = self.current_frame();
         let locals_start = frame.locals_start;
         self.locals_stack.truncate(locals_start);
+    }
+
+    fn jump_to_next_case_or_fail<F: FnOnce() -> String>(&mut self, error_message: F) -> Res<usize> {
+        match self.current_frame_mut().next_header.take() {
+            None => cold(Err(error_message())),
+            Some(next_header_index) => {
+                self.pop_locals();
+                Ok(next_header_index)
+            }
+        }
     }
 
     fn load(&mut self, var: Var) -> Val {
