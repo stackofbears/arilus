@@ -1,6 +1,11 @@
 \ This is partially a staging ground for new primitives, since it's easier to
 \ implement them here than in rust.
 
+noInts: [0]$1
+noFloats: [0.0]$1
+noChars: ""
+noVals: [[]]$1
+
 HasAny: `In \|
 AnyIn: ~HasAny
 
