@@ -601,9 +601,13 @@ impl Mem {
 
     // Returns None, meaning `calling` has been called and its return value is on the stack, or
     // Some(code_index), meaning the caller should jump directly to code_index.
+<<<<<<< Updated upstream
     fn call_or_get_jump_target(
         &mut self, ip: usize, calling: Val, arg_count: usize
     ) -> Res<Option<usize>> {
+=======
+    fn call_or_get_jump_target(&mut self, ip: usize, calling: Val, arg_count: usize) -> Result<Option<usize>, String> {
+>>>>>>> Stashed changes
         match self.set_up_call(calling, arg_count)? {
             None => Ok(None),
             Some((code_index, closure_env)) =>
