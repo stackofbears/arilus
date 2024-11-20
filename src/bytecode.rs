@@ -2,10 +2,9 @@ use std::fmt;
 
 use crate::lex::*;
 
-<<<<<<< Updated upstream
 // The machine has two stacks:
 //   - A value stack: values are pushed and popped to evaluate expressions.
-//   - A function call stack: frames contain locals and a pointer to the closure environment
+//   - A function call stack: stack frames contain locals and a pointer to the closure environment
 //
 // "The stack" refers to the value stack. When a comment supposes the top of the stack is [a, b, c],
 // the values are sorted from deepest to shallowest, so "c" is on top of the stack.
@@ -14,31 +13,21 @@ use crate::lex::*;
 // instruction is executing, `ip` already points to the next instruction, so jump offsets are
 // actually relative to the instruction *after* the jump.
 //
-// TODO explain how calls + headers work
-=======
-// The machine has
-//   - An value stack: values (data and functions) are pushed onto the stack and popped to call functions
-//   - A function call stack: stack frames contain locals and a pointer to the closure environment
->>>>>>> Stashed changes
-//
 // When you add an instruction that accesses a Var, update the following functions in compile.rs:
 //   - `accessed`
 //   - `decrement_locals`
 //   - `mark_last_local_uses`
 //
-<<<<<<< Updated upstream
-// TODO repr(c) and store parameters inline (i.e. [i32], decode instruction to enum, read parameters
-// afterward)
-=======
 // When you add an instruction that jumps or terminates a scope (like MakeClosure), update
 // `mark_last_local_uses`.
+//
+// TODO explain how calls + headers work
 //
 // TODO the current instruction set is very ad hoc, since we just add new instructions as needed to
 // support new cases. Unify things into a smaller coherent system.
 // 
 // TODO repr(c) and store parameters inline (i.e. [i32], decode instructions to enum, read
 // parameters afterward)
->>>>>>> Stashed changes
 #[derive(Debug, Clone, Copy)]
 pub enum Instr {
     // Proceed to the next instruction. Generally speaking, Nops are a waste of space, but it can be
