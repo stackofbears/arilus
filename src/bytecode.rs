@@ -189,10 +189,6 @@ pub enum Instr {
     // succeeds, the current marker is popped and all its marked stack values are popped.
     ArgCheckEq { count: usize },
 
-    // Like ArgCheckEq, but checks that the function has been provided *at least* `count` args and
-    // leaves the current stack marker where it is.
-    ArgCheckGe { count: usize },
-
     // Pop the top element of the stack: if its first atom is 0, throw an error or move to the next
     // header.
     Assert,

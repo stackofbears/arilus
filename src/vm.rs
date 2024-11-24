@@ -177,7 +177,6 @@ impl Mem {
                     let arg_count = self.current_frame().arg_count;
                     let enter_case = match self.code[ip] {
                         ArgCheckEq { count } => arg_count == count,
-                        ArgCheckGe { count } => arg_count >= count,
                         _ => false,
                     };
 
@@ -212,18 +211,6 @@ impl Mem {
                         return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
                     }
                     let args_start = self.pop_marker();
-                    self.stack.truncate(args_start + arg_count);
-                }
-                ArgCheckGe { count } => {
-                    let arg_count = self.current_frame().arg_count;
-                    if !(arg_count >= count) {
-                        // We don't need to try jumping to the next case on failure because this
-                        // instruction is only executed directly if this is the last or only case;
-                        // otherwise, Header would have taken care of it and skipped this
-                        // instruction.
-                        return cold_err!("Arity mismatch; expected at least {count} args, got {arg_count}")
-                    }
-                    let args_start = self.peek_marker();
                     self.stack.truncate(args_start + arg_count);
                 }
                 CollectArgs { suffix_count, keep } => {

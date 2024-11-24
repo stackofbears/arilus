@@ -134,7 +134,7 @@ pub struct LambdaCase(pub ExplicitArgs, pub Vec<Expr>);
 // bracketed array literal; it can start with whitespace, parenthesize the array, or use a stranded
 // array instead.
 #[derive(Debug, Clone)]
-pub struct ExplicitArgs(pub Vec<PatternElem>);
+pub struct ExplicitArgs(pub Vec<Pattern>);
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -239,6 +239,10 @@ impl<'a> Parser<'a> {
 
     fn parse_elems(&mut self) -> Many<Elem> {
         self.parse_sequenced(&"expression", Self::parse_elem)
+    }
+
+    fn parse_patterns(&mut self) -> Many<Pattern> {
+        self.parse_sequenced(&"pattern", Self::parse_pattern)
     }
 
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
@@ -673,7 +677,7 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_newlines();
-        let patterns = self.parse_pattern_elems()?;
+        let patterns = self.parse_patterns()?;
         self.consume_or_fail(&Token::RBracket)?;
 
         Ok(Some(ExplicitArgs(patterns)))

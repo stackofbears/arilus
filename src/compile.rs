@@ -586,34 +586,13 @@ impl Compiler {
             };
 
             let arg_check_index = self.push(Instr::Nop);
-            let mut splicing = false;
-            for i in 0..pats.len() {
-                match &pats[i] {
-                    PatternElem::Pattern(pat) => self.compile_unpacking_assignment(pat, false)?,
-                    PatternElem::Subarray(name) if !splicing => {
-                        splicing = true;
-                        let suffix_count = (pats.len() - i - 1) as u32;
-                        match name {
-                            Some(name) => {
-                                self.code.push(Instr::CollectArgs { suffix_count, keep: true });
-                                self.compile_unpacking_assignment(&Pattern::Name(name.clone()), false)?;
-                            }
-                            None => self.code.push(Instr::CollectArgs { suffix_count, keep: false }),
-                        }
-                    }
-                    PatternElem::Subarray(_) => return cold_err!("Only one `..' parameter is allowed per function parameter list."),
-                }
+            for pat in pats {
+                self.compile_unpacking_assignment(pat, false)?;
             }
 
-            self.code[arg_check_index] = if splicing {
-                Instr::ArgCheckGe { count: pats.len() - 1 }  // The subarray parameter can be empty.
-            } else {
-                Instr::ArgCheckEq { count: pats.len() }
-            };
+            self.code[arg_check_index] = Instr::ArgCheckEq { count: pats.len() };
 
-            if header_index.is_some() || splicing {
-                // If we're splicing, we need HeaderPassed to pop the stack
-                // marker (ArgCheckGe won't pop it like ArgCheckEq does).
+            if header_index.is_some() {
                 self.code.push(Instr::HeaderPassed);
             }
 
