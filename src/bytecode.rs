@@ -1,6 +1,8 @@
-use std::fmt;
+use std::fmt::{self, Write};
+use std::num::NonZeroU64;
 
 use crate::lex::*;
+use crate::util::{Res, cold, cold_err, write_or};
 
 // The machine has two stacks:
 //   - A value stack: values are pushed and popped to evaluate expressions.
@@ -64,6 +66,8 @@ pub enum Instr {
 
     // Begin executing a function header. If it fails before running HeaderPassed, jump to (ip +
     // `next_case_offset`), where `ip` points to the instruction after this Header instruction.
+    //
+    // TODO put Header after ArgCheck?
     Header { next_case_offset: i64 },
 
     // Indicates that the function call's arguments conform to the current header. Splat failures
@@ -131,6 +135,8 @@ pub enum Instr {
     // pops f, so the new top of stack is [xN, .. x2, x1], and then calls f.
     CallMarked,
 
+    CallSpec { arg_spec: ArgSpec },
+
     // Calls `var` on the marked arguments, which are on the stack in reverse order.
     CallOnArgs { var: Var },
 
@@ -185,15 +191,257 @@ pub enum Instr {
     // whole array.
     SplatReverseWithSplice { prefix_count: u32, suffix_count: u32, keep_splice: bool },
 
+    // Checks that the provided args satisfy `spec`; that is, that the arities match and every
+    // provided arg is expected by the case. Expected args might *not* be provided, which resulds in
+    // a partial application.
+    //
+    // If the check fails: if this instruction was run directly, it throws an error. If was run as
+    // part of Header, the case will be skipped.
+    ArgCheck { spec: ArgSpec },
+
     // Checks that the function has been provided `count` args. If this fails, throw an error; if it
     // succeeds, the current marker is popped and all its marked stack values are popped.
+    //
+    // If the check fails: if this instruction was run directly, it throws an error. If was run as
+    // part of Header, the case will be skipped.
     ArgCheckEq { count: usize },
 
     // Pop the top element of the stack: if its first atom is 0, throw an error or move to the next
     // header.
     Assert,
 }
-               
+
+// An ArgSpec describes the arrangement of arguments expected by a particular function case, or the
+// actual arrangement of arguments provided by a call.
+//
+// Function parameter lists can overload on partial application, as in {[;y] ...}. This can be used,
+// for example, to do some preprocessing before returning a function to take the next argument. The
+// case is accessed through the partial application syntax: F[;y] or (F y).
+// 
+// The index - from right to left - of the leftmost 1 bit is the total number of arguments expected
+// by this case (or supplied by a call). To the right of that, a bit is 1 if the corresponding
+// parameter is expected to be supplied (or is actually supplied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArgSpec(NonZeroU64);
+
+impl ArgSpec {
+    // Only takes the first 63 elements of `args_to_expect`.
+    // TODO const fn version
+    pub fn new(args_to_expect: impl IntoIterator<Item=bool>) -> Self {
+        let mut val: u64 = 1;
+        for arg in args_to_expect.into_iter().take(63) {
+            val = (val << 1) | arg as u64;
+        }
+        Self(NonZeroU64::new(val).unwrap())
+    }
+
+    // Precondition: `arity` <= 63.
+    // TODO const fn version
+    #[inline]
+    pub const fn saturated(arity: u32) -> Self {
+        let val = (1 << (arity as u64 + 1)) - 1;
+        assert!(val != 0);  // This is only possible if arity > 63
+        Self(unsafe { NonZeroU64::new_unchecked(val) })
+    }
+
+    // The ArgSpec format is intuitive so it's perfectly readable to compare against a raw bit
+    // pattern. I like to dispatch like so, separating out the arity bit with an underscore:
+    //
+    //     match arg_spec.raw() {
+    //         0b1_11 => /* two args, both supplied */
+    //         0b1_011 => /* three args, first one missing, last two supplied */
+    //         ...
+    //     }
+    #[inline]
+    pub fn raw(self) -> u64 { self.0.get() }
+
+    #[inline]
+    pub fn is_saturated(self) -> bool {
+        let x = self.0.get();
+        // This would also be true for 0, but x is nonzero.
+        x & (x + 1) == 0
+    }
+
+    #[inline]
+    pub fn is_saturated_at_arity(self, arity: u32) -> bool {
+        self.0.get() + 1 == 1 << (arity + 1) as u64
+    }
+
+    // Arity is at most 63.
+    #[inline]
+    pub fn arity(self) -> u32 {
+        self.0.ilog2()
+    }
+
+    // MSB is never set.
+    #[inline]
+    pub fn mask(self) -> u64 {
+        self.arity_and_mask().1
+    }
+
+    // Arity is at most 63. MSB in mask is never set.
+    #[inline]
+    pub fn arity_and_mask(self) -> (u32, u64) {
+        let arity = self.arity();
+        let mask = self.0.get() ^ (1 << arity);
+        (arity, mask)
+    }
+
+    pub fn has_no_args(self) -> bool {
+        self.0.is_power_of_two()  // Only the arity bit is set
+    }
+
+    // Note: Case [x;y] is satisfied by F[;y], simply resulting in {[next] F[next;y]}. Cases to
+    // invoke on partial application should be listed before their fully-applied counterparts.
+    #[inline]
+    pub fn is_satisfied_by(self, provided: Self) -> bool {
+        fn msb_equal(a: u64, b: u64)    -> bool { (a ^ b) <= (a & b) }
+        fn all_bits_gte(a: NonZeroU64, b: NonZeroU64) -> bool { (a | b) == a }
+
+        let arities_equal = msb_equal(self.0.get(), provided.0.get());
+        let all_provided_args_are_expected = all_bits_gte(self.0, provided.0);
+        arities_equal && all_provided_args_are_expected
+    }
+
+    #[inline]
+    pub fn count_args(self) -> u32 {
+        self.0.get().count_ones() - 1
+    }
+
+    #[inline]
+    fn missing_args(self) -> u32 {
+        self.arity() - self.count_args()
+    }
+
+    // Returns None if `more.arity()` != self.missing_args()`
+    pub fn apply_more(self, more: Self) -> Result<Self, ArityMismatch> {
+        {
+            let expected = self.missing_args();
+            let actual = more.arity();
+            if actual != expected {
+                return Err(ArityMismatch { expected, actual });
+            }
+        }
+
+        let mut current = self.mask();
+        let mut more_mask = more.mask();
+
+        // TODO try looping over current's 0-bits instead of 1-bits (this way you can shift
+        //      more_mask by several places at once, also doesn't cause repeated work over
+        //      multiple applications)
+        while current != 0 {
+            let b = current & current.wrapping_neg();  // Isolate current's rightmost 1-bit
+            let i = b.wrapping_neg();  // Set bits to its left, unset bits to its right
+            more_mask += i & more_mask;  // Shift m's bits at or left of that bit left by one (add
+                                         // that prefix of more_mask to itself)
+            current ^= b;  // Clear current's rightmost 1-bit
+        }
+        Ok(Self(self.0 | more_mask))
+    }
+
+    // "pushed" instead of "push" to emphasize this doesn't update self in-place.
+    // Panics if the result would exceed 63 args.
+    pub fn pushed(self, next_arg: bool) -> Self {
+        match NonZeroU64::new(self.0.get() << 1 | next_arg as u64) {
+            Some(new) => ArgSpec(new),
+            None => panic!("ArgSpec: Too many args (64). Max is 63."),
+        }
+    }
+
+    pub fn describe(self, w: &mut impl fmt::Write) -> Res<()> {
+        struct ExampleVariableNames {
+            current: u8,
+            suffix: u32,
+        }
+        impl ExampleVariableNames {
+            fn new() -> Self {
+                Self { current: 97, suffix: 0 }
+            }
+
+            fn write_name(&mut self, w: &mut impl fmt::Write) -> Res<()> {
+                write_or!(w, "{}", char::from(self.current))?;
+                if self.suffix != 0 {
+                    write_or!(w, "{}", self.suffix)?;
+                }
+                self.skip_name();
+                Ok(())
+            }
+
+            fn skip_name(&mut self) {
+                if char::from(self.current) == 'z' {
+                    self.current = 97;
+                    self.suffix += 1;
+                } else {
+                    self.current += 1;
+                }
+            }
+        }
+
+        write_or!(w, "[")?;
+        let mut names = ExampleVariableNames::new();
+        for has_arg in self {
+            if has_arg {
+                names.write_name(w)?;
+            }
+            write_or!(w, ";")?;
+        }
+        write_or!(w, "]")
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ArityMismatch {
+    pub expected: u32,
+    pub actual: u32,
+}
+
+// impl Index<u32> for ArgSpec {
+//     type Output = bool;
+//     fn index(&self, index: u32) -> &bool {
+//         let arity = self.arity;
+//         if index >= arity {
+//             panic!("Index out of bounds: argument {index} vs arity {arity}");
+//         }
+//         let index_from_right = arity - index - 1;
+//         self.0 & (1 << index_from_right) != 0
+//     }
+// }
+
+impl IntoIterator for ArgSpec {
+    type IntoIter = ArgSpecIter;
+    type Item = <ArgSpecIter as Iterator>::Item;
+    fn into_iter(self) -> Self::IntoIter {
+        ArgSpecIter { remaining_args: self.arity(), spec: self }
+    }
+}
+
+impl fmt::Display for ArgSpec {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let bits = format!("{:b}", self.0);
+        let mask = &bits[1..];
+        let arity = mask.len();
+        write!(f, "Arity {arity}: {mask}")
+    }
+}        
+
+pub struct ArgSpecIter {
+    remaining_args: u32,
+    spec: ArgSpec,
+}
+
+impl Iterator for ArgSpecIter {
+    type Item = bool;
+    fn next(&mut self) -> Option<bool> {
+        if self.remaining_args == 0 { return None; }
+        self.remaining_args -= 1;
+        Some(self.spec.0.get() & (1 << self.remaining_args) != 0)
+    }
+}
+
+impl ExactSizeIterator for ArgSpecIter {
+    fn len(&self) -> usize { self.remaining_args as usize }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place { Local, ClosureEnv }
 
@@ -218,6 +466,7 @@ impl fmt::Display for Instr {
             Instr::CallPrimFunc1 { prim } => write!(f, "CallPrimFunc1({prim})"),
             Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),
             Instr::CallPrimAdverb { prim } => write!(f, "CallPrimAdverb({prim})"),
+            Instr::ArgCheck { spec } => write!(f, "ArgCheck({spec})"),
             Instr::LiteralBytes { bytes } => {
                 let as_str = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
                 write!(f, "LiteralBytes({as_str:?})")
@@ -335,45 +584,68 @@ impl std::fmt::Display for PrimFunc {
 }
 
 impl PrimFunc {
-    pub fn from_verb(verb: PrimVerb, monad: bool) -> Self {
-        use PrimFunc::*;
-        let fail = || {
-            todo!("{} `{verb}'", if monad { "monadic" } else { "dyadic" })
+    // Never returns PrimFunc::Verb(_)
+    pub fn resolve_at_arity(verb: PrimVerb, arity: u32) -> Res<Self> {
+        const VERB_COUNT: usize = std::mem::variant_count::<PrimVerb>();
+        static PRIMITIVE_VERB_CASES: [[Option<PrimFunc>; 3]; VERB_COUNT] = {
+            let mut cases = [[None; 3]; VERB_COUNT];
+            cases[PrimVerb::At    as usize]             = [None, Some(GroupIndices), Some(Index)];
+            cases[PrimVerb::Comma as usize]             = [None, Some(Ravel),        Some(Append)]; 
+            cases[PrimVerb::Minus as usize]             = [None, Some(Neg),          Some(Sub)];
+            cases[PrimVerb::Slash as usize]             = [None, Some(Ints),         Some(Div)];
+            cases[PrimVerb::Hash as usize]              = [None, Some(Length),       Some(Take)];
+            cases[PrimVerb::Caret as usize]             = [None, Some(Inits),        Some(Pow)];
+            cases[PrimVerb::Pipe as usize]              = [None, Some(Rev),          Some(Or)];
+            cases[PrimVerb::Dollar as usize]            = [None, Some(Tails),        Some(Drop)];
+            cases[PrimVerb::LessThan as usize]          = [None, Some(Sort),         Some(LessThan)];
+            cases[PrimVerb::LessThanColon as usize]     = [None, Some(Asc),          Some(Min)];
+            cases[PrimVerb::GreaterThan as usize]       = [None, Some(SortDesc),     Some(GreaterThan)];
+            cases[PrimVerb::GreaterThanColon as usize]  = [None, Some(Desc),         Some(Max)];
+            cases[PrimVerb::Question as usize]          = [None, Some(Where),        Some(Find)];
+            cases[PrimVerb::P as usize]                 = [None, Some(Identity),     Some(IdentityLeft)];
+            cases[PrimVerb::Q as usize]                 = [None, Some(Identity),     Some(IdentityRight)];
+
+            cases[PrimVerb::Bang as usize]              = [None, Some(Not),          None];
+
+            cases[PrimVerb::CommaColon as usize]        = [None, None,               Some(Windows)];
+            cases[PrimVerb::DotColon as usize]          = [None, None,               Some(Chunks)];
+            cases[PrimVerb::Plus as usize]              = [None, None,               Some(Add)];
+            cases[PrimVerb::MinusColon as usize]        = [None, None,               Some(Remove)];
+            cases[PrimVerb::Asterisk as usize]          = [None, None,               Some(Mul)];
+            cases[PrimVerb::DoubleSlash as usize]       = [None, None,               Some(IntDiv)];
+            cases[PrimVerb::Percent as usize]           = [None, None,               Some(Mod)];
+            cases[PrimVerb::Equals as usize]            = [None, None,               Some(Equal)];
+            cases[PrimVerb::EqualBang as usize]         = [None, None,               Some(NotEqual)];
+            cases[PrimVerb::DoubleEquals as usize]      = [None, None,               Some(Match)];
+            cases[PrimVerb::HashColon as usize]         = [None, None,               Some(Copy)];
+            cases[PrimVerb::GreaterThanEquals as usize] = [None, None,               Some(GreaterThanEqual)];
+            cases[PrimVerb::LessThanEquals as usize]    = [None, None,               Some(LessThanEqual)];
+            cases[PrimVerb::QuestionColon as usize]     = [None, None,               Some(FindSubseq)];
+            cases
         };
-        match verb {
-            PrimVerb::At => if monad { GroupIndices } else { Index }
-            PrimVerb::Comma => if monad { Ravel } else { Append }
-            PrimVerb::CommaColon => if monad { fail() } else { Windows }
-            PrimVerb::DotColon => if monad { fail() }  else { Chunks }
-            PrimVerb::Plus => if monad { fail() } else { Add }
-            PrimVerb::Minus => if monad { Neg } else { Sub }
-            PrimVerb::MinusColon => if monad { fail() } else { Remove }
-            PrimVerb::Asterisk => if monad { fail() } else { Mul }
-            PrimVerb::Slash => if monad { Ints } else { Div }
-            PrimVerb::DoubleSlash => if monad { fail() } else { IntDiv }
-            PrimVerb::Percent => if monad { fail() } else { Mod }
-            PrimVerb::Equals => if monad { fail() } else { Equal }
-            PrimVerb::EqualBang => if monad { fail() } else { NotEqual }
-            PrimVerb::DoubleEquals => if monad { fail() } else { Match }
-            PrimVerb::Hash => if monad { Length } else { Take }
-            PrimVerb::HashColon => if monad { fail() } else { Copy }
-            PrimVerb::Caret => if monad { Inits } else { Pow }
-            PrimVerb::Pipe => if monad { Rev } else { Or }
-            PrimVerb::Bang => if monad { Not } else { fail() }
-            PrimVerb::Dollar => if monad { Tails } else { Drop }
-            PrimVerb::LessThan => if monad { Sort } else { LessThan }
-            PrimVerb::LessThanColon => if monad { Asc } else { Min }
-            PrimVerb::LessThanEquals => if monad { fail()  } else { LessThanEqual }
-            PrimVerb::GreaterThan => if monad { SortDesc } else { GreaterThan }
-            PrimVerb::GreaterThanColon => if monad { Desc } else { Max }
-            PrimVerb::GreaterThanEquals => if monad { fail() } else { GreaterThanEqual }
-            PrimVerb::Question => if monad { Where } else { Find }
-            PrimVerb::QuestionColon => if monad { fail() } else { FindSubseq }
-            PrimVerb::P => if monad { Identity } else { IdentityLeft }
-            PrimVerb::Q => if monad { Identity } else { IdentityRight }
-            PrimVerb::DoublePipe => fail(),
-            PrimVerb::DoubleAmpersand => fail(),
-            PrimVerb::Ampersand => fail(),
+
+        use PrimFunc::*;
+        let verb_cases = PRIMITIVE_VERB_CASES[verb as usize];
+
+        if let Some(case) = verb_cases.get(arity as usize).copied().flatten() {
+            return Ok(case);
+        }
+        
+        let mut msg = "Arity mismatch; expected ".to_string();
+        let mut previous_arity = None;
+        for i in 0..verb_cases.len() {
+            if verb_cases[i].is_none() { continue; }
+            if let Some(previous) = previous_arity {
+                write_or!(&mut msg, "{} or ", previous)?;
+            }
+            previous_arity = Some(i);
+        }
+
+        if let Some(last) = previous_arity {
+            write_or!(msg, "{} args, got {arity}", last)?;
+            cold(Err(msg))
+        } else {
+            cold_err!("Arity mismatch; no cases supported.")
         }
     }
 }

@@ -1,5 +1,6 @@
 #![feature(iterator_try_reduce)]
 #![feature(min_specialization)]
+#![feature(variant_count)]
 
 pub mod bytecode;
 pub mod compile;

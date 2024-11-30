@@ -6,7 +6,7 @@ use std::{
 
 use crate::lex::*;
 use crate::util::{cold, float_as_int, match_lengths};
-use crate::bytecode::PrimFunc;
+use crate::bytecode::{PrimFunc, ArgSpec};
 
 // The Val representation isn't very efficient for now.
 //
@@ -28,6 +28,21 @@ pub enum Val {
 
 #[derive(Debug, Clone)]
 pub enum Func {
+    Unapplied(UnappliedFunc),
+
+    // TODO supersede AdverbDerived?
+    PartiallyApplied { 
+        func: UnappliedFunc,
+
+        bound_arg_spec: ArgSpec,
+
+        // Items correspond with the 1s in provided_arg_spec.mask().
+        bound_args: Vec<Val>,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum UnappliedFunc {
     Prim(PrimFunc),
 
     AdverbDerived {
@@ -35,16 +50,16 @@ pub enum Func {
         operand: Val,
     },
 
-    Explicit {
-        // The function's first instruction (ALWAYS points after MakeFunc, so
-        // you can get the function's instruction count with
-        // code[func.code_index-1]
-        code_index: usize,
+    Explicit(ExplicitFunc),
+}
 
-        // TODO closure environments should be immutable, but right now they act like mutable
-        // references (confusing).
-        closure_env: Rc<RefCell<Vec<Val>>>,
-    },
+#[derive(Debug, Clone)]
+pub struct ExplicitFunc {
+    pub code_index: usize,
+
+    // TODO closure environments should be immutable, but right now they act like mutable references
+    // (confusing).
+    pub closure_env: Rc<RefCell<Vec<Val>>>,
 }
 
 // Pattern for matching atoms
@@ -69,6 +84,23 @@ impl Val {
             Float(_) | F64s(_) => F64s(Rc::new(vec![])),
             Function(_) | Vals(_) => Vals(Rc::new(vec![])),
         }
+    }
+
+    pub fn prim_func(prim: PrimFunc) -> Val {
+        // This is too much!
+        Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::Prim(prim))))
+    }
+
+    pub fn explicit_func(explicit: ExplicitFunc) -> Val {
+        // This is too much!
+        Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::Explicit(explicit))))
+    }
+
+    pub fn adverb_derived_func(adverb: PrimAdverb, operand: Val) -> Val {
+        // This is too much!
+        Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::AdverbDerived {
+            adverb, operand
+        })))
     }
 
     pub fn as_val(&self) -> &Self { &self }
@@ -183,15 +215,18 @@ impl PartialOrd for Func {
 
 impl Func {
     pub fn is_constant_function(&self) -> bool {
-        matches!(self, Func::AdverbDerived{adverb: PrimAdverb::Underscore, ..})
+        matches!(self,
+                 Func::Unapplied(UnappliedFunc::AdverbDerived{adverb: PrimAdverb::Underscore, ..}))
     }
 
     fn key_variant(&self) -> u32 {
         use Func::*;
+        use UnappliedFunc::*;
         match self {
-            Prim(_) => 0,
-            AdverbDerived{..} => 1,
-            Explicit{..} => 2,
+            Unapplied(Prim(_)) => 0,
+            Unapplied(AdverbDerived{..}) => 1,
+            Unapplied(Explicit{..}) => 2,
+            PartiallyApplied{..} => 3,
         }
     }
 }
@@ -199,11 +234,13 @@ impl Func {
 impl Ord for Func {
     fn cmp(&self, other: &Func) -> Ordering {
         use Func::*;
-        
+        use UnappliedFunc::*;
         match (self, other) {
-            (Prim(_), Prim(_)) => todo!("Sort primitives"),
-            (Explicit{code_index: x, ..}, Explicit{code_index: y, ..}) => x.cmp(y),
-            (AdverbDerived{operand: x, ..}, AdverbDerived{operand: y, ..}) => x.cmp(y),
+            (Unapplied(Prim(_)), Unapplied(Prim(_))) => todo!("Sort primitives"),
+            (Unapplied(Explicit(ExplicitFunc{code_index: x, ..})),
+             Unapplied(Explicit(ExplicitFunc{code_index: y, ..}))) => x.cmp(y),
+            (Unapplied(AdverbDerived{operand: x, ..}), Unapplied(AdverbDerived{operand: y, ..})) => x.cmp(y),
+            (PartiallyApplied { func: _, .. }, PartiallyApplied { func: _, .. }) => todo!("Sort partially applied functions"),
             _ => self.key_variant().cmp(&other.key_variant()),
         }
     }

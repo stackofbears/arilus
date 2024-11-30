@@ -203,7 +203,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<usize>, keep: bool) -> Res<()> {
+    fn compile_expr_with_arity(&mut self, expr: &Expr, arity: Option<u32>, keep: bool) -> Res<()> {
         if let Expr::Verb(verb) = expr { self.compile_verb(verb, arity, keep) }
         else { self.compile_expr(expr, keep) }
     }
@@ -234,7 +234,7 @@ impl Compiler {
         }
     }
 
-    fn compile_verb(&mut self, verb: &Verb, arity: Option<usize>, keep: bool) -> Res<()> {
+    fn compile_verb(&mut self, verb: &Verb, arity: Option<u32>, keep: bool) -> Res<()> {
         match verb {
             Verb::UpperAssign(name, rhs) => {
                 self.compile_verb(rhs, arity, true)?;
@@ -252,7 +252,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_train_as_explicit(&mut self, f: &SmallVerb, parts: &[TrainPart], arity: Option<usize>, keep: bool) -> Res<()> {
+    fn compile_train_as_explicit(&mut self, f: &SmallVerb, parts: &[TrainPart], arity: Option<u32>, keep: bool) -> Res<()> {
         self.compile_small_verb(f, arity, true)?;
 
         let mut last_slot_called_on_args = 0;
@@ -362,7 +362,7 @@ impl Compiler {
                 if keep { self.code.push(Instr::Dup) }
                 let splat_index = self.push(Instr::Nop);
 
-                enum Splicing { NoSplice, Splice {i: usize, keep_splice: bool} }
+                enum Splicing { NoSplice, Splice { i: usize, keep_splice: bool } }
                 let mut splicing = Splicing::NoSplice;
 
                 for i in 0..pats.len() {
@@ -393,8 +393,8 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<usize>, keep: bool) -> Res<()> {
-        if let Some(prim) = self.form_prim_func_from_small_verb(small_verb, arity) {
+    fn compile_small_verb(&mut self, small_verb: &SmallVerb, arity: Option<u32>, keep: bool) -> Res<()> {
+        if let Some(prim) = small_verb.into_prim_func(arity, &self.primitive_identifiers)? {
             if keep { self.code.push(Instr::PushPrimFunc { prim }); }
             return Ok(());
         }
@@ -474,7 +474,7 @@ impl Compiler {
                 _ => {
                     self.code.push(Instr::MarkStack);
 
-                    let mut arity = Some(elems.len());
+                    let mut arity = Some(elems.len() as u32);
                     for elem in elems {
                         if matches!(elem, Elem::Spliced(_)) {
                             arity = None;
@@ -507,7 +507,7 @@ impl Compiler {
         })
     }
 
-    fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<usize>) -> Res<()> {
+    fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<u32>) -> Res<()> {
         // If we don't know the arity, assume the function is dyadic and then look at the generated
         // code to see which arguments were actually accessed.
         //
@@ -648,9 +648,10 @@ impl Compiler {
     fn compile_predicate(&mut self, predicate: &Predicate, keep: bool) -> Res<()> {
         match predicate {
             Predicate::VerbCall(verb, maybe_y_arg) => {
-                let prim_func = self.form_prim_func_from_verb(verb, Some(1 + maybe_y_arg.is_some() as usize));
+                let prim_func = verb.into_prim_func(Some(1 + maybe_y_arg.is_some() as u32),
+                                                    &self.primitive_identifiers)?;
                 if prim_func.is_none() {
-                    let arity = 1 + maybe_y_arg.is_some() as usize;
+                    let arity = 1 + maybe_y_arg.is_some() as u32;
                     self.compile_verb(verb, Some(arity), true)?;
                 }
 
@@ -948,47 +949,81 @@ impl Compiler {
             i -= 1;
         }
     }
-    
-    fn form_prim_func_from_verb(&self, verb: &Verb, arity: Option<usize>) -> Option<PrimFunc> {
-        match verb {
-            Verb::SmallVerb(small_verb) => self.form_prim_func_from_small_verb(small_verb, arity),
-            _ => None,
+}
+
+trait TryIntoPrimFunc {
+    // Sometimes, things can be replaced with primitives if:
+    //   - We know the call arity of a function in advance
+    //   - An expression is the result of a recognized pattern (e.g., adverb application)
+    //
+    // Returns
+    //   Ok(Some(prim)) if `self` at `arity` is equivalent to `prim`.
+    //   Ok(None) if `self` doesn't resolve to a smaller primitive and should be compiled as `self`.
+    //   Err if `self` can't possibly be applied at arity `arity`.
+    fn into_prim_func(
+        &self, arity: Option<u32>, prim_identifiers: &HashMap<&str, PrimFunc>
+    ) -> Res<Option<PrimFunc>>;
+}
+
+impl TryIntoPrimFunc for Verb {
+    fn into_prim_func(
+        &self, arity: Option<u32>, prim_identifiers: &HashMap<&str, PrimFunc>
+    ) -> Res<Option<PrimFunc>> {
+        match self {
+            Verb::SmallVerb(small_verb) => small_verb.into_prim_func(arity, prim_identifiers),
+            _ => Ok(None),
         }
     }
+}
 
-    // Applying an adverb may result in a primitive.
-    fn form_prim_func_from_small_verb(&self, small_verb: &SmallVerb, arity: Option<usize>) -> Option<PrimFunc> {
+impl TryIntoPrimFunc for SmallVerb {
+    fn into_prim_func(
+        &self, arity: Option<u32>, prim_identifiers: &HashMap<&str, PrimFunc>
+    ) -> Res<Option<PrimFunc>> {
         use PrimFunc::*;
-        match small_verb {
+        let prim = match self {
             &SmallVerb::PrimVerb(Verb(prim)) => match arity {
-                Some(1) => Some(PrimFunc::from_verb(prim, true)),
-                Some(2) => Some(PrimFunc::from_verb(prim, false)),
-                _ => Some(PrimFunc::Verb(prim)),
+                Some(arity) => Some(PrimFunc::resolve_at_arity(prim, arity)?),
+                None => Some(PrimFunc::Verb(prim)),
             }
             &SmallVerb::PrimVerb(prim_func) => Some(prim_func),
             SmallVerb::PrimAdverbCall(PrimAdverb::Backslash, expr_box) =>
-                match self.form_prim_func_from_small_expr(expr_box, Some(2)) {
+                match expr_box.into_prim_func(Some(2), prim_identifiers)? {
                     Some(PrimFunc::Add) => Some(PrimFunc::Sum),
+                    // TODO instead of always resolving to a PrimFunc, allow resolving to SmallVerb
+                    // so we can match Some(small_verb) here: knowing arity can specialize
+                    // explicits, too.
                     _ => None,
                 }
-            SmallVerb::PrimAdverbCall(PrimAdverb::Dot, expr_box) => self.form_prim_func_from_small_expr(&&*expr_box, arity),
-            SmallVerb::UpperName(name) => self.primitive_identifiers.get(name.as_str()).copied(),
+            SmallVerb::PrimAdverbCall(PrimAdverb::Dot, expr_box) =>
+                expr_box.into_prim_func(arity, prim_identifiers)?,
+            SmallVerb::UpperName(name) =>
+                prim_identifiers.get(name.as_str()).copied(),
             _ => None,
-        }
+        };
+        Ok(prim)
     }
-    
-    fn form_prim_func_from_small_noun(&self, small_noun: &SmallNoun, arity: Option<usize>) -> Option<PrimFunc> {
-        match small_noun {
-            SmallNoun::LowerName(name) => self.primitive_identifiers.get(name.as_str()).copied(),
-            SmallNoun::Underscored(expr_box) => self.form_prim_func_from_small_expr(&**expr_box, arity),
-            _ => None,
-        }
-    }
+}
 
-    fn form_prim_func_from_small_expr(&self, small_expr: &SmallExpr, arity: Option<usize>) -> Option<PrimFunc> {
-        match small_expr {
-            SmallExpr::Noun(small_noun) => self.form_prim_func_from_small_noun(small_noun, arity),
-            SmallExpr::Verb(small_verb) => self.form_prim_func_from_small_verb(small_verb, arity),
+impl TryIntoPrimFunc for SmallNoun {
+    fn into_prim_func(
+        &self, arity: Option<u32>, prim_identifiers: &HashMap<&str, PrimFunc>
+    ) -> Res<Option<PrimFunc>> {
+        match self {
+            SmallNoun::LowerName(name) => Ok(prim_identifiers.get(name.as_str()).copied()),
+            SmallNoun::Underscored(expr_box) => expr_box.into_prim_func(arity, prim_identifiers),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl TryIntoPrimFunc for SmallExpr {
+    fn into_prim_func(
+        &self, arity: Option<u32>, prim_identifiers: &HashMap<&str, PrimFunc>
+    ) -> Res<Option<PrimFunc>> {
+        match self {
+            SmallExpr::Noun(small_noun) => small_noun.into_prim_func(arity, prim_identifiers),
+            SmallExpr::Verb(small_verb) => small_verb.into_prim_func(arity, prim_identifiers),
         }
     }
 }
@@ -1067,7 +1102,7 @@ fn pattern_to_small_noun(pat: &Pattern) -> Res<SmallNoun> {
     })
 }
 
-fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<usize>) -> Option<usize> {
+fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<u32>) -> Option<u32> {
     use PrimAdverb::*;
     match adverb {
         Underscore => None,  // TODO is this right?

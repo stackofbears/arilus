@@ -32,8 +32,7 @@ enum PrecedenceContext {
 
 #[derive(Debug)]
 struct StackFrame {
-    // The first instruction of this function.
-    code_index: usize,
+    explicit: ExplicitFunc,
 
     // The index of the next header to try if this one fails, or None if there are no headers left
     // to try.
@@ -41,9 +40,7 @@ struct StackFrame {
     // TODO: use Option<NonZero>
     next_header: Option<usize>,
 
-    arg_count: usize,
-
-    closure_env: Rc<RefCell<Vec<Val>>>,
+    arg_spec: ArgSpec,
 
     // Index into locals_stack. Local slots are offsets from this index.
     locals_start: usize,
@@ -77,11 +74,13 @@ impl Mem {
             stack_markers: vec![],
             locals_stack: vec![],  // TODO stdlib?
             stack_frames: vec![StackFrame {
-                closure_env: Rc::new(RefCell::new(vec![])),
+                explicit: ExplicitFunc {
+                    code_index: usize::MAX,
+                    closure_env: Rc::new(RefCell::new(vec![])),
+                },
                 next_header: None,
-                arg_count: 0,
+                arg_spec: ArgSpec::saturated(0),
                 locals_start: 0,
-                code_index: usize::MAX,
             }],
         }
     }
@@ -168,30 +167,78 @@ impl Mem {
                         _ => vec![],
                     };
 
-                    self.push(Val::Function(Rc::new(Func::Explicit {
+                    let func = Func::Unapplied(UnappliedFunc::Explicit(ExplicitFunc {
                         code_index,
                         closure_env: Rc::new(RefCell::new(closure_data)),
-                    })));
+                    }));
+                    self.push(Val::Function(Rc::new(func)));
                 }
                 Header { next_case_offset } => {
-                    let arg_count = self.current_frame().arg_count;
-                    let enter_case = match self.code[ip] {
-                        ArgCheckEq { count } => arg_count == count,
-                        _ => false,
+                    enum CaseTreatment { Enter, Curry, Skip }
+                    use CaseTreatment::*;
+
+                    let provided_arg_spec = self.current_frame().arg_spec;
+                    let action = match self.code[ip] {
+                        ArgCheckEq { count } =>
+                            if provided_arg_spec.arity() as usize == count { Enter }
+                            else { Skip }
+                        ArgCheck { spec } =>
+                            if provided_arg_spec == spec { Enter }
+                            else if spec.is_satisfied_by(provided_arg_spec) { Curry }
+                            else { Skip }
+                        _ => Skip,
                     };
 
-                    if enter_case {
-                        let args_start = self.peek_marker();
-                        let have = self.stack.len() - (args_start + arg_count);
-                        if have < arg_count {
-                            self.stack.extend_from_within(args_start+have .. args_start+arg_count);
+                    match action {
+                        Enter => {
+                            // We may need to try the next case after this one, so we have to keep a
+                            // copy of the args underneath the args this function case actually
+                            // works with. There can also be some args that weren't consumed by the
+                            // previous function case, so we only have to copy the ones that have
+                            // been consumed (note that args are on the stack in reverse order):
+                            //
+                            //   ...|a3|a2|a1|a0|a3|a2|
+                            //      ^ args_start
+                            //      ^-----------^ arg_count=4
+                            //                  ^-----^ have=2
+                            //            ^-----^ arg_start+have .. args_start+arg_count
+                            //
+                            // Here, we'd copy a1 and a0 to give us a full set of args over the
+                            // copied ones:
+                            // 
+                            //   ...|a3|a2|a1|a0|a3|a2|a1|a0|
+                            let args_start = self.peek_marker();
+                            let arg_count = provided_arg_spec.arity() as usize;
+                            let have = self.stack.len() - (args_start + arg_count);
+                            if have < arg_count {
+                                self.stack.extend_from_within(args_start+have .. args_start+arg_count);
+                            }
+                            let next_header_index = offset_by(ip, next_case_offset);
+                            self.current_frame_mut().next_header = Some(next_header_index);
+                            ip += 1;  // Skip ArgCheck instruction
                         }
-                        let next_header_index = (ip as i64 + next_case_offset) as usize;
-                        self.current_frame_mut().next_header = Some(next_header_index);
-                        ip += 1;  // Skip arg check instruction
-                    } else {
-                        ip = (ip as i64 + next_case_offset) as usize;
-                    }                        
+                        Curry => {
+                            let frame = self.stack_frames.pop().unwrap();
+                            let explicit = UnappliedFunc::Explicit(ExplicitFunc {
+                                code_index: ip - 1, // Come back to this header
+                                closure_env: frame.explicit.closure_env,
+                            });
+                            let bound_args = {
+                                let args_start = self.pop_marker();
+                                let arg_count = provided_arg_spec.arity() as usize;
+                                // Pop the unconsumed args from the last function case, if any.
+                                self.stack.truncate(args_start + arg_count);
+                                self.stack.drain(args_start..).collect()
+                            };
+                            self.pop_locals();
+                            let func = Func::PartiallyApplied {
+                                func: explicit, bound_arg_spec: provided_arg_spec, bound_args
+                            };
+                            self.push(Val::Function(Rc::new(func)));
+                            return Ok(())
+                        }
+                        Skip => ip = offset_by(ip, next_case_offset),
+                    }
                 }
                 HeaderPassed => {
                     let frame = self.current_frame_mut();
@@ -201,8 +248,43 @@ impl Mem {
                     let args_start = self.pop_marker();
                     self.stack.truncate(args_start);
                 }
+                ArgCheck { spec } => {
+                    let provided_arg_spec = self.current_frame().arg_spec;
+                    if provided_arg_spec == spec {
+                        let args_start = self.pop_marker();
+                        self.stack.truncate(args_start + spec.arity() as usize);
+                    } else if spec.is_satisfied_by(provided_arg_spec) {
+                        // TODO deduplicate with header code
+                        let frame = self.stack_frames.pop().unwrap();
+                        let explicit = UnappliedFunc::Explicit(ExplicitFunc {
+                            code_index: ip - 1, // Come back to this header
+                            closure_env: frame.explicit.closure_env,
+                        });
+                        let bound_args = {
+                            let args_start = self.pop_marker();
+                            let arg_count = provided_arg_spec.arity();
+                            // Pop the unconsumed args from the last function case, if any.
+                            self.stack.truncate(args_start + arg_count as usize);
+                            self.stack.drain(args_start..).collect()
+                        };
+                        self.pop_locals();
+                        let func = Func::PartiallyApplied {
+                            func: explicit, bound_arg_spec: provided_arg_spec, bound_args
+                        };
+                        self.push(Val::Function(Rc::new(func)));
+                        return Ok(())
+                    } else {
+                        // We don't need to try jumping to the next case on failure because this
+                        // instruction is only executed directly if this is the last or only case;
+                        // otherwise, Header would have taken care of it and skipped this
+                        // instruction.
+                        let mut msg = "Argument mismatch: function has no case matching ".to_string();
+                        spec.describe(&mut msg)?;
+                        return Err(msg);
+                    }
+                }
                 ArgCheckEq { count } => {
-                    let arg_count = self.current_frame().arg_count;
+                    let arg_count = self.current_frame().arg_spec.arity() as usize;
                     if arg_count != count {
                         // We don't need to try jumping to the next case on failure because this
                         // instruction is only executed directly if this is the last or only case;
@@ -214,7 +296,7 @@ impl Mem {
                     self.stack.truncate(args_start + arg_count);
                 }
                 CollectArgs { suffix_count, keep } => {
-                    let arg_count = self.current_frame().arg_count;
+                    let arg_count = self.current_frame().arg_spec.arity() as usize;
                     let args_start = self.peek_marker();
                     let have_saved_args = self.current_frame().next_header.is_some() as usize;
                     let vals_start = args_start + suffix_count as usize + arg_count * have_saved_args;
@@ -228,19 +310,19 @@ impl Mem {
                     }
                 }
                 CopyArgs => {
-                    let arg_count = self.current_frame().arg_count;
+                    let arg_count = self.current_frame().arg_spec.arity() as usize;
                     let args_start = self.peek_marker();
                     self.push_marker(self.stack.len());
-                    self.stack.extend_from_within(args_start..args_start+arg_count);
+                    self.stack.extend_from_within(args_start .. args_start+arg_count);
                 }
                 Return => {
-                    let frame = self.stack_frames.pop().unwrap();
-                    self.locals_stack.truncate(frame.locals_start);
+                    self.pop_locals();
+                    self.stack_frames.pop();
                     return Ok(())
                 }
-                JumpRelative { offset } => ip = (ip as i64 + offset) as usize,
+                JumpRelative { offset } => ip = offset_by(ip, offset),
                 JumpRelativeUnless { offset } =>
-                    if self.pop().is_falsy() { ip = (ip as i64 + offset) as usize },
+                    if self.pop().is_falsy() { ip = offset_by(ip, offset) }
                 PushLiteralInteger(value) => self.push(Val::Int(value)),
                 PushLiteralFloat(value) => self.push(Val::Float(value)),
                 PushVar { src } => {
@@ -262,15 +344,12 @@ impl Mem {
                 PushPrimFunc { prim: PrimFunc::Rec } => {
                     let frame = self.current_frame();
                     // TODO can we copy the actual function that was called instead?
-                    self.push(Val::Function(Rc::new(Func::Explicit {
-                        code_index: frame.code_index,
-                        closure_env: frame.closure_env.clone(),
-                    })));
+                    self.push(Val::explicit_func(frame.explicit.clone()));
                 }
-                PushPrimFunc { prim } => self.push(Val::Function(Rc::new(Func::Prim(prim)))),
+                PushPrimFunc { prim } => self.push(Val::prim_func(prim)),
                 Call1 => {
                     let f = self.pop();
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, 1)? {
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, ArgSpec::saturated(1))? {
                         ip = code_index;
                     }
                 }
@@ -278,7 +357,7 @@ impl Mem {
                     self.swap();         // x f y -> x y f
                     let f = self.pop();  // x y f -> x y
                     self.swap();         // x y -> y x
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, 2)? {
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, ArgSpec::saturated(2))? {
                         ip = code_index;
                     }
                 }
@@ -286,52 +365,66 @@ impl Mem {
                     let call_start = self.pop_marker();
                     self.stack[call_start..].reverse();
                     let f = self.pop();
-                    let arg_count = self.stack.len() - call_start;
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_count)? {
+                    let arity = self.stack.len() - call_start;
+                    let arg_spec = ArgSpec::saturated(arity as u32);
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
+                        ip = code_index;
+                    }
+                }
+                CallSpec { arg_spec } => {
+                    // - arity for args, - 1 for function.
+                    let call_start = self.stack.len() - arg_spec.arity() as usize - 1;
+                    self.stack[call_start..].reverse();
+                    let f = self.pop();
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
                         ip = code_index;
                     }
                 }
                 CallOnArgs { var } => {
                     let f = self.load(var);
                     let call_start = self.pop_marker();
-                    let arg_count = self.stack.len() - call_start;
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_count)? {
+                    let arity = self.stack.len() - call_start;
+                    let arg_spec = ArgSpec::saturated(arity as u32);
+                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
                         ip = code_index;
                     }
                 }
-                CallPrimFunc1 { prim } => if prim == PrimFunc::Rec {
-                    let frame = self.current_frame();
-                    if let Some(code_index) = self.call_explicit_or_get_jump_target(
-                        ip, 1, frame.code_index, frame.closure_env.clone()
-                    )? {
-                        ip = code_index;
+                CallPrimFunc1 { prim } =>
+                    if prim == PrimFunc::Rec {
+                        let frame = self.current_frame();
+                        if let Some(code_index) = self.call_explicit_or_get_jump_target(
+                            frame.explicit.clone(), ArgSpec::saturated(1), ip
+                        )? {
+                            ip = code_index;
+                        }
+                    } else {
+                        let x = self.pop();
+                        let result = self.call_prim_monad(prim, x)?;
+                        self.push(result);
                     }
-                } else {
-                    let x = self.pop();
-                    let result = self.call_prim_monad(prim, x)?;
-                    self.push(result);
-                }
-                CallPrimFunc2 { prim } => if prim == PrimFunc::Rec {
-                    self.swap();
-                    let frame = self.current_frame();
-                    if let Some(code_index) = self.call_explicit_or_get_jump_target(
-                        ip, 2, frame.code_index, frame.closure_env.clone()
-                    )? {
-                        ip = code_index;
+                CallPrimFunc2 { prim } =>
+                    if prim == PrimFunc::Rec {
+                        self.swap();
+                        let frame = self.current_frame();
+                        if let Some(code_index) = self.call_explicit_or_get_jump_target(
+                            frame.explicit.clone(), ArgSpec::saturated(2), ip
+                        )? {
+                            ip = code_index;
+                        }
+                    } else if matches!(prim, PrimFunc::Verb(PrimVerb::At) | PrimFunc::Index) &&
+                           self.stack[self.stack.len() - 2].is_func() &&
+                           self.is_tail_call(ip) {
+                        let x = self.stack.swap_remove(self.stack.len() - 2);
+                        let arg_spec = ArgSpec::saturated(1);
+                        if let Some(code_index) = self.call_or_get_jump_target(ip, x, arg_spec)? {
+                            ip = code_index;
+                        }
+                    } else {
+                        let y = self.pop();
+                        let x = self.pop();
+                        let result = self.call_prim_dyad(prim, x, y)?;
+                        self.push(result);
                     }
-                } else if prim == PrimFunc::Verb(PrimVerb::At) &&
-                          self.stack[self.stack.len() - 2].is_func() &&
-                          self.is_tail_call(ip) {
-                    let x = self.stack.swap_remove(self.stack.len() - 2);
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, x, 1)? {
-                        ip = code_index;
-                    }
-                } else {
-                    let y = self.pop();
-                    let x = self.pop();
-                    let result = self.call_prim_dyad(prim, x, y)?;
-                    self.push(result);
-                }
                 MarkStack => self.push_marker(self.stack.len()),
                 Pop => { self.pop(); }
                 StoreTo { dst } => {
@@ -420,7 +513,7 @@ impl Mem {
                 }
                 CallPrimAdverb { prim: adverb } => {
                     let operand = self.pop();
-                    self.push(Val::Function(Rc::new(Func::AdverbDerived { adverb, operand })));
+                    self.push(Val::adverb_derived_func(adverb, operand));
                 }
                 MakeString { num_bytes } => {
                     let mut s = Vec::with_capacity(num_bytes);
@@ -548,7 +641,7 @@ impl Mem {
         let frame = self.current_frame();
         match var.place {
             Place::Local => self.locals_stack[frame.locals_start + var.slot].clone(),
-            Place::ClosureEnv => frame.closure_env.borrow()[var.slot].clone(),
+            Place::ClosureEnv => frame.explicit.closure_env.borrow()[var.slot].clone(),
         }
     }
 
@@ -561,7 +654,7 @@ impl Mem {
                 mem::swap(&mut ret, &mut self.locals_stack[absolute_slot]);
             }
             Place::ClosureEnv =>
-                mem::swap(&mut ret, &mut frame.closure_env.borrow_mut()[var.slot]),
+                mem::swap(&mut ret, &mut frame.explicit.closure_env.borrow_mut()[var.slot]),
         }
         ret
     }
@@ -576,7 +669,7 @@ impl Mem {
                 }
                 self.locals_stack[absolute_slot] = val;
             }
-            Place::ClosureEnv => frame.closure_env.borrow_mut()[dst.slot] = val,
+            Place::ClosureEnv => frame.explicit.closure_env.borrow_mut()[dst.slot] = val,
         }
     }
 
@@ -589,46 +682,43 @@ impl Mem {
     // Returns None, meaning `calling` has been called and its return value is on the stack, or
     // Some(code_index), meaning the caller should jump directly to code_index.
     fn call_or_get_jump_target(
-        &mut self, ip: usize, calling: Val, arg_count: usize
+        &mut self, ip: usize, calling: Val, arg_spec: ArgSpec
     ) -> Result<Option<usize>, String> {
-        match self.set_up_call(calling, arg_count)? {
+        match self.set_up_call(calling, arg_spec)? {
             None => Ok(None),
-            Some((code_index, closure_env)) =>
-                self.call_explicit_or_get_jump_target(ip, arg_count, code_index, closure_env),
+            Some(explicit) => self.call_explicit_or_get_jump_target(explicit, arg_spec, ip),
         }
     }
 
-    fn call_explicit(
-        &mut self, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>
-    ) -> Res<()> {
+    fn call_explicit(&mut self, explicit: ExplicitFunc, arg_spec: ArgSpec) -> Res<()> {
+        let code_index = explicit.code_index;
         self.stack_frames.push(StackFrame {
-            code_index,
-            closure_env,
-            arg_count,
+            explicit,
+            arg_spec,
             next_header: None,
             locals_start: self.locals_stack.len(),
         });
-        self.push_marker(self.stack.len() - arg_count);
+        self.push_marker(self.stack.len() - arg_spec.arity() as usize);
         self.execute(code_index)
     }
 
     fn call_explicit_or_get_jump_target(
-        &mut self, ip: usize, arg_count: usize, code_index: usize, closure_env: Rc<RefCell<Vec<Val>>>
+        &mut self, explicit: ExplicitFunc, arg_spec: ArgSpec, ip: usize
     ) -> Res<Option<usize>> {
         if self.is_tail_call(ip) {
             self.pop_locals();
             let locals_start = self.locals_stack.len();
+            let code_index = explicit.code_index;
             *self.current_frame_mut() = StackFrame {
-                arg_count,
-                code_index,
-                closure_env,
+                arg_spec,
+                explicit,
                 locals_start,
                 next_header: None,
             };
-            self.push_marker(self.stack.len() - arg_count);
+            self.push_marker(self.stack.len() - arg_spec.arity() as usize);
             Ok(Some(code_index))
         } else {
-            self.call_explicit(arg_count, code_index, closure_env).map(|_| None)
+            self.call_explicit(explicit, arg_spec).map(|_| None)
         }
     }
 
@@ -638,30 +728,38 @@ impl Mem {
     //
     // Arguments should be on the stack in reverse order (first argument on top).
     fn set_up_call(
-        &mut self, mut calling: Val, mut arg_count: usize
-    ) -> Res<Option<(usize, Rc<RefCell<Vec<Val>>>)>> {
+        &mut self, mut calling: Val, mut arg_spec: ArgSpec
+    ) -> Res<Option<ExplicitFunc>> {
         loop {
             let function = match &calling {
                 Val::Function(rc) => &**rc,
                 _ => {
-                    let val = self.progressive_index(&calling, arg_count)?;
+                    let val = self.progressive_index(&calling, arg_spec)?;
                     self.push(val);
                     return Ok(None);
                 }
             };
 
+            use UnappliedFunc::*;
             match function {
-                Func::Explicit{code_index, closure_env} => return Ok(Some((*code_index, closure_env.clone()))),
-                Func::Prim(PrimFunc::Rec) => {
+                Func::Unapplied(Explicit(explicit)) => return Ok(Some(explicit.clone())),
+
+                Func::Unapplied(Prim(PrimFunc::Rec)) => {
                     let frame = self.current_frame();
-                    return Ok(Some((frame.code_index, frame.closure_env.clone())));
+                    return Ok(Some(frame.explicit.clone()));
                 }
-                // TODO arg counts other than 2
-                Func::Prim(PrimFunc::Verb(PrimVerb::At)) if arg_count == 2 => {
-                    arg_count = 1;
+
+                // TODO arg specs other than 2. e.g., @[f;...] should return a Partial with f fixed
+                // to arity - 1 and the provided args.
+                Func::Unapplied(Prim(PrimFunc::Verb(PrimVerb::At) | PrimFunc::Index))
+                if arg_spec.is_saturated_at_arity(2) => {
+                    arg_spec = ArgSpec::saturated(1);
                     calling = self.pop();
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::P, operand } => {
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::P, operand })
+                if arg_spec.is_saturated() => {
+                    let arg_count = arg_spec.arity();
                     if arg_count == 0 || arg_count > 2 {
                         // TODO support?
                         return cold_err!("Attempt to call result of adverb `p' on {arg_count} arguments");
@@ -669,11 +767,14 @@ impl Mem {
                     if arg_count == 2 {
                         // Take y out of the picture.
                         self.stack.swap_remove(self.stack.len() - 2);
-                        arg_count = 1;
+                        arg_spec = ArgSpec::saturated(1);
                     }
                     calling = operand.clone();
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::Q, operand } => {
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Q, operand })
+                if arg_spec.is_saturated() => {
+                    let arg_count = arg_spec.arity();
                     if arg_count == 0 || arg_count > 2 {
                         // TODO support?
                         return cold_err!("Attempt to call result of adverb `q' on {arg_count} arguments");
@@ -681,63 +782,67 @@ impl Mem {
                     if arg_count == 2 {
                         // Take y out of the picture.
                         self.pop();
-                        arg_count = 1;
+                        arg_spec = ArgSpec::saturated(1);
                     }
                     calling = operand.clone();
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::AtColon, operand } if arg_count == 1 || arg_count == 2 => {
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::AtColon, operand })
+                if arg_spec.raw() == 0b1_1 || arg_spec.raw() == 0b1_11 => {
                     let x = self.top().clone();
-                    self.index_or_call(&operand, 1)?;
+                    self.index_or_call(&operand, ArgSpec::saturated(1))?;
                     let index = self.pop();
-                    if arg_count == 1 {
+                    if arg_spec.arity() == 1 {
                         return cold_err!("TODO: monadic @:v");
                     }
                     let y = self.pop();
                     self.push(x);
                     // TODO progressive index?
                     calling = self.prim_index(&y, &index)?;
+                    arg_spec = ArgSpec::saturated(1);
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::Dot, operand } => calling = operand.clone(),
-                Func::AdverbDerived { adverb: PrimAdverb::Tilde, operand } => {
-                    match arg_count {
-                        1 => {
-                            self.dup();
-                            arg_count = 2;
-                        }
-                        2 => self.swap(),
-                        _ => {
-                            // TODO support?
-                            return cold_err!("Attempt to call result of adverb `~' on {arg_count} arguments");
-                        }
-                    }
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Dot, operand }) =>
+                    calling = operand.clone(),
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Tilde, operand })
+                if arg_spec.is_saturated_at_arity(1) => {
+                    self.dup();
+                    arg_spec = arg_spec.pushed(true);
                     calling = operand.clone();
                 }
-                Func::AdverbDerived { adverb: PrimAdverb::Backslash, operand } => {
-                    match arg_count {
-                        2 if self.top().len().unwrap_or(1) == 1 => {
-                            let x = self.pop();
-                            // Remember, the fold seed becomes the first x argument to the operand.
-                            self.tuck(index_or_cycle_val(&x, 0).unwrap());
-                            calling = operand.clone();
-                        }
-                        1 if matches!(self.top().len(), Some(2)) => {
-                            arg_count = 2;
-                            calling = operand.clone();
-                            let x = self.pop();
-                            self.push(index_or_cycle_val(&x, 1).unwrap());
-                            self.push(index_or_cycle_val(&x, 0).unwrap());
-                        }
-                        _ => {
-                            let x = self.pop();
-                            let y = if arg_count == 2 { Some(self.pop()) } else { None };
-                            let result = self.fold_val(&operand, x, y)?;
-                            self.push(result);
-                            return Ok(None);
-                        }
-                    }
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Tilde, operand })
+                if arg_spec.is_saturated_at_arity(2) => {
+                    self.swap();
+                    calling = operand.clone();
                 }
+
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Backslash, operand }) 
+                if arg_spec.is_saturated_at_arity(2) && self.top().len().unwrap_or(1) == 1 => {
+                    let x = self.pop();
+                    // Remember, the fold seed becomes the first x argument to the operand.
+                    self.tuck(index_or_cycle_val(&x, 0).unwrap());
+                    calling = operand.clone();
+                }
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Backslash, operand })
+                if arg_spec.is_saturated_at_arity(1) && matches!(self.top().len(), Some(2)) => {
+                    arg_spec = arg_spec.pushed(true);
+                    calling = operand.clone();
+                    let x = self.pop();
+                    self.push(index_or_cycle_val(&x, 1).unwrap());
+                    self.push(index_or_cycle_val(&x, 0).unwrap());
+                }
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::Backslash, operand })
+                if arg_spec.is_saturated() => {
+                    let x = self.pop();
+                    let y = if arg_spec.arity() == 2 { Some(self.pop()) } else { None };
+                    let result = self.fold_val(&operand, x, y)?;
+                    self.push(result);
+                    return Ok(None);
+                }
+
                 _ => {
-                    let val = self.call_func(function, arg_count)?;
+                    let val = self.call_func(function, arg_spec)?;
                     self.push(val);
                     return Ok(None);
                 }
@@ -751,13 +856,13 @@ impl Mem {
 
     fn call_monad(&mut self, val: &Val, x: Val) -> Res<Val> {
         self.push(x);
-        self.index_or_call(val, 1)
+        self.index_or_call(val, ArgSpec::saturated(1))
     }
 
     fn call_dyad(&mut self, val: &Val, x: Val, y: Val) -> Res<Val> {
         self.push(y);
         self.push(x);
-        self.index_or_call(val, 2)
+        self.index_or_call(val, ArgSpec::saturated(2))
     }
 
     fn call_prim_adverb(
@@ -813,6 +918,7 @@ impl Mem {
                     )?,
                 }
             }
+            // TODO should ~f just swap f's first two arguments?
             Tilde => match maybe_y {
                 None => self.call_dyad(operand, x.clone(), x)?,
                 Some(y) => self.call_dyad(operand, y, x)?,
@@ -823,12 +929,49 @@ impl Mem {
         Ok(result)
     }
 
-    fn call_prim_monad(&mut self, mut v: PrimFunc, x: Val) -> Res<Val> {
+    // Args should be on the stack in reverse order
+    fn call_prim_func(&mut self, prim: PrimFunc, arg_spec: ArgSpec) -> Res<Val> {
+        let result_prim = match prim {
+            PrimFunc::Verb(verb) => PrimFunc::resolve_at_arity(verb, arg_spec.arity()),
+            _ => Ok(prim),
+        };
+
+        // TODO allow primitives to dispatch on partial application
+        let result = result_prim.and_then(|prim|
+            match arg_spec.raw() {
+                // TODO: extend to arbitrary cases
+                0b1_1 => {
+                    let x = self.pop();
+                    self.call_prim_monad(prim, x)
+                }
+                0b1_11 => {
+                    let x = self.pop();
+                    let y = self.pop();
+                    self.call_prim_dyad(prim, x, y)
+                }
+                // TODO make sure none of `resolve_at_arity`'s return values can have various
+                // arities for consistency.
+                _ if arg_spec.has_no_args() => Ok(Val::prim_func(prim)),
+                _ => {
+                    let args_start = self.stack.len() - arg_spec.arity() as usize;
+                    let bound_args = self.stack.drain(args_start..).rev().collect();
+                    let func = Func::PartiallyApplied {
+                        func: UnappliedFunc::Prim(prim),
+                        bound_arg_spec: arg_spec,
+                        bound_args,
+                    };
+                    Ok(Val::Function(Rc::new(func)))
+                }
+            }
+        );
+
+        result.map_err(|err| format!("Error in `{prim}': {err}"))
+    }
+
+    // `prim` should not match Verb(_).
+    fn call_prim_monad(&mut self, prim: PrimFunc, x: Val) -> Res<Val> {
         use PrimFunc::*;
-        if let Verb(verb) = v {
-            v = PrimFunc::from_verb(verb, true);
-        }
-        let result = match v {
+        match prim {
             Identity | IdentityLeft | IdentityRight => Ok(x),
             Neg => prim::negate(x),
             Not => prim::not(x),
@@ -859,25 +1002,19 @@ impl Mem {
             Sum => prim::sum(x, None),
             Rec => {
                 self.push(x);
-                let arg_count = 1;
-                let frame = self.current_frame();
-                let code_index = frame.code_index;
-                let closure_env = frame.closure_env.clone();
-                self.call_explicit(arg_count, code_index, closure_env)?;
+                let explicit = self.current_frame().explicit.clone();
+                self.call_explicit(explicit, ArgSpec::saturated(1))?;
                 Ok(self.pop())
             }
 
-            _ => todo!("{x:?} {v:?}")
-        };
-        result.map_err(|err| cold(format!("Error in `{v}': {err}")))
+            _ => todo!("{x:?} {prim:?}")
+        }
     }
 
-    fn call_prim_dyad(&mut self, mut v: PrimFunc, x: Val, y: Val) -> Res<Val> {
+    // `prim` should not match Verb(_).
+    fn call_prim_dyad(&mut self, prim: PrimFunc, x: Val, y: Val) -> Res<Val> {
         use PrimFunc::*;
-        if let Verb(verb) = v {
-            v = PrimFunc::from_verb(verb, false);
-        }
-        let result = match v {
+        match prim {
             Identity | IdentityLeft => Ok(x),
             IdentityRight => Ok(y),
             Or => prim::or(x, y),
@@ -916,28 +1053,19 @@ impl Mem {
             Rec => {
                 self.push(y);
                 self.push(x);
-                let arg_count = 2;
-                let frame = self.current_frame();
-                let code_index = frame.code_index;
-                let closure_env = frame.closure_env.clone();
-                self.call_explicit(arg_count, code_index, closure_env)?;
+                let explicit = self.current_frame().explicit.clone();
+                self.call_explicit(explicit, ArgSpec::saturated(2))?;
                 Ok(self.pop())
             }
-            _ => todo!("{x:?} {v:?} {y:?}"),
-        };
-        result.map_err(|err| cold(format!("Error in `{v}': {err}")))
+            _ => todo!("{x:?} {prim:?} {y:?}"),
+        }
     }
 
     // TODO output formatting (take indent as arg)
     // TODO singleton lists print incorrectly ([1] prints as 1).
     fn prim_fmt(&self, prec: PrecedenceContext, x: &Val, out: &mut String) -> Res<()> {
-        macro_rules! write_or {
-            ($($arg:tt)*) => {
-                write!($($arg)*).map_err(|err| cold(err.to_string()))
-            };
-        }
-
         use PrecedenceContext::*;
+        use UnappliedFunc::*;
 
         fn parenthesized_if<F>(cond: bool, out: &mut String, f: F) -> Res<()>
         where F: FnOnce(&mut String) -> Res<()> {
@@ -1001,8 +1129,8 @@ impl Mem {
                 }
             }
             Val::Function(rc) => match &**rc {
-                Func::Prim(prim) => write_or!(out, "{prim}")?,
-                Func::AdverbDerived { adverb, operand } => parenthesized_if(
+                Func::Unapplied(Prim(prim)) => write_or!(out, "{prim}")?,
+                Func::Unapplied(AdverbDerived { adverb, operand }) => parenthesized_if(
                     prec >= ConjunctionLeftOperand, out, |out| {
                         write_or!(out, "{adverb}")?;
                         self.prim_fmt(AdverbOperand, operand.as_val(), out)?;
@@ -1044,10 +1172,12 @@ impl Mem {
                 //         Ok(())
                 //     }
                 // )?,
-                Func::Explicit { .. } => {
+                Func::Unapplied(Explicit { .. }) => {
                     // map code index -> tokens?
                     write_or!(out, "{{explicit func}}")?
                 }
+
+                Func::PartiallyApplied { .. } => todo!("format partially applied functions"),  // TODO
             }
         }
         Ok(())
@@ -1085,8 +1215,9 @@ impl Mem {
     }
 
     fn prim_print_bytecode(&self, x: &Val) -> Res<()> {
+        use UnappliedFunc::*;
         if let Val::Function(rc) = x {
-            if let Func::Explicit { code_index, closure_env } = &**rc {
+            if let Func::Unapplied(Explicit(ExplicitFunc { code_index, closure_env })) = &**rc {
                 if closure_env.borrow().is_empty() {
                     println!("Env: []");
                 } else {
@@ -1098,12 +1229,15 @@ impl Mem {
                     }
                     println!("]");
                 }
-                let len = irrefutable!(self.code[*code_index - 1],
-                                       Instr::MakeFunc { num_instructions: n } => n);
-
-                println!("Code: [");
-                for instr in &self.code[*code_index .. *code_index+len] {
-                    println!("  {instr}");
+                for i in *code_index..self.code.len() {
+                    let instr = &self.code[i];
+                    println!("  {}", instr);
+                    if let Instr::Return = instr {
+                        match self.code.get(i + 1) {
+                            Some(Instr::Header{..} | Instr::ArgCheckEq{..} | Instr::ArgCheck{..}) => continue,
+                            _ => break,
+                        }
+                    }
                 }
                 println!("]");
                 return Ok(())
@@ -1233,69 +1367,110 @@ impl Mem {
     }
 
     // Args should be on the stack in reverse order (first argument on top).
-    fn index_or_call(&mut self, f: &Val, arg_count: usize) -> Res<Val> {
+    fn index_or_call(&mut self, f: &Val, arg_spec: ArgSpec) -> Res<Val> {
         use Val::*;
         if let Function(func) = f {
-            self.call_func(func, arg_count)
+            self.call_func(func, arg_spec)
         } else {
-            self.progressive_index(f, arg_count)
+            self.progressive_index(f, arg_spec)
         }
     }
 
     // Args should be on the stack in reverse order.
-    fn call_func(&mut self, f: &Func, arg_count: usize) -> Res<Val> {
+    fn call_func(&mut self, f: &Func, arg_spec: ArgSpec) -> Res<Val> {
+        use UnappliedFunc::*;
         match f {
-            &Func::Explicit { ref closure_env, code_index } => {
-                self.call_explicit(arg_count, code_index, closure_env.clone())?;
+            Func::Unapplied(Explicit(explicit)) => {
+                self.call_explicit(explicit.clone(), arg_spec)?;
                 Ok(self.pop())
             }
 
-            &Func::Prim(prim) => {
-                if arg_count == 1 {
+            &Func::Unapplied(Prim(prim)) => self.call_prim_func(prim, arg_spec),
+            
+            // TODO reorganize the adverb stuff
+            &Func::Unapplied(AdverbDerived { adverb, ref operand }) => match arg_spec.raw() {
+                0b1_1 => {
                     let x = self.pop();
-                    self.call_prim_monad(prim, x)
-                } else if arg_count == 2 {
+                    self.call_prim_adverb(adverb, operand, x, None)
+                }
+                0b1_11 => {
                     let x = self.pop();
                     let y = self.pop();
-                    self.call_prim_dyad(prim, x, y)
-                } else {
-                    todo!("Arg count {arg_count} for primitive verbs")
+                    self.call_prim_adverb(adverb, operand, x, Some(y))
+                }
+                _ => {
+                    let arity = arg_spec.arity();
+                    if arity == 1 || arity == 2 {
+                        let args_start = self.stack.len() - arity as usize;
+                        let bound_args = self.stack.drain(args_start..).rev().collect();
+                        let func = Func::PartiallyApplied {
+                            func: UnappliedFunc::AdverbDerived { adverb, operand: operand.clone() },
+                            bound_arg_spec: arg_spec,
+                            bound_args,
+                        };
+                        Ok(Val::Function(Rc::new(func)))
+                    } else {
+                        cold_err!("Arity mismatch: expected 1 or 2 args, got {arity}")
+                    }
                 }
             }
-            
-            Func::AdverbDerived { adverb, operand } => {
-                if arg_count == 1 {
-                    let x = self.pop();
-                    self.call_prim_adverb(*adverb, operand, x, None)
-                } else if arg_count == 2 {
-                    let x = self.pop();
-                    let y = self.pop();
-                    self.call_prim_adverb(*adverb, operand, x, Some(y))
-                } else {
-                    todo!("Arg count {arg_count} for primitive adverbs")
+
+            &Func::PartiallyApplied { ref func, bound_arg_spec, ref bound_args } => {
+                let new_arg_spec = match bound_arg_spec.apply_more(arg_spec) {
+                    Ok(new_arg_spec) => new_arg_spec,
+                    Err(ArityMismatch { expected, actual }) =>
+                        return cold_err!("Arity mismatch: expected {expected} args, got {actual}"),
+                };
+
+                // TODO fill stack in place
+                let mut new_args = Vec::with_capacity(new_arg_spec.count_args() as usize);
+                let mut bound_args_i = 0;
+                for (already_bound, newly_bound) in std::iter::zip(bound_arg_spec, new_arg_spec) {
+                    if already_bound {
+                        new_args.push(bound_args[bound_args_i].clone());
+                        bound_args_i += 1;
+                    } else if newly_bound {
+                        new_args.push(self.pop());
+                    }
                 }
+
+                self.stack.extend(new_args.into_iter().rev());
+                self.call_func(&Func::Unapplied(func.clone()), new_arg_spec)
             }
         }
     }
 
     // Args should be on the stack in reverse order.
-    fn progressive_index(&mut self, x: &Val, arg_count: usize) -> Res<Val> {
-        let ret = self.progressive_index_loop(x, arg_count, 0);
+    fn progressive_index(&mut self, x: &Val, arg_spec: ArgSpec) -> Res<Val> {
+        let mut iter = arg_spec.into_iter();
+        let arg_count = iter.len();
+        let ret = self.progressive_index_loop(x, &mut iter, 0);
         self.stack.truncate(self.stack.len() - arg_count);
         ret
     }
 
     // `i` indexes from the top of the stack, so i=0 is stack.top().
-    fn progressive_index_loop(&mut self, x: &Val, arg_count: usize, i: usize) -> Res<Val> {
-        if i == arg_count { return Ok(x.clone()); }
-        let arg = self.stack[self.stack.len() - 1 - i].clone();
-        for_each_atom_retaining_shape(
-            arg,
-            |atom| {
-                let elem = self.prim_index(&x, atom)?;
-                self.progressive_index_loop(&elem, arg_count, i + 1)
-            }
-        )
+    fn progressive_index_loop(&mut self, x: &Val, arg_spec: &mut ArgSpecIter, i: usize) -> Res<Val> {
+        let arg_provided = match arg_spec.next() {
+            None => return Ok(x.clone()),
+            Some(arg_provided) => arg_provided,
+        };
+
+        if arg_provided {
+            let arg = self.stack[self.stack.len() - 1 - i].clone();
+            for_each_atom_retaining_shape(
+                arg,
+                |atom| {
+                    let elem = self.prim_index(&x, atom)?;
+                    self.progressive_index_loop(&elem, arg_spec, i + 1)
+                }
+            )
+        } else {
+            let vals = iter_val(x.clone()).map(
+                |elem| self.progressive_index_loop(&elem, arg_spec, i)
+            );
+            collect_list(vals)
+        }
     }
 
     // TODO index by float when int-convertible.
@@ -1305,7 +1480,7 @@ impl Mem {
             format!("index out of bounds\nRequested index {i}, but length is {len}")
         }
         fn to_index(i: i64, len: usize) -> usize {
-            if i >= 0 { i as usize } else { (len as i64 + i) as usize }  // TODO overflow?
+            if i >= 0 { i as usize } else { offset_by(len, i) }  // TODO overflow?
         }
         fn index<A>(slice: &[A], i: i64) -> Res<&A> {
             slice.get(to_index(i, slice.len())).ok_or_else(|| oob(i, slice.len()))
@@ -1954,6 +2129,10 @@ fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Res<Val> {
     x.dispatch_for_each(ForEach { mem, f })
 }
 
-fn to_string_or<A: ToString>(thing: Option<A>, def: &str) -> String {
-    thing.map_or_else(|| def.to_string(), |x| x.to_string())
+fn to_string_or<A: ToString>(thing: Option<A>, default: &str) -> String {
+    thing.map_or_else(|| default.to_string(), |x| x.to_string())
+}
+
+fn offset_by(n: usize, offset: i64) -> usize {
+    (n as i64 + offset) as usize
 }

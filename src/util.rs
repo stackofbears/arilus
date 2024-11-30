@@ -20,9 +20,24 @@ macro_rules! err {
 pub(crate) use err;
 
 macro_rules! cold_err {
-    ($($arg:tt)*) => { cold(err!($($arg)*)) };
+    ($($arg:tt)*) => {
+        {
+            use crate::util::{cold, err};
+            cold(err!($($arg)*))
+        }
+    };
 }
 pub(crate) use cold_err;
+
+macro_rules! write_or {
+    ($($arg:tt)*) => {
+        {
+            use crate::util::cold;
+            write!($($arg)*).map_err(|err| cold(err.to_string()))
+        }
+    };
+}
+pub(crate) use write_or;
 
 pub fn float_as_int(f: f64) -> Option<i64> {
     let trunc = f.trunc();

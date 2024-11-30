@@ -278,6 +278,8 @@ pub enum PrimVerb {
     QuestionColon,  // ?:
     Ampersand, // &
 
+    // TODO: replace P/Q with some numerical scheme for addressing arguments (e.g. _0, _1, ...; $0,
+    // $1, ...; :0, :1, ...)
     P,
     Q,
 }
