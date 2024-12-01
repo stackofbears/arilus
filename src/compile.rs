@@ -588,12 +588,18 @@ impl Compiler {
 
             let arg_check_index = self.push(Instr::Nop);
             for pat in pats {
-                self.compile_unpacking_assignment(pat, false)?;
+                if let Some(pat) = pat {
+                    self.compile_unpacking_assignment(pat, false)?;
+                }
             }
 
-            self.code[arg_check_index] = Instr::ArgCheck {
-                arg_spec: ArgSpec::saturated(pats.len() as u64)
-            };
+            let arg_spec = ArgSpec::new(
+                pats.iter().map(|pat| pat.is_some())
+            ).ok_or_else(
+                || format!("Can't define a function case that takes more than {} arguments.",
+                           ArgSpec::MAX_ARITY)
+            )?;
+            self.code[arg_check_index] = Instr::ArgCheck { arg_spec };
 
             if header_index.is_some() {
                 self.code.push(Instr::HeaderPassed);

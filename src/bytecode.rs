@@ -223,7 +223,7 @@ pub enum Instr {
 pub struct ArgSpec(NonZeroU64);
 
 impl ArgSpec {
-    const MAX_ARITY: u32 = 63;
+    pub const MAX_ARITY: u32 = 63;
 
     // None if `args_to_expect.len()` > MAX_ARITY.
     // TODO const fn version
