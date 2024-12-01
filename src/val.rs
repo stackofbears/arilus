@@ -216,7 +216,7 @@ impl PartialOrd for Func {
 impl Func {
     pub fn is_constant_function(&self) -> bool {
         matches!(self,
-                 Func::Unapplied(UnappliedFunc::AdverbDerived{adverb: PrimAdverb::Underscore, ..}))
+                 Func::Unapplied(UnappliedFunc::AdverbDerived{adverb: PrimAdverb::Underscore {..}, ..}))
     }
 
     fn key_variant(&self) -> u32 {

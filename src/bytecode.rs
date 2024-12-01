@@ -131,10 +131,8 @@ pub enum Instr {
     // right arguments, and pushes the result.
     Call2,
 
-    // Let [f, x1, x2, .., xN] be the top of the stack, with f..xN marked. Reverses all of themand
-    // pops f, so the new top of stack is [xN, .. x2, x1], and then calls f.
-    CallMarked,
-
+    // Let [f, x1, x2, .., xN] be the top of the stack, where N = arg_spec.arity(). Reverses all of
+    // them and pops f, so the new top of stack is [xN, .. x2, x1], and then calls f.
     CallSpec { arg_spec: ArgSpec },
 
     // Calls `var` on the marked arguments, which are on the stack in reverse order.
@@ -197,7 +195,7 @@ pub enum Instr {
     //
     // If the check fails: if this instruction was run directly, it throws an error. If was run as
     // part of Header, the case will be skipped.
-    ArgCheck { spec: ArgSpec },
+    ArgCheck { arg_spec: ArgSpec },
 
     // Checks that the function has been provided `count` args. If this fails, throw an error; if it
     // succeeds, the current marker is popped and all its marked stack values are popped.
@@ -225,22 +223,29 @@ pub enum Instr {
 pub struct ArgSpec(NonZeroU64);
 
 impl ArgSpec {
-    // Only takes the first 63 elements of `args_to_expect`.
+    const MAX_ARITY: u32 = 63;
+
+    // None if `args_to_expect.len()` > MAX_ARITY.
     // TODO const fn version
-    pub fn new(args_to_expect: impl IntoIterator<Item=bool>) -> Self {
+    pub fn new<Iter>(args_to_expect: Iter) -> Option<Self>
+    where Iter: IntoIterator<Item=bool, IntoIter: ExactSizeIterator> {
+        let iter = args_to_expect.into_iter();
+        if iter.len() > Self::MAX_ARITY as usize { return None }
+
         let mut val: u64 = 1;
-        for arg in args_to_expect.into_iter().take(63) {
+        for arg in iter {
             val = (val << 1) | arg as u64;
         }
-        Self(NonZeroU64::new(val).unwrap())
+        // SAFETY: iter.len() <= 63, so the arity bit can't be shifted out.
+        Some(Self(unsafe { NonZeroU64::new_unchecked(val) }))
     }
 
-    // Precondition: `arity` <= 63.
-    // TODO const fn version
+    // Precondition: `arity` <= MAX_ARITY.
     #[inline]
-    pub const fn saturated(arity: u32) -> Self {
-        let val = (1 << (arity as u64 + 1)) - 1;
-        assert!(val != 0);  // This is only possible if arity > 63
+    pub const fn saturated(arity: u64) -> Self {
+        assert!(arity <= Self::MAX_ARITY as u64);  // This makes val != 0.
+        let val = (1 << (arity + 1)) - 1;
+        // SAFETY: arity <= 63, so the arity bit can't be shifted out.
         Self(unsafe { NonZeroU64::new_unchecked(val) })
     }
 
@@ -267,7 +272,7 @@ impl ArgSpec {
         self.0.get() + 1 == 1 << (arity + 1) as u64
     }
 
-    // Arity is at most 63.
+    // Arity is at most MAX_ARITY.
     #[inline]
     pub fn arity(self) -> u32 {
         self.0.ilog2()
@@ -279,7 +284,7 @@ impl ArgSpec {
         self.arity_and_mask().1
     }
 
-    // Arity is at most 63. MSB in mask is never set.
+    // Arity is at most MAX_ARITY. MSB in mask is never set.
     #[inline]
     pub fn arity_and_mask(self) -> (u32, u64) {
         let arity = self.arity();
@@ -340,11 +345,14 @@ impl ArgSpec {
     }
 
     // "pushed" instead of "push" to emphasize this doesn't update self in-place.
-    // Panics if the result would exceed 63 args.
+    // Panics if the result would exceed MAX_ARITY args.
     pub fn pushed(self, next_arg: bool) -> Self {
-        match NonZeroU64::new(self.0.get() << 1 | next_arg as u64) {
-            Some(new) => ArgSpec(new),
-            None => panic!("ArgSpec: Too many args (64). Max is 63."),
+        let shifted = self.0.get() << 1;
+        if shifted != 0 {
+            // SAFETY: shifted != 0
+            unsafe { Self(NonZeroU64::new_unchecked(shifted | next_arg as u64)) }
+        } else {
+            panic!("ArgSpec: Too many args (64). Max is {}.", Self::MAX_ARITY)
         }
     }
 
@@ -378,13 +386,26 @@ impl ArgSpec {
         }
 
         write_or!(w, "[")?;
+
         let mut names = ExampleVariableNames::new();
-        for has_arg in self {
+        let mut iter = self.into_iter();
+        if let Some(has_arg) = iter.next() {
             if has_arg {
                 names.write_name(w)?;
+            } else {
+                write_or!(w, "_")?;
             }
-            write_or!(w, ";")?;
         }
+
+        for has_arg in iter {
+            write_or!(w, ";")?;
+            if has_arg {
+                names.write_name(w)?;
+            } else {
+                write_or!(w, "_")?;
+            }
+        }
+
         write_or!(w, "]")
     }
 }
@@ -466,7 +487,7 @@ impl fmt::Display for Instr {
             Instr::CallPrimFunc1 { prim } => write!(f, "CallPrimFunc1({prim})"),
             Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),
             Instr::CallPrimAdverb { prim } => write!(f, "CallPrimAdverb({prim})"),
-            Instr::ArgCheck { spec } => write!(f, "ArgCheck({spec})"),
+            Instr::ArgCheck { arg_spec } => write!(f, "ArgCheck({arg_spec})"),
             Instr::LiteralBytes { bytes } => {
                 let as_str = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
                 write!(f, "LiteralBytes({as_str:?})")

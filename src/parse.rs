@@ -51,6 +51,9 @@ pub enum SmallNoun {
     ArrayLiteral(Vec<Elem>),
 
     // a[i1; i2;...; iN]
+    // Represents indexing an array or calling a function.
+    // Just like SmallVerb::NamedAdverbCall, but the result is treated as a noun. 
+    // TODO should a[;j] be a verb?
     Indexed(Box<SmallNoun>, Vec<Elem>),
 }
 
@@ -102,6 +105,10 @@ pub enum Elem {
     // A single expression: one item of the array or argument list.
     Expr(Expr),
 
+    // _ in an argument list of any length, or an absent item in an argument list with length >= 2.
+    // e.g., in f[;3] the Elems are [MissingArg, Expr(3)]
+    MissingArg,
+
     // A splicing of another array; this expands to 0 or more indvidual items. .. is parsed like an
     // adverb, but it can only be used in array literals and function arguments.
     Spliced(SmallExpr),
@@ -114,6 +121,8 @@ pub enum SmallVerb {
     PrimVerb(PrimFunc),
     Lambda(Lambda),
     PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
+
+    // Just like SmallNoun::Indexed, but the result is treated as a verb.
     NamedAdverbCall(Box<SmallVerb>, Vec<Elem>),
 }
 
@@ -176,6 +185,7 @@ pub enum SmallExpr {
 enum StrandedElem {
     Single(SmallNoun),
     Spliced(SmallExpr),
+    Underscore,
 }
 
 impl StrandedElem {
@@ -183,6 +193,7 @@ impl StrandedElem {
         match self {
             StrandedElem::Single(small_noun) => Elem::Expr(Expr::Noun(Noun::SmallNoun(small_noun))),
             StrandedElem::Spliced(small_expr) => Elem::Spliced(small_expr),
+            StrandedElem::Underscore => Elem::MissingArg,
         }
     }
 }
@@ -339,14 +350,37 @@ impl<'a> Parser<'a> {
     fn parse_elem(&mut self) -> Parsed<Elem> {
         Ok(match self.parse_splice()? {
             Some(splice) => Some(Elem::Spliced(splice)),
-            None => self.parse_expr()?.map(Elem::Expr),
+            None => match self.peek() {
+                Some(&Token::PrimAdverb(PrimAdverb::Underscore { before_whitespace })) => {
+                    self.skip();
+                    if before_whitespace {
+                        Some(Elem::MissingArg)
+                    } else {
+                        match self.parse_small_expr(/*stranding_allowed=*/false)? {
+                            None => Some(Elem::MissingArg),
+                            Some(small_expr) => Some(Elem::Expr(Expr::Noun(
+                                Noun::SmallNoun(SmallNoun::Underscored(Box::new(small_expr)))
+                            ))),
+                        }
+                    }
+                }
+                _ => self.parse_expr()?.map(Elem::Expr),
+            }
         })
     }
 
     fn parse_stranded_elem(&mut self) -> Parsed<StrandedElem> {
         Ok(match self.parse_splice()? {
             Some(splice) => Some(StrandedElem::Spliced(splice)),
-            None => self.parse_small_noun_no_stranding()?.map(StrandedElem::Single),
+            None => {
+                let lone_underscore =
+                    Token::PrimAdverb(PrimAdverb::Underscore { before_whitespace: true });
+                if self.consume(&lone_underscore) {
+                    Some(StrandedElem::Underscore)
+                } else {
+                    self.parse_small_noun_no_stranding()?.map(StrandedElem::Single)
+                }
+            }
         })
     }
 
@@ -358,7 +392,10 @@ impl<'a> Parser<'a> {
         match self.parse_stranded_elem()? {
             None => match stranded_elem {
                 StrandedElem::Single(small_noun) => Ok(Some(small_noun)),
-                StrandedElem::Spliced(name) => cold_err!("`..' is only {name:?} allowed in array literals and function argument lists."),
+                StrandedElem::Spliced(_) => cold_err!("`..' is only allowed in array literals."),
+                StrandedElem::Underscore =>
+                    cold_err!("When not used as a pattern or argument placeholder, `_' \
+                               must take an operand without intervening whitespace."),
             }
             Some(next_elem) => {
                 let mut elems = vec![stranded_elem.to_elem(), next_elem.to_elem()];
@@ -392,7 +429,10 @@ impl<'a> Parser<'a> {
                     }
                 }?
             }
-            Some(Token::PrimAdverb(PrimAdverb::Underscore)) => {
+            Some(&Token::PrimAdverb(PrimAdverb::Underscore { before_whitespace })) => {
+                if before_whitespace {
+                    return Err(self.expected("operand for `_' with no intervening whitespace"));
+                }
                 self.skip();
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
                     Some(operand) => Underscored(Box::new(operand)),
@@ -544,7 +584,7 @@ impl<'a> Parser<'a> {
                 self.skip();
                 pat
             }
-            Some(Token::PrimAdverb(PrimAdverb::Underscore)) => {
+            Some(&Token::PrimAdverb(PrimAdverb::Underscore { .. })) => {
                 self.skip();
                 Pattern::Wildcard
             }

@@ -58,7 +58,7 @@ impl Lexer {
                     tokens.push(match token {
                         Colon if is_after_whitespace => ColonAfterWhitespace,
                         LBracket {..} => LBracket { after_whitespace: is_after_whitespace },
-                        DotDot {..} => DotDot { before_whitespace: text.starts_with(|c: char| c.is_whitespace()) },
+                        DotDot {..} => DotDot { before_whitespace: text.is_empty() || text.starts_with(|c: char| c.is_whitespace()) },
                         _ => token.clone(),
                     });
                     continue 'next_token;
@@ -77,7 +77,15 @@ impl Lexer {
             if let Some((name, after_name)) = prefix(text, is_identifier_char) {
                 let first_char = name.chars().next().unwrap();
                 let token = if let Some(keyword) = self.literal_identifier_tokens.get(name) {
-                    keyword.clone()
+                    use crate::lex::PrimAdverb::Underscore;
+                    match keyword {
+                        PrimAdverb(Underscore {..}) => {
+                            let before_whitespace =
+                                after_name.is_empty() || after_name.starts_with(|c: char| c.is_whitespace());
+                            PrimAdverb(Underscore { before_whitespace })
+                        }
+                        _ => keyword.clone(),
+                    }
                 } else if first_char.is_ascii_uppercase() {
                     let mut name = name.to_string();
                     // SAFETY: We know that index 0 is ASCII.
@@ -296,7 +304,7 @@ pub enum PrimAdverb {
     BackslashColon, // \:
     P,  // p
     Q,  // q
-    Underscore,  // _
+    Underscore { before_whitespace: bool },  // _
 
     Runs,
     // TODO converge/do-times/do-while
@@ -404,7 +412,7 @@ impl Display for PrimAdverb {
             BackslashColon => "\\:",
             P => "p",
             Q => "q",
-            Underscore => "_",
+            Underscore { before_whitespace } => if *before_whitespace { "_ " } else { "_" }
             Runs => "runs",
         };
 
@@ -486,7 +494,7 @@ fn literal_identifier_tokens() -> HashMap<String, Token> {
         Token::PrimVerb(PrimVerb::Q),
         Token::PrimAdverb(PrimAdverb::P),
         Token::PrimAdverb(PrimAdverb::Q),
-        Token::PrimAdverb(PrimAdverb::Underscore),
+        Token::PrimAdverb(PrimAdverb::Underscore { before_whitespace: false }),
     ].iter().map(|t| (t.to_string(), t.clone())).collect()
 }
 

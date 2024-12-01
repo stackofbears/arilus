@@ -40,9 +40,13 @@ struct StackFrame {
     // TODO: use Option<NonZero>
     next_header: Option<usize>,
 
+    // The ArgSpec this explicit function was called with.
     arg_spec: ArgSpec,
 
-    // Index into locals_stack. Local slots are offsets from this index.
+    // Index into `stack`.
+    args_start: usize,
+
+    // Index into `locals_stack`. Local slots are offsets from this index.
     locals_start: usize,
 }
 
@@ -80,6 +84,7 @@ impl Mem {
                 },
                 next_header: None,
                 arg_spec: ArgSpec::saturated(0),
+                args_start: 0,
                 locals_start: 0,
             }],
         }
@@ -182,9 +187,9 @@ impl Mem {
                         ArgCheckEq { count } =>
                             if provided_arg_spec.arity() as usize == count { Enter }
                             else { Skip }
-                        ArgCheck { spec } =>
-                            if provided_arg_spec == spec { Enter }
-                            else if spec.is_satisfied_by(provided_arg_spec) { Curry }
+                        ArgCheck { arg_spec } =>
+                            if provided_arg_spec == arg_spec { Enter }
+                            else if arg_spec.is_satisfied_by(provided_arg_spec) { Curry }
                             else { Skip }
                         _ => Skip,
                     };
@@ -207,7 +212,7 @@ impl Mem {
                             // copied ones:
                             // 
                             //   ...|a3|a2|a1|a0|a3|a2|a1|a0|
-                            let args_start = self.peek_marker();
+                            let args_start = self.current_frame().args_start;
                             let arg_count = provided_arg_spec.arity() as usize;
                             let have = self.stack.len() - (args_start + arg_count);
                             if have < arg_count {
@@ -224,11 +229,10 @@ impl Mem {
                                 closure_env: frame.explicit.closure_env,
                             });
                             let bound_args = {
-                                let args_start = self.pop_marker();
                                 let arg_count = provided_arg_spec.arity() as usize;
                                 // Pop the unconsumed args from the last function case, if any.
-                                self.stack.truncate(args_start + arg_count);
-                                self.stack.drain(args_start..).collect()
+                                self.stack.truncate(frame.args_start + arg_count);
+                                self.stack.drain(frame.args_start..).collect()
                             };
                             self.pop_locals();
                             let func = Func::PartiallyApplied {
@@ -243,17 +247,15 @@ impl Mem {
                 HeaderPassed => {
                     let frame = self.current_frame_mut();
                     frame.next_header = None;
-
-                    // Pop off the saved args.
-                    let args_start = self.pop_marker();
+                    let args_start = frame.args_start;
                     self.stack.truncate(args_start);
                 }
-                ArgCheck { spec } => {
+                ArgCheck { arg_spec } => {
                     let provided_arg_spec = self.current_frame().arg_spec;
-                    if provided_arg_spec == spec {
-                        let args_start = self.pop_marker();
-                        self.stack.truncate(args_start + spec.arity() as usize);
-                    } else if spec.is_satisfied_by(provided_arg_spec) {
+                    if provided_arg_spec == arg_spec {
+                        let frame = self.current_frame();
+                        self.stack.truncate(frame.args_start + arg_spec.count_args() as usize);
+                    } else if arg_spec.is_satisfied_by(provided_arg_spec) {
                         // TODO deduplicate with header code
                         let frame = self.stack_frames.pop().unwrap();
                         let explicit = UnappliedFunc::Explicit(ExplicitFunc {
@@ -261,11 +263,10 @@ impl Mem {
                             closure_env: frame.explicit.closure_env,
                         });
                         let bound_args = {
-                            let args_start = self.pop_marker();
-                            let arg_count = provided_arg_spec.arity();
+                            let arg_count = provided_arg_spec.count_args();
                             // Pop the unconsumed args from the last function case, if any.
-                            self.stack.truncate(args_start + arg_count as usize);
-                            self.stack.drain(args_start..).collect()
+                            self.stack.truncate(frame.args_start + arg_count as usize);
+                            self.stack.drain(frame.args_start..).collect()
                         };
                         self.pop_locals();
                         let func = Func::PartiallyApplied {
@@ -279,12 +280,12 @@ impl Mem {
                         // otherwise, Header would have taken care of it and skipped this
                         // instruction.
                         let mut msg = "Argument mismatch: function has no case matching ".to_string();
-                        spec.describe(&mut msg)?;
+                        arg_spec.describe(&mut msg)?;
                         return Err(msg);
                     }
                 }
                 ArgCheckEq { count } => {
-                    let arg_count = self.current_frame().arg_spec.arity() as usize;
+                    let arg_count = self.current_frame().arg_spec.count_args() as usize;
                     if arg_count != count {
                         // We don't need to try jumping to the next case on failure because this
                         // instruction is only executed directly if this is the last or only case;
@@ -292,14 +293,14 @@ impl Mem {
                         // instruction.
                         return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
                     }
-                    let args_start = self.pop_marker();
+                    let args_start = self.current_frame().args_start;
                     self.stack.truncate(args_start + arg_count);
                 }
                 CollectArgs { suffix_count, keep } => {
-                    let arg_count = self.current_frame().arg_spec.arity() as usize;
-                    let args_start = self.peek_marker();
-                    let have_saved_args = self.current_frame().next_header.is_some() as usize;
-                    let vals_start = args_start + suffix_count as usize + arg_count * have_saved_args;
+                    let frame = self.current_frame();
+                    let arg_count = frame.arg_spec.arity() as usize;
+                    let have_saved_args = frame.next_header.is_some() as usize;
+                    let vals_start = frame.args_start + suffix_count as usize + arg_count * have_saved_args;
                     if keep {
                         let array = collect_list(
                             self.stack.drain(vals_start..).map(Ok::<Val, Empty>).rev()
@@ -311,7 +312,7 @@ impl Mem {
                 }
                 CopyArgs => {
                     let arg_count = self.current_frame().arg_spec.arity() as usize;
-                    let args_start = self.peek_marker();
+                    let args_start = self.current_frame().args_start;
                     self.push_marker(self.stack.len());
                     self.stack.extend_from_within(args_start .. args_start+arg_count);
                 }
@@ -361,19 +362,9 @@ impl Mem {
                         ip = code_index;
                     }
                 }
-                CallMarked => {
-                    let call_start = self.pop_marker();
-                    self.stack[call_start..].reverse();
-                    let f = self.pop();
-                    let arity = self.stack.len() - call_start;
-                    let arg_spec = ArgSpec::saturated(arity as u32);
-                    if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
-                        ip = code_index;
-                    }
-                }
                 CallSpec { arg_spec } => {
-                    // - arity for args, - 1 for function.
-                    let call_start = self.stack.len() - arg_spec.arity() as usize - 1;
+                    // - 1 for function.
+                    let call_start = self.stack.len() - arg_spec.count_args() as usize - 1;
                     self.stack[call_start..].reverse();
                     let f = self.pop();
                     if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
@@ -382,9 +373,7 @@ impl Mem {
                 }
                 CallOnArgs { var } => {
                     let f = self.load(var);
-                    let call_start = self.pop_marker();
-                    let arity = self.stack.len() - call_start;
-                    let arg_spec = ArgSpec::saturated(arity as u32);
+                    let arg_spec = self.current_frame().arg_spec;
                     if let Some(code_index) = self.call_or_get_jump_target(ip, f, arg_spec)? {
                         ip = code_index;
                     }
@@ -605,11 +594,6 @@ impl Mem {
     }
 
     #[inline]
-    fn peek_marker(&mut self) -> usize {
-        *self.stack_markers.last().unwrap()
-    }
-
-    #[inline]
     fn current_frame(&self) -> &StackFrame {
         self.stack_frames.last().unwrap()
     }
@@ -694,11 +678,12 @@ impl Mem {
         let code_index = explicit.code_index;
         self.stack_frames.push(StackFrame {
             explicit,
+            args_start: self.stack.len() - arg_spec.count_args() as usize,
             arg_spec,
             next_header: None,
             locals_start: self.locals_stack.len(),
         });
-        self.push_marker(self.stack.len() - arg_spec.arity() as usize);
+        self.push_marker(self.stack.len() - arg_spec.count_args() as usize);
         self.execute(code_index)
     }
 
@@ -710,12 +695,12 @@ impl Mem {
             let locals_start = self.locals_stack.len();
             let code_index = explicit.code_index;
             *self.current_frame_mut() = StackFrame {
-                arg_spec,
                 explicit,
+                arg_spec,
+                args_start: self.stack.len() - arg_spec.count_args() as usize,
                 locals_start,
                 next_header: None,
             };
-            self.push_marker(self.stack.len() - arg_spec.arity() as usize);
             Ok(Some(code_index))
         } else {
             self.call_explicit(explicit, arg_spec).map(|_| None)
@@ -874,7 +859,7 @@ impl Mem {
                 Some(y) => self.prim_runs_dyad(operand, x, y)?,
                 None => self.prim_runs_monad(operand, x)?,
             }
-            Underscore => operand.clone(),
+            Underscore {..} => operand.clone(),
             AtColon => {
                 let index = self.call_monad(operand, x.clone())?;
                 let elem = self.prim_index(&maybe_y.expect("TODO: monadic @:v"), &index)?;
@@ -1229,6 +1214,7 @@ impl Mem {
                     }
                     println!("]");
                 }
+                println!("Code: [");
                 for i in *code_index..self.code.len() {
                     let instr = &self.code[i];
                     println!("  {}", instr);

@@ -472,21 +472,22 @@ impl Compiler {
                     if !keep { self.code.push(Instr::Pop) }
                 }
                 _ => {
-                    self.code.push(Instr::MarkStack);
-
-                    let mut arity = Some(elems.len() as u32);
-                    for elem in elems {
-                        if matches!(elem, Elem::Spliced(_)) {
-                            arity = None;
-                            break;
-                        }
-                    }
-
                     self.compile_small_verb(small_verb, arity, true)?;
                     for elem in elems {
+                        if matches!(elem, Elem::Spliced(_)) {
+                            todo!("Support splices in argument lists.");
+                        }
                         self.compile_elem(elem)?;
                     }
-                    self.code.push(Instr::CallMarked);
+
+                    let arg_spec = ArgSpec::new(elems.iter().map(|arg| !matches!(arg, Elem::MissingArg)));
+                    match arg_spec {
+                        Some(arg_spec) => self.code.push(Instr::CallSpec { arg_spec }),
+                        None => return cold_err!(
+                            "Can't call a function or index an array with more than 63 arguments."
+                        ),
+                    }
+                    
                     if !keep { self.code.push(Instr::Pop) }
                 }
             }
@@ -590,7 +591,9 @@ impl Compiler {
                 self.compile_unpacking_assignment(pat, false)?;
             }
 
-            self.code[arg_check_index] = Instr::ArgCheckEq { count: pats.len() };
+            self.code[arg_check_index] = Instr::ArgCheck {
+                arg_spec: ArgSpec::saturated(pats.len() as u64)
+            };
 
             if header_index.is_some() {
                 self.code.push(Instr::HeaderPassed);
@@ -782,12 +785,7 @@ impl Compiler {
                 }
                 self.compile_noun(&*last, keep)?;
             }
-            Underscored(small_expr) => {
-                match small_expr.as_ref() {
-                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None, keep)?,
-                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, keep)?,
-                }
-            }
+            Underscored(small_expr) => self.compile_small_expr(small_expr.as_ref(), keep)?,
             Constant(Literal::Int(int)) => if keep { self.code.push(Instr::PushLiteralInteger(*int)) }
             Constant(Literal::Float(float)) => if keep { self.code.push(Instr::PushLiteralFloat(*float)) }
             Constant(Literal::Char(byte)) => if keep {
@@ -806,37 +804,88 @@ impl Compiler {
                 }
             }
             ArrayLiteral(elems) => {
-                self.code.push(Instr::MarkStack);
-                for elem in elems {
-                    self.compile_elem(elem)?;
+                let num_missing_args =
+                    elems.iter().filter(|elem| matches!(elem, Elem::MissingArg)).count();
+                if num_missing_args == 0 {
+                    self.code.push(Instr::MarkStack);
+                    for elem in elems {
+                        self.compile_elem(elem)?;
+                    }
+                    self.code.push(Instr::CollectMarkedToArray);
+                } else {
+                    for elem in elems {
+                        self.compile_elem(elem)?;
+                    }
+                    let make_func_index = self.push(Instr::Nop);
+                    self.push(Instr::ArgCheck { arg_spec: ArgSpec::saturated(num_missing_args as u64) });
+                    for i in 0..num_missing_args {
+                        self.code.push(Instr::StoreTo { dst: Var { place: Place::Local, slot: i }});
+                    }
+
+                    self.code.push(Instr::MarkStack);
+
+                    let mut locals_used = 0;
+                    let mut closure_vars_used = 0;
+                    for elem in elems {
+                        let (place, slot) = match elem {
+                            Elem::MissingArg => (Place::Local, &mut locals_used),
+                            Elem::Expr(_) | Elem::Spliced(_) => (Place::ClosureEnv, &mut closure_vars_used),
+                        };
+                        self.code.push(Instr::PushVar { src: Var { place, slot: *slot } });
+                        if let Elem::Spliced(_) = elem { self.code.push(Instr::Splat); }
+                        *slot += 1;
+                    }
+
+                    self.code.push(Instr::CollectMarkedToArray);
+                    self.code.push(Instr::Return);
+                    let num_instructions = self.code.len() - (make_func_index + 1);
+                    self.code[make_func_index] = Instr::MakeFunc { num_instructions };
+                    self.code.push(Instr::MakeClosureFromStack {
+                        num_closure_vars: elems.len() - num_missing_args
+                    });
                 }
-                self.code.push(Instr::CollectMarkedToArray);
                 if !keep { self.code.push(Instr::Pop) }
             }
             Indexed(small_noun, args) => {
-                self.code.push(Instr::MarkStack);
                 self.compile_small_noun(&*small_noun, true)?;
                 for elem in args {
+                    if matches!(elem, Elem::Spliced(_)) {
+                        todo!("Support splices in argument lists.")
+                    }
                     self.compile_elem(elem)?;
                 }
-                self.code.push(Instr::CallMarked);
+                let arg_spec =
+                    ArgSpec::new(args.iter().map(|arg| !matches!(arg, Elem::MissingArg)));
+                match arg_spec {
+                    Some(arg_spec) => self.code.push(Instr::CallSpec { arg_spec }),
+                    None => return cold_err!(
+                        "Can't call a function or index an array with more than 63 arguments."
+                    ),
+                }
+
                 if !keep { self.code.push(Instr::Pop) }
             }
         }
         Ok(())
     }
 
+    // Caller must handle Elem::MissingArg, which doesn't compile to anything.
     fn compile_elem(&mut self, elem: &Elem) -> Res<()> {
         match elem {
+            Elem::MissingArg => Ok(()),
             Elem::Expr(expr) => self.compile_expr(expr, true),
             Elem::Spliced(small_expr) => {
-                match small_expr {
-                    SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None, true)?,
-                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
-                }
+                self.compile_small_expr(small_expr, true)?;
                 self.code.push(Instr::Splat);
                 Ok(())
             }
+        }
+    }
+
+    fn compile_small_expr(&mut self, expr: &SmallExpr, keep: bool) -> Res<()> {
+        match expr {
+            SmallExpr::Verb(small_verb) => self.compile_small_verb(small_verb, None, keep),
+            SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, keep),
         }
     }
 
@@ -1105,7 +1154,7 @@ fn pattern_to_small_noun(pat: &Pattern) -> Res<SmallNoun> {
 fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<u32>) -> Option<u32> {
     use PrimAdverb::*;
     match adverb {
-        Underscore => None,  // TODO is this right?
+        Underscore {..} => None,  // TODO is this right?
         AtColon => Some(1),
         Tilde | Backslash | BackslashColon | Runs => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
