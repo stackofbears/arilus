@@ -179,19 +179,16 @@ impl Mem {
                     self.push(Val::Function(Rc::new(func)));
                 }
                 Header { next_case_offset } => {
-                    enum CaseTreatment { Enter, Curry, Skip }
+                    enum CaseTreatment { Enter, Curry, GoToNextCase }
                     use CaseTreatment::*;
 
                     let provided_arg_spec = self.current_frame().arg_spec;
                     let action = match self.code[ip] {
-                        ArgCheckEq { count } =>
-                            if provided_arg_spec.arity() as usize == count { Enter }
-                            else { Skip }
                         ArgCheck { arg_spec } =>
                             if provided_arg_spec == arg_spec { Enter }
                             else if arg_spec.is_satisfied_by(provided_arg_spec) { Curry }
-                            else { Skip }
-                        _ => Skip,
+                            else { GoToNextCase }
+                        _ => GoToNextCase,
                     };
 
                     match action {
@@ -213,7 +210,7 @@ impl Mem {
                             // 
                             //   ...|a3|a2|a1|a0|a3|a2|a1|a0|
                             let args_start = self.current_frame().args_start;
-                            let arg_count = provided_arg_spec.arity() as usize;
+                            let arg_count = provided_arg_spec.count_args() as usize;
                             let have = self.stack.len() - (args_start + arg_count);
                             if have < arg_count {
                                 self.stack.extend_from_within(args_start+have .. args_start+arg_count);
@@ -229,19 +226,18 @@ impl Mem {
                                 closure_env: frame.explicit.closure_env,
                             });
                             let bound_args = {
-                                let arg_count = provided_arg_spec.arity() as usize;
-                                // Pop the unconsumed args from the last function case, if any.
+                                let arg_count = provided_arg_spec.count_args() as usize;
+                                // Pop the unconsumed args from the last function case, if any
                                 self.stack.truncate(frame.args_start + arg_count);
                                 self.stack.drain(frame.args_start..).collect()
                             };
-                            self.pop_locals();
                             let func = Func::PartiallyApplied {
                                 func: explicit, bound_arg_spec: provided_arg_spec, bound_args
                             };
                             self.push(Val::Function(Rc::new(func)));
                             return Ok(())
                         }
-                        Skip => ip = offset_by(ip, next_case_offset),
+                        GoToNextCase => ip = offset_by(ip, next_case_offset),
                     }
                 }
                 HeaderPassed => {
@@ -257,6 +253,7 @@ impl Mem {
                         self.stack.truncate(frame.args_start + arg_spec.count_args() as usize);
                     } else if arg_spec.is_satisfied_by(provided_arg_spec) {
                         // TODO deduplicate with header code
+                        self.pop_locals();
                         let frame = self.stack_frames.pop().unwrap();
                         let explicit = UnappliedFunc::Explicit(ExplicitFunc {
                             code_index: ip - 1, // Come back to this header
@@ -268,7 +265,6 @@ impl Mem {
                             self.stack.truncate(frame.args_start + arg_count as usize);
                             self.stack.drain(frame.args_start..).collect()
                         };
-                        self.pop_locals();
                         let func = Func::PartiallyApplied {
                             func: explicit, bound_arg_spec: provided_arg_spec, bound_args
                         };
@@ -280,22 +276,22 @@ impl Mem {
                         // otherwise, Header would have taken care of it and skipped this
                         // instruction.
                         let mut msg = "Argument mismatch: function has no case matching ".to_string();
-                        arg_spec.describe(&mut msg)?;
+                        provided_arg_spec.describe(&mut msg)?;
                         return Err(msg);
                     }
                 }
-                ArgCheckEq { count } => {
-                    let arg_count = self.current_frame().arg_spec.count_args() as usize;
-                    if arg_count != count {
-                        // We don't need to try jumping to the next case on failure because this
-                        // instruction is only executed directly if this is the last or only case;
-                        // otherwise, Header would have taken care of it and skipped this
-                        // instruction.
-                        return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
-                    }
-                    let args_start = self.current_frame().args_start;
-                    self.stack.truncate(args_start + arg_count);
-                }
+                // ArgCheckEq { count } => {
+                //     let arg_count = self.current_frame().arg_spec.count_args() as usize;
+                //     if arg_count != count {
+                //         // We don't need to try jumping to the next case on failure because this
+                //         // instruction is only executed directly if this is the last or only case;
+                //         // otherwise, Header would have taken care of it and skipped this
+                //         // instruction.
+                //         return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
+                //     }
+                //     let args_start = self.current_frame().args_start;
+                //     self.stack.truncate(args_start + arg_count);
+                // }
                 CollectArgs { suffix_count, keep } => {
                     let frame = self.current_frame();
                     let arg_count = frame.arg_spec.arity() as usize;
@@ -938,7 +934,7 @@ impl Mem {
                 // arities for consistency.
                 _ if arg_spec.has_no_args() => Ok(Val::prim_func(prim)),
                 _ => {
-                    let args_start = self.stack.len() - arg_spec.arity() as usize;
+                    let args_start = self.stack.len() - arg_spec.count_args() as usize;
                     let bound_args = self.stack.drain(args_start..).rev().collect();
                     let func = Func::PartiallyApplied {
                         func: UnappliedFunc::Prim(prim),
@@ -1165,7 +1161,32 @@ impl Mem {
                     write_or!(out, "{{explicit func}}")?
                 }
 
-                Func::PartiallyApplied { .. } => todo!("format partially applied functions"),  // TODO
+                Func::PartiallyApplied { func, bound_arg_spec, bound_args } => {
+                    self.prim_fmt(PrecedenceContext::ConjunctionLeftOperand,
+                                  &Val::Function(Rc::new(Func::Unapplied(func.clone()))),
+                                  out)?;
+                    write_or!(out, "[")?;
+                    let mut args_i = 0;
+                    let mut print_one = |has_arg: bool, out: &mut String| -> Res<()> {
+                        if has_arg {
+                            self.prim_fmt(PrecedenceContext::Toplevel, &bound_args[args_i], out)?;
+                            args_i += 1;
+                        } else {
+                            write_or!(out, "_")?;
+                        }
+                        Ok(())
+                    };
+
+                    let mut iter = bound_arg_spec.into_iter();
+                    if let Some(has_arg) = iter.next() {
+                        print_one(has_arg, out)?;
+                    }
+                    for has_arg in iter {
+                        write_or!(out, "; ")?;
+                        print_one(has_arg, out)?;
+                    }
+                    write_or!(out, "]")?;
+                }
             }
         }
         Ok(())
@@ -1223,7 +1244,7 @@ impl Mem {
                     println!("  {}", instr);
                     if let Instr::Return = instr {
                         match self.code.get(i + 1) {
-                            Some(Instr::Header{..} | Instr::ArgCheckEq{..} | Instr::ArgCheck{..}) => continue,
+                            Some(Instr::Header{..} | Instr::ArgCheck{..}) => continue,
                             _ => break,
                         }
                     }
@@ -1390,7 +1411,7 @@ impl Mem {
                 _ => {
                     let arity = arg_spec.arity();
                     if arity == 1 || arity == 2 {
-                        let args_start = self.stack.len() - arity as usize;
+                        let args_start = self.stack.len() - arg_spec.count_args() as usize;
                         let bound_args = self.stack.drain(args_start..).rev().collect();
                         let func = Func::PartiallyApplied {
                             func: UnappliedFunc::AdverbDerived { adverb, operand: operand.clone() },
