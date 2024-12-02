@@ -138,6 +138,27 @@ pub fn negate(x: Val) -> Res<Val> {
     })
 }
 
+pub fn abs(x: Val) -> Res<Val> {
+    use Val::*;
+    Ok(match x {
+        Int(x) => Int(x.abs()),
+        Float(x) => Float(x.abs()),
+        I64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => I64s(Rc::new(x.into_iter().map(|x| x.abs()).collect())),
+            Err(x) => I64s(Rc::new(x.as_slice().iter().map(|x| x.abs()).collect())),
+        }
+        F64s(x) => match Rc::try_unwrap(x) {
+            Ok(x) => F64s(Rc::new(x.into_iter().map(|x| x.abs()).collect())),
+            Err(x) => F64s(Rc::new(x.as_slice().iter().map(|x| x.abs()).collect())),
+        }
+        Vals(x) => match Rc::try_unwrap(x) {
+            Ok(x) => Vals(Rc::new(x.into_iter().map(abs).collect::<Result<_, _>>()?)),
+            Err(x) => Vals(Rc::new(x.as_slice().iter().cloned().map(abs).collect::<Result<_, _>>()?)),
+        }
+        x => return cold_err!("domain\nExpected a numeric value, got {}", x.type_name()),
+    })
+}
+
 pub fn sum(x: Val, y: Option<Val>) -> Res<Val> {
     match x {
         atom!() => return match y {
@@ -399,7 +420,7 @@ pub fn parse_int(x: &Val) -> Res<Val> {
             }
         }
         Vals(vals) => collect_list(vals.iter().map(parse_int)),
-        _ => cold_err!("failed parse; expected string, got {x:?}"),
+        _ => cold_err!("failed parse; expected string, got {}", x.type_name()),
     }
 }
 
@@ -419,6 +440,6 @@ pub fn parse_float(x: &Val) -> Res<Val> {
             }
         }
         Vals(vals) => collect_list(vals.iter().map(parse_float)),
-        _ => cold_err!("failed parse; expected string, got {x:?}"),
+        _ => cold_err!("failed parse; expected string, got {}", x.type_name()),
     }
 }

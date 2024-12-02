@@ -961,6 +961,7 @@ impl Mem {
             ParseInt => prim::parse_int(&x),
             ParseFloat => prim::parse_float(&x),
             Neg => prim::negate(x),
+            Abs => prim::abs(x),
             Not => prim::not(x),
             Show => prim_show(x),
             GetLine => prim_get_line(),
