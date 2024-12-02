@@ -383,3 +383,42 @@ pub fn remove(x: Val, y: &Val) -> Val {
     collect_list(iter_val(x).filter(|x| x != y).map(Ok::<Val, Empty>)).unwrap()
 }
     
+pub fn parse_int(x: &Val) -> Res<Val> {
+    use Val::*;
+    match x {
+        &Char(c) => if c >= '0' as u8 && c <= '9' as u8 {
+            Ok(Int((c - '0' as u8) as i64))
+        } else {
+            cold_err!("failed parse; {c:?} isn't a valid integer")
+        }
+        U8s(cs) => {
+            let s = std::str::from_utf8(cs.as_ref()).map_err(|e| e.to_string())?;
+            match s.parse::<i64>() {
+                Ok(i) => Ok(Int(i)),
+                Err(e) => cold_err!("failed parse; {s:?} isn't a valid integer ({e})"),
+            }
+        }
+        Vals(vals) => collect_list(vals.iter().map(parse_int)),
+        _ => cold_err!("failed parse; expected string, got {x:?}"),
+    }
+}
+
+pub fn parse_float(x: &Val) -> Res<Val> {
+    use Val::*;
+    match x {
+        &Char(c) => if c >= '0' as u8 && c <= '9' as u8 {
+            Ok(Float((c - '0' as u8) as f64))
+        } else {
+            cold_err!("failed parse; {c:?} isn't a valid float")
+        }
+        U8s(cs) => {
+            let s = std::str::from_utf8(cs.as_ref()).map_err(|e| e.to_string())?;
+            match s.parse::<f64>() {
+                Ok(i) => Ok(Float(i)),
+                Err(e) => cold_err!("failed parse; {s:?} isn't a valid float ({e})"),
+            }
+        }
+        Vals(vals) => collect_list(vals.iter().map(parse_float)),
+        _ => cold_err!("failed parse; expected string, got {x:?}"),
+    }
+}

@@ -251,6 +251,7 @@ pub enum Token {
     LowerName(String),
 }
 
+// When adding a new verb, remember to update `PrimFunc::resolve_at_arity` in bytecode.rs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // TODO -: remove
 pub enum PrimVerb {
@@ -292,6 +293,7 @@ pub enum PrimVerb {
     Q,
 }
 
+// When adding a new verb, see if you need to update `get_prim_adverb_operand_arity` in compile.rs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimAdverb {
     AtColon,  // @:

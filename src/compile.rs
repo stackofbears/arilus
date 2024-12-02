@@ -1202,6 +1202,8 @@ fn decrement_locals(code: &mut [Instr], above_slot: usize) {
 fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
     use PrimFunc::*;
     HashMap::from([
+        ("parseInt", ParseInt),
+        ("parseFloat", ParseFloat),
         ("rec", Rec),
         ("ints", Ints),
         ("rev", Rev),

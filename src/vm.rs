@@ -958,6 +958,8 @@ impl Mem {
         use PrimFunc::*;
         match prim {
             Identity | IdentityLeft | IdentityRight => Ok(x),
+            ParseInt => prim::parse_int(&x),
+            ParseFloat => prim::parse_float(&x),
             Neg => prim::negate(x),
             Not => prim::not(x),
             Show => prim_show(x),
@@ -2073,13 +2075,6 @@ fn map<A, I, F>(xs: I, f: F) -> Vec<A>
 where I: IntoIterator,
       F: FnMut(I::Item) -> A {
     Vec::from_iter(xs.into_iter().map(f))
-}
-
-
-fn traverse<A, E, I, F>(xs: I, f: F) -> Result<Vec<A>, E>
-where I: IntoIterator,
-      F: FnMut(I::Item) -> Result<A, E> {
-    Result::from_iter(xs.into_iter().map(f))
 }
 
 // TODO for map_rc/traverse_rc, allow f to take Val or &Val

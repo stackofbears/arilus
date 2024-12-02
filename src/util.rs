@@ -73,3 +73,10 @@ pub fn match_lengths(xlen: usize, ylen: usize) -> Result<(), String> {
     if xlen != ylen { length_mismatch_error(xlen, ylen) }
     else { Ok(()) }
 }
+
+pub fn traverse<A, E, I, F>(xs: I, f: F) -> Result<Vec<A>, E>
+where I: IntoIterator,
+      F: FnMut(I::Item) -> Result<A, E> {
+    Result::from_iter(xs.into_iter().map(f))
+}
+

@@ -506,6 +506,7 @@ impl fmt::Display for Var {
     }
 }
 
+// When adding a new primitive, remember to update `make_primitive_identifier_map` in compile.rs
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimFunc {
@@ -524,6 +525,8 @@ pub enum PrimFunc {
 
     // Primitive identifier functions with fixed arity.
     // Monadic
+    ParseInt,
+    ParseFloat,
     Ints,
     Rev,
     Where,
