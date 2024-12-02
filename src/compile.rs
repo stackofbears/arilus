@@ -279,26 +279,31 @@ impl Compiler {
         }
         self.code.push(Instr::CallOnArgs { var: closure_var(0) });
 
-        for (slot, part) in (1..).step_by(2).zip(parts) {
+        let mut slot = 1;
+        for part in parts {
             match part {
                 TrainPart::Fork(_, _) => {
+                    let lhs_slot = slot;
                     let rhs_slot = slot + 1;
+                    slot += 2;
+
                     // Each branch sets up x f y on the stack
                     if rhs_slot != last_slot_called_on_args {
-                        self.code.push(Instr::PushVar { src: closure_var(slot) });
+                        self.code.push(Instr::PushVar { src: closure_var(lhs_slot) });
                         self.code.push(Instr::CopyArgs);
                         self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
                     } else {
                         self.code.push(Instr::StoreTo { dst: local_var(0) });
                         self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
                         self.code.push(Instr::TuckVarLastUse { src: local_var(0) });
-                        self.code.push(Instr::TuckVar { src: closure_var(slot) });
+                        self.code.push(Instr::TuckVar { src: closure_var(lhs_slot) });
                     }
                     self.code.push(Instr::Call2);
                 }
                 TrainPart::Atop(_) => {
                     self.code.push(Instr::PushVar { src: closure_var(slot) });
                     self.code.push(Instr::Call1);
+                    slot += 1;
                 }
             }
         }

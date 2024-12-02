@@ -78,7 +78,7 @@ impl ReplSession {
             nesting += count_nesting(&self.tokens[line_start..]);
             if nesting <= 0 { break }  // < 0 will raise a parse error
         }
-        let exprs = dbg!(parse::parse(&self.tokens[token_start..])?);
+        let exprs = parse::parse(&self.tokens[token_start..])?;
         if exprs.is_empty() { return Ok(()) }
 
         let code_start = self.compiler.code.len();

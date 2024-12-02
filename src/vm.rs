@@ -1158,7 +1158,32 @@ impl Mem {
                     write_or!(out, "{{explicit func}}")?
                 }
 
-                Func::PartiallyApplied { .. } => todo!("format partially applied functions"),  // TODO
+                Func::PartiallyApplied { func, bound_arg_spec, bound_args } => {
+                    self.prim_fmt(PrecedenceContext::ConjunctionLeftOperand,
+                                  &Val::Function(Rc::new(Func::Unapplied(func.clone()))),
+                                  out)?;
+                    write_or!(out, "[")?;
+                    let mut args_i = 0;
+                    let mut print_one = |has_arg: bool, out: &mut String| -> Res<()> {
+                        if has_arg {
+                            self.prim_fmt(PrecedenceContext::Toplevel, &bound_args[args_i], out)?;
+                            args_i += 1;
+                        } else {
+                            write_or!(out, "_")?;
+                        }
+                        Ok(())
+                    };
+
+                    let mut iter = bound_arg_spec.into_iter();
+                    if let Some(has_arg) = iter.next() {
+                        print_one(has_arg, out)?;
+                    }
+                    for has_arg in iter {
+                        write_or!(out, "; ")?;
+                        print_one(has_arg, out)?;
+                    }
+                    write_or!(out, "]")?;
+                }
             }
         }
         Ok(())
@@ -1383,7 +1408,7 @@ impl Mem {
                 _ => {
                     let arity = arg_spec.arity();
                     if arity == 1 || arity == 2 {
-                        let args_start = self.stack.len() - arity as usize;
+                        let args_start = self.stack.len() - arg_spec.count_args() as usize;
                         let bound_args = self.stack.drain(args_start..).rev().collect();
                         let func = Func::PartiallyApplied {
                             func: UnappliedFunc::AdverbDerived { adverb, operand: operand.clone() },
