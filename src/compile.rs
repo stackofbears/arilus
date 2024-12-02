@@ -456,6 +456,22 @@ impl Compiler {
                 }
                 if !keep { self.code.push(Instr::Pop) }
             }
+            SmallVerb::PrimConjunctionCall(prim, lhs_box, rhs_box) => {
+                match lhs_box.as_ref() {
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(
+                        small_verb, get_prim_conjunction_lhs_operand_arity(*prim, arity), true
+                    )?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
+                }
+                match rhs_box.as_ref() {
+                    SmallExpr::Verb(small_verb) => self.compile_small_verb(
+                        small_verb, get_prim_conjunction_rhs_operand_arity(*prim, arity), true
+                    )?,
+                    SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
+                }
+                self.code.push(Instr::CallPrimConjunction { prim: *prim });
+                if !keep { self.code.push(Instr::Pop) }
+            }
             SmallVerb::NamedAdverbCall(small_verb, elems) => match (self.get_prim_adverb_from_small_verb(small_verb), &elems[..]) {
                 (Some(adverb), [Elem::Expr(expr)]) => {
                     self.compile_expr_with_arity(&expr, get_prim_adverb_operand_arity(adverb, arity), true)?;
@@ -1152,13 +1168,33 @@ fn pattern_to_small_noun(pat: &Pattern) -> Res<SmallNoun> {
     })
 }
 
-fn get_prim_adverb_operand_arity(adverb: PrimAdverb, derived_verb_arity: Option<u32>) -> Option<u32> {
+fn get_prim_adverb_operand_arity(
+    prim: PrimAdverb, derived_verb_arity: Option<u32>
+) -> Option<u32> {
     use PrimAdverb::*;
-    match adverb {
+    match prim {
         Underscore {..} => None,  // TODO is this right?
         AtColon => Some(1),
         Tilde | Backslash | BackslashColon | Runs => Some(2),
         Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
+    }
+}
+
+fn get_prim_conjunction_lhs_operand_arity(
+    prim: PrimConjunction, derived_verb_arity: Option<u32>
+) -> Option<u32> {
+    use PrimConjunction::*;
+    match prim {
+        LeftArrow | Compose => derived_verb_arity,
+    }
+}
+
+fn get_prim_conjunction_rhs_operand_arity(
+    prim: PrimConjunction, _derived_verb_arity: Option<u32>
+) -> Option<u32> {
+    use PrimConjunction::*;
+    match prim {
+        LeftArrow | Compose => Some(1),
     }
 }
 
@@ -1206,6 +1242,7 @@ fn make_primitive_identifier_map() -> HashMap<&'static str, PrimFunc> {
         ("parseInt", ParseInt),
         ("parseFloat", ParseFloat),
         ("rec", Rec),
+        ("yield", Yield),
         ("ints", Ints),
         ("rev", Rev),
         ("where", Where),

@@ -157,6 +157,10 @@ pub enum Instr {
     // Let [f] be the top of the stack. Pops `f`, Calls `prim` on it, and pushes the result.
     CallPrimAdverb { prim: PrimAdverb },
 
+    // Let [f; g] be the top of the stack. Pops both, calls `prim` with `f` and `g` as its left and
+    // right arguments, and pushes the result.
+    CallPrimConjunction { prim: PrimConjunction },
+
     // Followed by ceil(num_bytes/8) LiteralBytes.
     MakeString { num_bytes: usize },
 
@@ -519,6 +523,8 @@ pub enum PrimFunc {
     
     // Rec stands for the innermost explicit function.
     Rec,
+    
+    Yield,
 
     // "Adverbs"
     Runs,  // {|f| {|x| :|x;y|}

@@ -121,6 +121,7 @@ pub enum SmallVerb {
     PrimVerb(PrimFunc),
     Lambda(Lambda),
     PrimAdverbCall(PrimAdverb, Box<SmallExpr>),
+    PrimConjunctionCall(PrimConjunction, Box<SmallExpr>, Box<SmallExpr>),
 
     // Just like SmallNoun::Indexed, but the result is treated as a verb.
     NamedAdverbCall(Box<SmallVerb>, Vec<Elem>),
@@ -833,6 +834,16 @@ impl<'a> Parser<'a> {
             while let Some(args) = self.parse_bracketed_args()? {
                 small_verb = NamedAdverbCall(Box::new(small_verb), args);
             }
+        }
+
+        if let Some(&Token::PrimConjunction(prim_conj)) = self.peek() {
+            self.skip();
+            small_verb = match self.parse_small_expr(/*stranding_allowed=*/false)? {
+                Some(right_operand) => SmallVerb::PrimConjunctionCall(
+                    prim_conj, Box::new(SmallExpr::Verb(small_verb)), Box::new(right_operand)
+                ),
+                None => return Err(self.expected(&format!("right operand for conjunction `{prim_conj}'"))),
+            };
         }
 
         Ok(Some(small_verb))

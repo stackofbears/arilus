@@ -29,7 +29,7 @@ pub fn multiply<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
     }
 }
 
-pub fn subtract<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
+pub fn subtract<X: IsVal + std::fmt::Debug, Y: IsVal + std::fmt::Debug>(x: X, y: Y) -> Res<Val> {
     use Val::*;
     match (x.to_val_ref(), y.to_val_ref()) {
         (Char(x), Int(y)) => ops::Sub::op2val(*x, *y),

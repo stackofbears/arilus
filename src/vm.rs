@@ -48,6 +48,10 @@ struct StackFrame {
 
     // Index into `locals_stack`. Local slots are offsets from this index.
     locals_start: usize,
+
+    // The function Yield dispatches to. This is G in F<-G. None if this function isn't being
+    // treated as a target.
+    yielding_to: Option<Val>,
 }
 
 // The VM is called `Mem` because, as data, it's just the machine's storage.
@@ -86,6 +90,7 @@ impl Mem {
                 arg_spec: ArgSpec::saturated(0),
                 args_start: 0,
                 locals_start: 0,
+                yielding_to: None,
             }],
         }
     }
@@ -307,9 +312,8 @@ impl Mem {
                     }
                 }
                 CopyArgs => {
-                    let arg_count = self.current_frame().arg_spec.arity() as usize;
+                    let arg_count = self.current_frame().arg_spec.count_args() as usize;
                     let args_start = self.current_frame().args_start;
-                    self.push_marker(self.stack.len());
                     self.stack.extend_from_within(args_start .. args_start+arg_count);
                 }
                 Return => {
@@ -496,9 +500,14 @@ impl Mem {
                         }
                     }
                 }
-                CallPrimAdverb { prim: adverb } => {
+                CallPrimAdverb { prim } => {
                     let operand = self.pop();
-                    self.push(Val::adverb_derived_func(adverb, operand));
+                    self.push(Val::adverb_derived_func(prim, operand));
+                }
+                CallPrimConjunction { prim } => {
+                    let operand2 = self.pop();
+                    let operand1 = self.pop();
+                    self.push(Val::conjunction_derived_func(prim, operand1, operand2));
                 }
                 MakeString { num_bytes } => {
                     let mut s = Vec::with_capacity(num_bytes);
@@ -678,8 +687,8 @@ impl Mem {
             arg_spec,
             next_header: None,
             locals_start: self.locals_stack.len(),
+            yielding_to: None,
         });
-        self.push_marker(self.stack.len() - arg_spec.count_args() as usize);
         self.execute(code_index)
     }
 
@@ -696,6 +705,7 @@ impl Mem {
                 args_start: self.stack.len() - arg_spec.count_args() as usize,
                 locals_start,
                 next_header: None,
+                yielding_to: None,
             };
             Ok(Some(code_index))
         } else {
@@ -910,6 +920,58 @@ impl Mem {
         Ok(result)
     }
 
+    fn call_prim_conjunction(
+        &mut self,
+        prim: PrimConjunction, operand1: &Val, operand2: &Val,
+        x: Val, maybe_y: Option<Val>
+    ) -> Res<Val> {
+        use PrimConjunction::*;
+        match prim {
+            Compose => {
+                let res = self.call_val(operand1, x, maybe_y)?;
+                self.call_monad(operand2, res)
+            }
+            LeftArrow => match operand1.get_explicit() {
+                Some(explicit) => {
+                    let args_start = self.stack.len();
+                    let arg_spec = ArgSpec::saturated(if let Some(y) = maybe_y { self.push(y); 2 }
+                                                      else { 1 });
+                    self.push(x);
+                    self.stack_frames.push(StackFrame {
+                        args_start, arg_spec,
+                        explicit: explicit.clone(),
+                        next_header: None,
+                        locals_start: self.locals_stack.len(),
+                        yielding_to: Some(operand2.clone()),
+                    });
+                    self.execute(explicit.code_index)?;
+                    Ok(self.pop())
+                }
+                None => {
+                    let res = self.call_val(operand1, x.clone(), maybe_y)?;
+                    let new_val = self.call_monad(operand2, res)?;
+                    self.invert_f(operand1, x, new_val)
+                }
+            }
+        }
+    }
+
+    fn invert_f(&mut self, f: &Val, x: Val, new_val: Val) -> Res<Val> {
+        match f {
+            Val::Function(func) => match func.as_ref() {
+                Func::Unapplied(_) => todo!(),
+                Func::PartiallyApplied { func, bound_arg_spec, bound_args } => match func {
+                    UnappliedFunc::Prim(PrimFunc::Add) => match bound_arg_spec.raw() {
+                        0b1_01 | 0b1_10 => prim::subtract(new_val, &bound_args[0]),
+                        _ => todo!(),
+                    }
+                    _ => todo!("Partially applied inverses"),
+                }
+            }
+            _ => todo!("Inverses for other kinds of vals??"),
+        }
+    }
+
     // Args should be on the stack in reverse order
     fn call_prim_func(&mut self, prim: PrimFunc, arg_spec: ArgSpec) -> Res<Val> {
         let result_prim = match prim {
@@ -989,6 +1051,12 @@ impl Mem {
                 let explicit = self.current_frame().explicit.clone();
                 self.call_explicit(explicit, ArgSpec::saturated(1))?;
                 Ok(self.pop())
+            }
+            Yield => match &self.current_frame().yielding_to {
+                None => Ok(Val::prim_func(PrimFunc::Identity)),
+                Some(yielding_to) => Ok(Val::conjunction_derived_func(
+                    PrimConjunction::Compose, yielding_to.clone(), x
+                )),
             }
 
             _ => todo!("{x:?} {prim:?}")
@@ -1117,7 +1185,16 @@ impl Mem {
                 Func::Unapplied(AdverbDerived { adverb, operand }) => parenthesized_if(
                     prec >= ConjunctionLeftOperand, out, |out| {
                         write_or!(out, "{adverb}")?;
-                        self.prim_fmt(AdverbOperand, operand.as_val(), out)?;
+                        self.prim_fmt(AdverbOperand, operand, out)?;
+                        Ok(())
+                    }
+                )?,
+
+                Func::Unapplied(ConjunctionDerived { conjunction, operand1, operand2 }) =>
+                    parenthesized_if(prec >= ConjunctionLeftOperand, out, |out| {
+                        self.prim_fmt(ConjunctionLeftOperand, operand1, out)?;
+                        write_or!(out, "{conjunction}")?;
+                        self.prim_fmt(AdverbOperand, operand2, out)?;
                         Ok(())
                     }
                 )?,
@@ -1162,14 +1239,14 @@ impl Mem {
                 }
 
                 Func::PartiallyApplied { func, bound_arg_spec, bound_args } => {
-                    self.prim_fmt(PrecedenceContext::ConjunctionLeftOperand,
+                    self.prim_fmt(ConjunctionLeftOperand,
                                   &Val::Function(Rc::new(Func::Unapplied(func.clone()))),
                                   out)?;
                     write_or!(out, "[")?;
                     let mut args_i = 0;
                     let mut print_one = |has_arg: bool, out: &mut String| -> Res<()> {
                         if has_arg {
-                            self.prim_fmt(PrecedenceContext::Toplevel, &bound_args[args_i], out)?;
+                            self.prim_fmt(Toplevel, &bound_args[args_i], out)?;
                             args_i += 1;
                         } else {
                             write_or!(out, "_")?;
@@ -1239,14 +1316,21 @@ impl Mem {
                     println!("]");
                 }
                 println!("Code: [");
+                let mut return_indices = vec![];
                 for i in *code_index..self.code.len() {
                     let instr = &self.code[i];
                     println!("  {}", instr);
-                    if let Instr::Return = instr {
-                        match self.code.get(i + 1) {
-                            Some(Instr::Header{..} | Instr::ArgCheck{..}) => continue,
-                            _ => break,
+                    match instr {
+                        Instr::MakeFunc { num_instructions } => return_indices.push(i + *num_instructions),
+                        Instr::Return => if return_indices.last().is_some_and(|j| *j == i) {
+                            return_indices.pop();
+                        } else if let Some(Instr::Header{..} |
+                                           Instr::ArgCheck{..}) = self.code.get(i + 1) {
+                            continue;
+                        } else {
+                            break;
                         }
+                        _ => {}
                     }
                 }
                 println!("]");
@@ -1424,6 +1508,36 @@ impl Mem {
                     }
                 }
             }
+
+            &Func::Unapplied(ConjunctionDerived { conjunction, ref operand1, ref operand2 }) =>
+                match arg_spec.raw() {
+                    0b1_1 => {
+                        let x = self.pop();
+                        self.call_prim_conjunction(conjunction, operand1, operand2, x, None)
+                    }
+                    0b1_11 => {
+                        let x = self.pop();
+                        let y = self.pop();
+                        self.call_prim_conjunction(conjunction, operand1, operand2, x, Some(y))
+                    }
+                    _ => {
+                        let arity = arg_spec.arity();
+                        if arity == 1 || arity == 2 {
+                            let args_start = self.stack.len() - arg_spec.count_args() as usize;
+                            let bound_args = self.stack.drain(args_start..).rev().collect();
+                            let func = Func::PartiallyApplied {
+                                func: UnappliedFunc::ConjunctionDerived {
+                                    conjunction, operand1: operand1.clone(), operand2: operand2.clone()
+                                },
+                                bound_arg_spec: arg_spec,
+                                bound_args,
+                            };
+                            Ok(Val::Function(Rc::new(func)))
+                        } else {
+                            cold_err!("Arity mismatch: expected 1 or 2 args, got {arity}")
+                        }
+                    }
+                }
 
             &Func::PartiallyApplied { ref func, bound_arg_spec, ref bound_args } => {
                 let new_arg_spec = match bound_arg_spec.apply_more(arg_spec) {

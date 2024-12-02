@@ -50,6 +50,12 @@ pub enum UnappliedFunc {
         operand: Val,
     },
 
+    ConjunctionDerived {
+        conjunction: PrimConjunction,
+        operand1: Val,
+        operand2: Val,
+    },
+
     Explicit(ExplicitFunc),
 }
 
@@ -96,10 +102,28 @@ impl Val {
         Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::Explicit(explicit))))
     }
 
+    pub fn get_explicit(&self) -> Option<&ExplicitFunc> {
+        if let Val::Function(func) = self {
+            if let Func::Unapplied(UnappliedFunc::Explicit(explicit)) = func.as_ref() {
+                return Some(explicit);
+            }
+        }
+        None
+    }
+
     pub fn adverb_derived_func(adverb: PrimAdverb, operand: Val) -> Val {
         // This is too much!
         Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::AdverbDerived {
             adverb, operand
+        })))
+    }
+
+    pub fn conjunction_derived_func(
+        conjunction: PrimConjunction, operand1: Val, operand2: Val
+    ) -> Val {
+        // This is too much!
+        Val::Function(Rc::new(Func::Unapplied(UnappliedFunc::ConjunctionDerived {
+            conjunction, operand1, operand2
         })))
     }
 
@@ -225,8 +249,9 @@ impl Func {
         match self {
             Unapplied(Prim(_)) => 0,
             Unapplied(AdverbDerived{..}) => 1,
-            Unapplied(Explicit{..}) => 2,
-            PartiallyApplied{..} => 3,
+            Unapplied(ConjunctionDerived{..}) => 2,
+            Unapplied(Explicit{..}) => 3,
+            PartiallyApplied{..} => 4,
         }
     }
 }
@@ -236,11 +261,21 @@ impl Ord for Func {
         use Func::*;
         use UnappliedFunc::*;
         match (self, other) {
-            (Unapplied(Prim(_)), Unapplied(Prim(_))) => todo!("Sort primitives"),
+            (Unapplied(Prim(_)),
+             Unapplied(Prim(_))) => todo!("Sort primitives"),
+
             (Unapplied(Explicit(ExplicitFunc{code_index: x, ..})),
              Unapplied(Explicit(ExplicitFunc{code_index: y, ..}))) => x.cmp(y),
-            (Unapplied(AdverbDerived{operand: x, ..}), Unapplied(AdverbDerived{operand: y, ..})) => x.cmp(y),
-            (PartiallyApplied { func: _, .. }, PartiallyApplied { func: _, .. }) => todo!("Sort partially applied functions"),
+
+            (Unapplied(AdverbDerived{operand: x, ..}),
+             Unapplied(AdverbDerived{operand: y, ..})) => x.cmp(y),
+
+            (Unapplied(ConjunctionDerived{operand1: x1, operand2: x2, ..}),
+             Unapplied(ConjunctionDerived{operand1: y1, operand2: y2, ..})) => x1.cmp(y1).then_with(|| x2.cmp(y2)),
+
+            (PartiallyApplied { func: _, .. },
+             PartiallyApplied { func: _, .. }) => todo!("Sort partially applied functions"),
+
             _ => self.key_variant().cmp(&other.key_variant()),
         }
     }

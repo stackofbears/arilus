@@ -243,6 +243,7 @@ pub enum Token {
 
     PrimVerb(PrimVerb),
     PrimAdverb(PrimAdverb),
+    PrimConjunction(PrimConjunction),
 
     IntLit(i64),
     FloatLit(f64),
@@ -312,6 +313,12 @@ pub enum PrimAdverb {
     // TODO converge/do-times/do-while
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimConjunction {
+    LeftArrow,  // <-
+    Compose,  // Inaccessible
+}
+
 impl Display for Token {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         use Token::*;
@@ -350,6 +357,7 @@ impl Display for Token {
             LowerName(name) => f.write_str(name),
             PrimVerb(prim) => Display::fmt(prim, f),
             PrimAdverb(prim) => Display::fmt(prim, f),
+            PrimConjunction(prim) => Display::fmt(prim, f),
             IntLit(i) => Display::fmt(i, f),
             FloatLit(float) => Display::fmt(float, f),
             StrLit(lit) => std::fmt::Debug::fmt(lit, f),
@@ -422,10 +430,24 @@ impl Display for PrimAdverb {
     }
 }
 
+impl Display for PrimConjunction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        use PrimConjunction::*;
+        let s: &str = match self {
+            LeftArrow => "<-",
+            Compose => "{X Y}",
+        };
+
+        f.write_str(s)
+    }
+}
+
 fn literal_symbol_tokens() -> Vec<(String, Token)> {
     use Token::*;
     use crate::lex::PrimVerb::*;
     use crate::lex::PrimAdverb::*;
+    use crate::lex::PrimConjunction::*;
+
     let mut ret: Vec<_> = [
         Colon,
         LBrace,
@@ -479,6 +501,8 @@ fn literal_symbol_tokens() -> Vec<(String, Token)> {
         PrimAdverb(Dot),
         PrimAdverb(SingleQuote),
         PrimAdverb(Tilde),
+
+        PrimConjunction(LeftArrow),
     ].iter().map(|t| (t.to_string(), t.clone())).collect();
 
     ret.sort_unstable_by_key(|(s, _)| -(s.len() as i32));
