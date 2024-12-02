@@ -74,7 +74,7 @@ pub enum Verb {
 
 #[derive(Debug, Clone)]
 pub enum TrainPart {
-    Fork(SmallVerb, SmallExpr),
+    Fork(SmallVerb, SmallVerb),
     Atop(SmallVerb),
 }
 
@@ -245,37 +245,44 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_exprs(&mut self) -> Many<Expr> {
-        self.parse_sequenced(&"expression", Self::parse_expr)
-    }
-
-    fn parse_elems(&mut self) -> Many<Elem> {
-        self.parse_sequenced(&"expression", |this| match this.parse_elem() {
-            Ok(None) => Ok(Some(Elem::MissingArg)),
-            other => other,
-        })                
+        self.parse_sequenced_expecting(&"expression", Self::parse_expr)
     }
 
     fn parse_patterns(&mut self) -> Many<Pattern> {
-        self.parse_sequenced(&"pattern", Self::parse_pattern)
-    }
-
-    fn parse_patterns_allowing_empty(&mut self) -> Many<Option<Pattern>> {
-        self.parse_sequenced(&"pattern", |this| this.parse_pattern().map(Some))
+        self.parse_sequenced_expecting(&"pattern", Self::parse_pattern)
     }
 
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
-        self.parse_sequenced(&"pattern", Self::parse_pattern_elem)
+        self.parse_sequenced_expecting(&"pattern", Self::parse_pattern_elem)
     }
 
-    fn parse_sequenced<A, F>(&mut self, expected_label: &str, parse: F) -> Many<A>
+    fn parse_elems(&mut self) -> Many<Elem> {
+        self.parse_sequenced(|_| Ok(Elem::MissingArg), Self::parse_elem)
+    }
+
+    fn parse_patterns_allowing_empty(&mut self) -> Many<Option<Pattern>> {
+        self.parse_sequenced(|_| Ok(None), |this| match this.parse_pattern() {
+            Ok(Some(a)) => Ok(Some(Some(a))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        })
+    }
+
+    fn parse_sequenced_expecting<A, F>(&mut self, expected_label: &str, parse: F) -> Many<A>
     where F: Fn(&mut Self) -> Parsed<A> {
+        self.parse_sequenced(|this| Err(this.expected(expected_label)), parse)
+    }
+
+    fn parse_sequenced<A, F, Fail>(&mut self, fail: Fail, parse: F) -> Many<A>
+    where F: Fn(&mut Self) -> Parsed<A>,
+          Fail: Fn(&mut Self) -> Res<A> {
         self.skip_newlines();
         let mut ret = Vec::with_capacity(2);  // arbitrary
         let mut next_required = false;
         loop {
             match parse(self)? {
                 Some(parsed) => ret.push(parsed),
-                None if next_required => return Err(self.expected(expected_label)),
+                None if next_required => ret.push(fail(self)?),
                 _ => break,
             }
 
@@ -535,7 +542,13 @@ impl<'a> Parser<'a> {
 
     fn parse_verb(&mut self) -> Parsed<Verb> {
         let small_verb = match self.parse_small_verb()? {
-            Some(small_verb) => small_verb,
+            Some(small_verb) => match self.parse_small_noun()? {
+                Some(bound_arg) => SmallVerb::NamedAdverbCall(
+                    Box::new(small_verb),
+                    vec![Elem::MissingArg, Elem::Expr(Expr::Noun(Noun::SmallNoun(bound_arg)))]
+                ),
+                _ => small_verb,
+            }
             None => return Ok(None),
         };
 
@@ -551,12 +564,19 @@ impl<'a> Parser<'a> {
 
         let mut train = vec![];
         while let Some(next_verb) = self.parse_small_verb()? {
-            if let Some(next_expr) = self.parse_small_expr(/*stranded_allowed=*/true)? {
-                train.push(TrainPart::Fork(next_verb, next_expr));
-            } else {
-                train.push(TrainPart::Atop(next_verb));
-                break;
-            }
+            let train_part = match self.parse_small_verb()? {
+                Some(verb_rhs) => TrainPart::Fork(next_verb, verb_rhs),
+                None => TrainPart::Atop(
+                    match self.parse_small_noun()? {
+                        Some(noun_rhs) => NamedAdverbCall(
+                            Box::new(next_verb),
+                            vec![Elem::MissingArg, Elem::Expr(Expr::Noun(Noun::SmallNoun(noun_rhs)))]
+                        ),
+                        None => next_verb,
+                    }
+                ),
+            };
+            train.push(train_part);
         }
 
         Ok(Some(if !train.is_empty() {

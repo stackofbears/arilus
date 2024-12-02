@@ -262,13 +262,8 @@ impl Compiler {
                 TrainPart::Fork(mid, rhs) => {
                     total_closure_slots += 2;
                     self.compile_small_verb(mid, Some(2), true)?;
-                    match rhs {
-                        SmallExpr::Noun(small_noun) => self.compile_small_noun(small_noun, true)?,
-                        SmallExpr::Verb(small_verb) => {
-                            last_slot_called_on_args = total_closure_slots - 1;
-                            self.compile_small_verb(small_verb, arity, true)?;
-                        }
-                    }
+                    last_slot_called_on_args = total_closure_slots - 1;
+                    self.compile_small_verb(rhs, arity, true)?;
                 }
                 TrainPart::Atop(small_verb) => {
                     total_closure_slots += 1;
@@ -286,27 +281,18 @@ impl Compiler {
 
         for (slot, part) in (1..).step_by(2).zip(parts) {
             match part {
-                TrainPart::Fork(_, rhs) => {
+                TrainPart::Fork(_, _) => {
                     let rhs_slot = slot + 1;
                     // Each branch sets up x f y on the stack
-                    match rhs {
-                        SmallExpr::Noun(_) => {
-                            self.code.push(Instr::PushVar { src: closure_var(slot) });
-                            self.code.push(Instr::PushVar { src: closure_var(rhs_slot)  });
-                        }
-
-                        SmallExpr::Verb(_) => {
-                            if rhs_slot != last_slot_called_on_args {
-                                self.code.push(Instr::PushVar { src: closure_var(slot) });
-                                self.code.push(Instr::CopyArgs);
-                                self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
-                            } else {
-                                self.code.push(Instr::StoreTo { dst: local_var(0) });
-                                self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
-                                self.code.push(Instr::TuckVarLastUse { src: local_var(0) });
-                                self.code.push(Instr::TuckVar { src: closure_var(slot) });
-                            }
-                        }
+                    if rhs_slot != last_slot_called_on_args {
+                        self.code.push(Instr::PushVar { src: closure_var(slot) });
+                        self.code.push(Instr::CopyArgs);
+                        self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
+                    } else {
+                        self.code.push(Instr::StoreTo { dst: local_var(0) });
+                        self.code.push(Instr::CallOnArgs { var: closure_var(rhs_slot) });
+                        self.code.push(Instr::TuckVarLastUse { src: local_var(0) });
+                        self.code.push(Instr::TuckVar { src: closure_var(slot) });
                     }
                     self.code.push(Instr::Call2);
                 }
@@ -472,7 +458,11 @@ impl Compiler {
                     if !keep { self.code.push(Instr::Pop) }
                 }
                 _ => {
-                    self.compile_small_verb(small_verb, arity, true)?;
+                    if elems.len() > ArgSpec::MAX_ARITY as usize {
+                        return cold_err!("Functions can't take more than {} arguments.", ArgSpec::MAX_ARITY);
+                    }
+
+                    self.compile_small_verb(small_verb, Some(elems.len() as u32), true)?;
                     for elem in elems {
                         if matches!(elem, Elem::Spliced(_)) {
                             todo!("Support splices in argument lists.");
@@ -515,7 +505,7 @@ impl Compiler {
         // Note that we don't need an ArgCheck at all if we know the arity this function will be
         // called at.
         let arg_check_index = if arity.is_none() {
-            Some(self.push(Instr::ArgCheckEq { count: 2 }))
+            Some(self.push(Instr::ArgCheck { arg_spec: ArgSpec::saturated(2) }))
         } else {
             None
         };
@@ -564,10 +554,10 @@ impl Compiler {
                 decrement_locals(&mut self.code[body_start..], 1);
                 if !accessed(&self.code[body_start..], local_var(0)) {
                     decrement_locals(&mut self.code[body_start..], 0);
-                    self.code[arg_check_index] = Instr::ArgCheckEq { count: 0 };
+                    self.code[arg_check_index] = Instr::ArgCheck { arg_spec: ArgSpec::saturated(0) };
                     self.fill_with_nop(arg_check_index+1..body_start);
                 } else {
-                    self.code[arg_check_index] = Instr::ArgCheckEq { count: 1 };
+                    self.code[arg_check_index] = Instr::ArgCheck { arg_spec: ArgSpec::saturated(1) };
                     self.fill_with_nop(y_start..body_start);
                 }
             }

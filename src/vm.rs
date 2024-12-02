@@ -184,9 +184,6 @@ impl Mem {
 
                     let provided_arg_spec = self.current_frame().arg_spec;
                     let action = match self.code[ip] {
-                        ArgCheckEq { count } =>
-                            if provided_arg_spec.arity() as usize == count { Enter }
-                            else { GoToNextCase }
                         ArgCheck { arg_spec } =>
                             if provided_arg_spec == arg_spec { Enter }
                             else if arg_spec.is_satisfied_by(provided_arg_spec) { Curry }
@@ -279,22 +276,22 @@ impl Mem {
                         // otherwise, Header would have taken care of it and skipped this
                         // instruction.
                         let mut msg = "Argument mismatch: function has no case matching ".to_string();
-                        arg_spec.describe(&mut msg)?;
+                        provided_arg_spec.describe(&mut msg)?;
                         return Err(msg);
                     }
                 }
-                ArgCheckEq { count } => {
-                    let arg_count = self.current_frame().arg_spec.count_args() as usize;
-                    if arg_count != count {
-                        // We don't need to try jumping to the next case on failure because this
-                        // instruction is only executed directly if this is the last or only case;
-                        // otherwise, Header would have taken care of it and skipped this
-                        // instruction.
-                        return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
-                    }
-                    let args_start = self.current_frame().args_start;
-                    self.stack.truncate(args_start + arg_count);
-                }
+                // ArgCheckEq { count } => {
+                //     let arg_count = self.current_frame().arg_spec.count_args() as usize;
+                //     if arg_count != count {
+                //         // We don't need to try jumping to the next case on failure because this
+                //         // instruction is only executed directly if this is the last or only case;
+                //         // otherwise, Header would have taken care of it and skipped this
+                //         // instruction.
+                //         return cold_err!("Arity mismatch; expected {count} args, got {arg_count}")
+                //     }
+                //     let args_start = self.current_frame().args_start;
+                //     self.stack.truncate(args_start + arg_count);
+                // }
                 CollectArgs { suffix_count, keep } => {
                     let frame = self.current_frame();
                     let arg_count = frame.arg_spec.arity() as usize;
@@ -937,7 +934,7 @@ impl Mem {
                 // arities for consistency.
                 _ if arg_spec.has_no_args() => Ok(Val::prim_func(prim)),
                 _ => {
-                    let args_start = self.stack.len() - arg_spec.arity() as usize;
+                    let args_start = self.stack.len() - arg_spec.count_args() as usize;
                     let bound_args = self.stack.drain(args_start..).rev().collect();
                     let func = Func::PartiallyApplied {
                         func: UnappliedFunc::Prim(prim),
@@ -1219,7 +1216,7 @@ impl Mem {
                     println!("  {}", instr);
                     if let Instr::Return = instr {
                         match self.code.get(i + 1) {
-                            Some(Instr::Header{..} | Instr::ArgCheckEq{..} | Instr::ArgCheck{..}) => continue,
+                            Some(Instr::Header{..} | Instr::ArgCheck{..}) => continue,
                             _ => break,
                         }
                     }

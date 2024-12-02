@@ -202,7 +202,7 @@ pub enum Instr {
     //
     // If the check fails: if this instruction was run directly, it throws an error. If was run as
     // part of Header, the case will be skipped.
-    ArgCheckEq { count: usize },
+    // ArgCheckEq { count: usize }, TODO remove
 
     // Pop the top element of the stack: if its first atom is 0, throw an error or move to the next
     // header.
