@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     cmp::Ordering,
+    iter,
     mem,
     rc::Rc,
     fmt::Write,
@@ -280,9 +281,8 @@ impl Mem {
                         // instruction is only executed directly if this is the last or only case;
                         // otherwise, Header would have taken care of it and skipped this
                         // instruction.
-                        let mut msg = "Argument mismatch: function has no case matching ".to_string();
-                        provided_arg_spec.describe(&mut msg)?;
-                        return Err(msg);
+                        return cold_err!("Argument mismatch: function has no case matching {}",
+                                         provided_arg_spec.describe()?);
                     }
                 }
                 // ArgCheckEq { count } => {
@@ -560,6 +560,13 @@ impl Mem {
         self.stack.push(val)
     }
 
+    // Pops the second stack element from the top.
+    #[inline]
+    fn nip(&mut self) -> Val {
+        self.swap();
+        self.pop()
+    }
+
     // Places `val` under the top stack element.
     #[inline]
     fn tuck(&mut self, mut val: Val) {
@@ -675,7 +682,7 @@ impl Mem {
     ) -> Result<Option<usize>, String> {
         match self.set_up_call(calling, arg_spec)? {
             None => Ok(None),
-            Some(explicit) => self.call_explicit_or_get_jump_target(explicit, arg_spec, ip),
+            Some((explicit, arg_spec)) => self.call_explicit_or_get_jump_target(explicit, arg_spec, ip),
         }
     }
 
@@ -720,7 +727,7 @@ impl Mem {
     // Arguments should be on the stack in reverse order (first argument on top).
     fn set_up_call(
         &mut self, mut calling: Val, mut arg_spec: ArgSpec
-    ) -> Res<Option<ExplicitFunc>> {
+    ) -> Res<Option<(ExplicitFunc, ArgSpec)>> {
         loop {
             let function = match &calling {
                 Val::Function(rc) => &**rc,
@@ -733,11 +740,11 @@ impl Mem {
 
             use UnappliedFunc::*;
             match function {
-                Func::Unapplied(Explicit(explicit)) => return Ok(Some(explicit.clone())),
+                Func::Unapplied(Explicit(explicit)) => return Ok(Some((explicit.clone(), arg_spec))),
 
                 Func::Unapplied(Prim(PrimFunc::Rec)) => {
                     let frame = self.current_frame();
-                    return Ok(Some(frame.explicit.clone()));
+                    return Ok(Some((frame.explicit.clone(), arg_spec)));
                 }
 
                 // TODO arg specs other than 2. e.g., @[f;...] should return a Partial with f fixed
@@ -778,16 +785,14 @@ impl Mem {
                     calling = operand.clone();
                 }
 
+                Func::Unapplied(AdverbDerived { adverb: PrimAdverb::AtColon, .. })
+                if arg_spec.raw() == 0b1_1 => return cold_err!("TODO: monadic @:v"),
                 Func::Unapplied(AdverbDerived { adverb: PrimAdverb::AtColon, operand })
-                if arg_spec.raw() == 0b1_1 || arg_spec.raw() == 0b1_11 => {
-                    let x = self.top().clone();
-                    self.index_or_call(&operand, ArgSpec::saturated(1))?;
-                    let index = self.pop();
-                    if arg_spec.arity() == 1 {
-                        return cold_err!("TODO: monadic @:v");
-                    }
-                    let y = self.pop();
-                    self.push(x);
+                if arg_spec.raw() == 0b1_11 => {
+                    self.dup();
+                    let index = self.index_or_call(&operand, ArgSpec::saturated(1))?;
+                    let y = self.nip();
+
                     // TODO progressive index?
                     calling = self.prim_index(&y, &index)?;
                     arg_spec = ArgSpec::saturated(1);
@@ -1436,19 +1441,22 @@ impl Mem {
 
         Ok(seed)
     }
-    
+
     // TODO bad code
     fn scan_val(&mut self, f: &Val, x: Val, maybe_y: Option<Val>) -> Res<Val> {
-        let (mut seed, start) = match maybe_y {
-            Some(y) => (y, 0),
+        let mut seed = match maybe_y {
+            Some(y) => match index_or_cycle_val(&x, 0) {
+                None => return Ok(y),
+                Some(first) => self.call_dyad(f, y, first)?,
+            }
             None => match index_or_cycle_val(&x, 0) {
-                Some(first) => (first, 1),
+                Some(first) => first,
                 None => return Ok(Val::empty_list_of_same_type(&x)),
             }
         };
 
         collect_list(
-            (start .. x.len().unwrap_or(1)+1)
+            (1 .. x.len().unwrap_or(1)+1)
                 .map(|i| match index_or_cycle_val(&x, i) {
                     Some(val) => {
                         let mut new = self.call_dyad(f, seed.clone(), val)?;
@@ -1766,14 +1774,18 @@ fn prim_subsequence_starts(x: &Val, y: &Val) -> Vec<i64> {
         text: &[A], pat: &[B], pred: F
     ) -> Vec<i64> {
         if pat.is_empty() { return replicate(1, text.len()).collect() }
-
-        let mut out = Vec::with_capacity(text.len());
-        for i in 0..=(text.len() - pat.len()) {
-            let matches = text[i..].iter().zip(pat).all(|(t, p)| pred(t, p));
-            out.push(matches as i64);
+        match text.len().checked_sub(pat.len()) {
+            None => replicate(0, text.len()).collect(),
+            Some(diff) => {
+                let mut out = Vec::with_capacity(text.len());
+                for i in 0..=diff {
+                    let matches = iter::zip(&text[i..], pat).all(|(t, p)| pred(t, p));
+                    out.push(matches as i64);
+                }
+                out.extend(replicate(0, pat.len() - 1));
+                out
+            }
         }
-        out.extend(replicate(0, pat.len() - 1));
-        out
     }
 
     fn subsequence_starts<A: PartialEq<B>, B>(text: &[A], pat: &[B]) -> Vec<i64> {

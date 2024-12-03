@@ -274,7 +274,7 @@ impl Ord for Func {
              Unapplied(ConjunctionDerived{operand1: y1, operand2: y2, ..})) => x1.cmp(y1).then_with(|| x2.cmp(y2)),
 
             (PartiallyApplied { func: _, .. },
-             PartiallyApplied { func: _, .. }) => todo!("Sort partially applied functions"),
+             PartiallyApplied { func: _, .. }) => todo!("Compare partially applied functions"),
 
             _ => self.key_variant().cmp(&other.key_variant()),
         }

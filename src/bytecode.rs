@@ -360,7 +360,7 @@ impl ArgSpec {
         }
     }
 
-    pub fn describe(self, w: &mut impl fmt::Write) -> Res<()> {
+    pub fn describe(self) -> Res<String> {
         struct ExampleVariableNames {
             current: u8,
             suffix: u32,
@@ -389,6 +389,8 @@ impl ArgSpec {
             }
         }
 
+        let mut s = String::new();
+        let w = &mut s;
         write_or!(w, "[")?;
 
         let mut names = ExampleVariableNames::new();
@@ -410,7 +412,9 @@ impl ArgSpec {
             }
         }
 
-        write_or!(w, "]")
+        write_or!(w, "]")?;
+
+        Ok(s)
     }
 }
 
@@ -445,7 +449,11 @@ impl fmt::Display for ArgSpec {
         let bits = format!("{:b}", self.0);
         let mask = &bits[1..];
         let arity = mask.len();
-        write!(f, "Arity {arity}: {mask}")
+        if arity == 0 {
+            write!(f, "Arity {arity}: {mask}")
+        } else {
+            write!(f, "Arity 0")
+        }
     }
 }        
 
@@ -492,6 +500,7 @@ impl fmt::Display for Instr {
             Instr::CallPrimFunc2 { prim } => write!(f, "CallPrimFunc2({prim})"),
             Instr::CallPrimAdverb { prim } => write!(f, "CallPrimAdverb({prim})"),
             Instr::ArgCheck { arg_spec } => write!(f, "ArgCheck({arg_spec})"),
+            Instr::CallSpec { arg_spec } => write!(f, "CallSpec({arg_spec})"),
             Instr::LiteralBytes { bytes } => {
                 let as_str = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
                 write!(f, "LiteralBytes({as_str:?})")
