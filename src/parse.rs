@@ -249,10 +249,6 @@ impl<'a> Parser<'a> {
         self.parse_sequenced_expecting(&"expression", Self::parse_expr)
     }
 
-    fn parse_patterns(&mut self) -> Many<Pattern> {
-        self.parse_sequenced_expecting(&"pattern", Self::parse_pattern)
-    }
-
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
         self.parse_sequenced_expecting(&"pattern", Self::parse_pattern_elem)
     }
@@ -274,22 +270,35 @@ impl<'a> Parser<'a> {
         self.parse_sequenced(|this| Err(this.expected(expected_label)), parse)
     }
 
-    fn parse_sequenced<A, F, Fail>(&mut self, fail: Fail, parse: F) -> Many<A>
+    fn parse_sequenced<A, F, Missing>(&mut self, missing: Missing, parse: F) -> Many<A>
     where F: Fn(&mut Self) -> Parsed<A>,
-          Fail: Fn(&mut Self) -> Res<A> {
-        self.skip_newlines();
+          Missing: Fn(&mut Self) -> Res<A> {
         let mut ret = Vec::with_capacity(2);  // arbitrary
-        let mut next_required = false;
-        loop {
-            match parse(self)? {
-                Some(parsed) => ret.push(parsed),
-                None if next_required => ret.push(fail(self)?),
-                _ => break,
-            }
 
-            next_required = self.consume(&Token::Semicolon);
-            let next_allowed = next_required | self.skip_newlines();
-            if !next_allowed { break }
+        self.skip_newlines();
+        let mut saw_semicolon = false;
+        loop {
+            if self.consume(&Token::Semicolon) {
+                ret.push(missing(self)?);
+                saw_semicolon = true;
+            } else {
+                match parse(self)? {
+                    Some(parsed) => ret.push(parsed),
+                    None => if saw_semicolon {
+                        // There should have been something here.
+                        ret.push(missing(self)?);
+                    } else {
+                        // There's nothing left, and we didn't see a semicolon at the end of the
+                        // last iteration; must've just been some newlines.
+                        break;
+                    }
+                }
+                saw_semicolon = self.consume(&Token::Semicolon);
+            };
+
+            // We only want to continue if this parse is separated from the next by a semicolon
+            // and/or newlines.
+            if !saw_semicolon & !self.skip_newlines() { break }
         }
         Ok(ret)
     }
