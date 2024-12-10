@@ -1822,7 +1822,7 @@ fn prim_subsequence_starts(x: &Val, y: &Val) -> Vec<i64> {
             }
         ),
         (Vals(xs), Vals(ys)) => subsequence_starts(xs, ys),
-        _ => todo!(),
+        _ => todo!("{} ?: {}", Val::type_name(x), Val::type_name(y)),
     };
 
     starts

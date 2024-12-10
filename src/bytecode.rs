@@ -230,7 +230,6 @@ impl ArgSpec {
     pub const MAX_ARITY: u32 = 63;
 
     // None if `args_to_expect.len()` > MAX_ARITY.
-    // TODO const fn version
     pub fn new<Iter>(args_to_expect: Iter) -> Option<Self>
     where Iter: IntoIterator<Item=bool, IntoIter: ExactSizeIterator> {
         let iter = args_to_expect.into_iter();
@@ -242,6 +241,18 @@ impl ArgSpec {
         }
         // SAFETY: iter.len() <= 63, so the arity bit can't be shifted out.
         Some(Self(unsafe { NonZeroU64::new_unchecked(val) }))
+    }
+
+    pub const fn from_array<const N: usize>(args_to_expect: [bool; N]) -> Self {
+        const { assert!(N <= Self::MAX_ARITY as usize); }
+
+        let mut i = 0;
+        let mut val: u64 = 1;
+        while i < N {
+            val = (val << 1) | args_to_expect[i] as u64;
+            i += 1;
+        }
+        Self(unsafe { NonZeroU64::new_unchecked(val) })
     }
 
     // Precondition: `arity` <= MAX_ARITY.
@@ -450,9 +461,9 @@ impl fmt::Display for ArgSpec {
         let mask = &bits[1..];
         let arity = mask.len();
         if arity == 0 {
-            write!(f, "Arity {arity}: {mask}")
-        } else {
             write!(f, "Arity 0")
+        } else {
+            write!(f, "Arity {arity}: {mask}")
         }
     }
 }        
