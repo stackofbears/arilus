@@ -1321,20 +1321,32 @@ impl Mem {
                     println!("]");
                 }
                 println!("Code: [");
+
+                // The "then" branch of an `if` can contain Returns, but we know these aren't the
+                // final Return of the function, so we only end the loop if we're past the "then"
+                // branch of any `if` introduced here.
+                let mut min_possible_return_index = 0;
+
+                // Indices of the *final* Return instruction corresponding to MakeFuncs inside of
+                // this function body.
                 let mut return_indices = vec![];
                 for i in *code_index..self.code.len() {
                     let instr = &self.code[i];
                     println!("  {}", instr);
                     match instr {
-                        Instr::MakeFunc { num_instructions } => return_indices.push(i + *num_instructions),
-                        Instr::Return => if return_indices.last().is_some_and(|j| *j == i) {
-                            return_indices.pop();
-                        } else if let Some(Instr::Header{..} |
-                                           Instr::ArgCheck{..}) = self.code.get(i + 1) {
-                            continue;
-                        } else {
-                            break;
-                        }
+                        &Instr::JumpRelativeUnless { offset } if offset > 0 =>
+                            min_possible_return_index = min_possible_return_index.max(i + 1 + offset as usize),
+                        Instr::MakeFunc { num_instructions } =>
+                            return_indices.push(i + *num_instructions),
+                        Instr::Return =>
+                            if return_indices.last().is_some_and(|j| *j == i) {
+                                return_indices.pop();
+                            } else if let Some(Instr::Header{..} |
+                                               Instr::ArgCheck{..}) = self.code.get(i + 1) {
+                                continue;
+                            } else if i >= min_possible_return_index {
+                                break;
+                            }
                         _ => {}
                     }
                 }
