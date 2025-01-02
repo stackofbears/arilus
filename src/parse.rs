@@ -43,8 +43,8 @@ pub enum SmallNoun {
 
     Constant(Literal),
 
-    // The underscore is parsed like an adverb, but unlike other adverbs, it produces something
-    // parsed like a noun - that's the whole point - so it's treated specially here.
+    // The underscore has the precedence of an adverb, but unlike other adverbs, it produces a
+    // noun - that's the whole point - so it's treated specially here.
     Underscored(Box<SmallExpr>),
 
     // [a; b; c] or a b c
@@ -188,6 +188,8 @@ enum StrandedElem {
     Spliced(SmallExpr),
     Underscore,
 }
+
+enum Either<A, B> { Left(A), Right(B) }
 
 impl StrandedElem {
     fn to_elem(self) -> Elem {
@@ -553,7 +555,7 @@ impl<'a> Parser<'a> {
     fn parse_verb(&mut self) -> Parsed<Verb> {
         let small_verb = match self.parse_small_verb()? {
             Some(small_verb) => match self.parse_small_noun()? {
-                Some(bound_arg) => SmallVerb::NamedAdverbCall(
+                Some(bound_arg) => NamedAdverbCall(
                     Box::new(small_verb),
                     vec![Elem::MissingArg, Elem::Expr(Expr::Noun(Noun::SmallNoun(bound_arg)))]
                 ),
@@ -597,7 +599,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_small_pattern(&mut self) -> Parsed<Pattern> {
-        // TODO UpperName?
         let pattern = match self.peek() {
             Some(&Token::IntLit(int)) => {
                 self.skip();
@@ -640,27 +641,7 @@ impl<'a> Parser<'a> {
                 self.consume_or_fail(&Token::RParen)?;
                 inner
             }
-
-            // We know we're not looking at `(' here. Note that we don't allow (verb)->pattern as a
-            // view pattern because it introduces parsing ambiguities; we don't know whether the `('
-            // means (verb)->pattern or (pattern) until we've consumed it and tried to parse
-            // both. It's possible to try both and collect the errors if they fail, but that's more
-            // complicated than anything we do in parsing now.
-            _ => {
-                let reset = self.token_index;
-                match self.parse_small_verb()? {
-                    Some(small_verb) => if self.consume(&Token::RightArrow) {
-                        match self.parse_pattern()? {
-                            Some(pat) => Pattern::View(small_verb, Box::new(pat)),
-                            None => return Err(self.expected("pattern")),
-                        }
-                    } else {
-                        self.token_index = reset;
-                        return Ok(None)
-                    }
-                    None => return Ok(None),
-                }
-            }
+            _ => return Ok(None),
         };
         Ok(Some(pattern))
     }
@@ -694,18 +675,100 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self) -> Parsed<Pattern> {
         match self.parse_pattern_elem()? {
-            None => Ok(None),
             Some(PatternElem::Pattern(pat)) => Ok(Some(pat)),
             Some(PatternElem::Subarray(_)) => cold_err!("`..' is only allowed in array patterns"),
+            None => Ok(None),
+        }
+    }
+
+    fn parse_as_pattern(&mut self) -> Parsed<Pattern> {
+        if !self.consume(&Token::RightArrow) { return Ok(None); }
+        let arrow_rhs = self.parse_pattern()?;
+        if arrow_rhs.is_none() {
+            return Err(self.expected("pattern after `->'"));
+        }
+        Ok(arrow_rhs)
+    }
+
+    // If both are Err, returns the error of whichever one made more progress in the token stream
+    // before failing. If they made the same progress, we choose the error returned by `parse_left`.
+    // 
+    // TODO: combine the errors instead.
+    fn either<A, B>(
+        &mut self,
+        parse_left: impl FnOnce(&mut Self) -> Parsed<A>,
+        parse_right: impl FnOnce(&mut Self) -> Parsed<B>
+    ) -> Parsed<Either<A, B>> {
+        let backtrack = self.token_index;
+        match parse_left(self) {
+            Ok(Some(left)) => Ok(Some(Either::Left(left))),
+            Ok(None) => {
+                self.token_index = backtrack;
+                match parse_right(self)? {
+                    Some(right) => Ok(Some(Either::Right(right))),
+                    None => Ok(None),
+                }
+            }
+            Err(left_err) => {
+                let index_of_unexpected_in_left = self.token_index;
+                self.token_index = backtrack;
+                match parse_right(self) {
+                    Ok(Some(right)) => Ok(Some(Either::Right(right))),
+                    Ok(None) => Err(left_err),
+                    Err(right_err) if self.token_index > index_of_unexpected_in_left => Err(right_err),
+                    _ => {
+                        self.token_index = index_of_unexpected_in_left;
+                        return Err(left_err);
+                    }
+                }
+            }
         }
     }
 
     fn parse_pattern_elem(&mut self) -> Parsed<PatternElem> {
-        let elem = match self.parse_small_pattern_elem()? {
-            Some(small_pat) => small_pat,
-            None => return Ok(None),
+        fn view_pattern(verb: Verb, arrow_rhs: Pattern) -> Pattern {
+            Pattern::View(VerbBlock(vec![], Box::new(verb)), Box::new(arrow_rhs))
+        }
+
+        let before_lparen = self.token_index;
+        let nested_or_view_pat = if self.consume(&Token::LParen) {
+            // This is either (pattern) or (verb)->pattern. The only way to find out is to try them
+            // both; we need to be careful because we may parse quite a bit past the LParen before
+            // finding out.
+            match self.either(|this| this.parse_pattern(), |this| this.parse_verb())? {
+                Some(pattern_or_verb) => {
+                    self.consume_or_fail(&Token::RParen)?;
+                    match pattern_or_verb {
+                        Either::Left(pat) => Some(pat),
+                        Either::Right(verb) => match self.parse_as_pattern()? {
+                            Some(arrow_rhs) => Some(view_pattern(verb, arrow_rhs)),
+                            None => return Err(self.expected("`->")),
+                        }
+                    }
+                }
+                None => {
+                    self.token_index = before_lparen;
+                    None
+                }
+            }
+        } else if let Some(small_verb) = self.parse_small_verb()? {
+            match self.parse_as_pattern()? {
+                Some(arrow_rhs) => Some(Pattern::View(small_verb, Box::new(arrow_rhs))),
+                None => return Err(self.expected("`->'")),
+            }
+        } else {
+            None
         };
 
+        let elem = match nested_or_view_pat {
+            Some(pat) => PatternElem::Pattern(pat),
+            None => match self.parse_small_pattern_elem()? {
+                Some(small_pat) => small_pat,
+                None => return Ok(None),
+            }
+        };
+
+        // Stranding
         let mut pat = match self.parse_small_pattern_elem()? {
             None => match elem {
                 PatternElem::Subarray(_) => return Ok(Some(elem)),
@@ -727,11 +790,9 @@ impl<'a> Parser<'a> {
             }
         };
 
-        while self.consume(&Token::RightArrow) {
-            match self.parse_pattern()? {
-                Some(next_pat) => pat = Pattern::As(Box::new(pat), Box::new(next_pat)),
-                None => return Err(self.expected("pattern after `->'")),
-            }
+        // As-patterns
+        while let Some(arrow_rhs) = self.parse_as_pattern()? {
+            pat = Pattern::As(Box::new(pat), Box::new(arrow_rhs));
         }
 
         Ok(Some(PatternElem::Pattern(pat)))
@@ -764,7 +825,7 @@ impl<'a> Parser<'a> {
         let mut small_verb = match self.peek() {
             Some(Token::C0Upper) => {
                 self.skip();
-                SmallVerb::PrimAdverbCall(
+                PrimAdverbCall(
                     PrimAdverb::Dot,
                     Box::new(SmallExpr::Noun(SmallNoun::Constant(Literal::Char(0))))
                 )
@@ -805,17 +866,18 @@ impl<'a> Parser<'a> {
                 }
                 Lambda(lambda)
             }
-            Some(&Token::PrimVerb(prim_verb)) => {
+            Some(&Token::PrimVerb(verb)) => {
                 self.skip();
-                SmallVerb::PrimVerb(PrimFunc::Verb(prim_verb))
+                PrimVerb(PrimFunc::Verb(verb))
             }
-            Some(&Token::PrimAdverb(prim_adverb)) => {
+            // Don't capture `_' here: the underscore produces a noun, and we're looking for a verb.
+            Some(&Token::PrimAdverb(adverb)) if !matches!(adverb, PrimAdverb::Underscore {..})  => {
                 self.skip();
                 // TODO: we have a problem; x .(func...) y parses as x .((func...) y), a monadic
                 // invocation of a .-derived verb whose operand is a stranded array of two elements
                 match self.parse_small_expr(/*stranding_allowed=*/false)? {
-                    Some(adverb_operand) => PrimAdverbCall(prim_adverb, Box::new(adverb_operand)),
-                    None => return Err(self.expected(&format!("operand for adverb `{prim_adverb}'"))),
+                    Some(operand) => PrimAdverbCall(adverb, Box::new(operand)),
+                    None => return Err(self.expected(&format!("operand for adverb `{adverb}'"))),
                 }
             }
             Some(Token::LParen) => {
@@ -848,7 +910,7 @@ impl<'a> Parser<'a> {
         if let Some(&Token::PrimConjunction(prim_conj)) = self.peek() {
             self.skip();
             small_verb = match self.parse_small_expr(/*stranding_allowed=*/false)? {
-                Some(right_operand) => SmallVerb::PrimConjunctionCall(
+                Some(right_operand) => PrimConjunctionCall(
                     prim_conj, Box::new(SmallExpr::Verb(small_verb)), Box::new(right_operand)
                 ),
                 None => return Err(self.expected(&format!("right operand for conjunction `{prim_conj}'"))),
