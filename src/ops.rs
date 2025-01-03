@@ -545,7 +545,7 @@ impl<X: IsVal, Y: Atom> AtomConsumer<Y> for XVal<X> {
 
     #[inline]
     fn eat_atom_slice(self, y: &[Y]) -> Res<Val> {
-        self.x.dispatch(XAtomSlice { flip: self.flip, op: self.op, x: y })
+        self.x.dispatch(XAtomSlice { flip: !self.flip, op: self.op, x: y })
     }
 
     #[inline]
