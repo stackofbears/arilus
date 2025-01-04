@@ -67,35 +67,30 @@ macro_rules! impl_op2 {
         }
 
         impl Op2Val<$x_ty, $y_ty> for $self_type {
-            #[inline]
             fn op2val(x: $x_ty, y: $y_ty) -> Res<Val> {
                 Ok(Self::op(x, y)?.to_val())
             }
         }
 
         impl<'a> Op2Val<$x_ty, &'a [$y_ty]> for $self_type {
-            #[inline]
             fn op2val(x: $x_ty, y: &'a [$y_ty]) -> Res<Val> {
                 Ok(y.into_iter().copied().map(|y| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
             }
         }
 
         impl Op2Val<$x_ty, Vec<$y_ty>> for $self_type {
-            #[inline]
             fn op2val(x: $x_ty, y: Vec<$y_ty>) -> Res<Val> {
                 Ok(y.into_iter().map(|y| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
             }
         }
 
         impl<'a> Op2Val<&'a [$x_ty], $y_ty> for $self_type {
-            #[inline]
             fn op2val(x: &'a [$x_ty], y: $y_ty) -> Res<Val> {
                 Ok(x.into_iter().copied().map(|x| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
             }
         }
 
         impl<'a, 'b> Op2Val<&'a [$x_ty], &'b [$y_ty]> for $self_type {
-            #[inline]
             fn op2val(x: &'a [$x_ty], y: &'b [$y_ty]) -> Res<Val> {
                 match_lengths(x.len(), y.len())?;
                 Ok(iter::zip(x.iter().copied(), y.iter().copied()).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
@@ -103,7 +98,6 @@ macro_rules! impl_op2 {
         }
 
         impl<'a> Op2Val<&'a [$x_ty], Vec<$y_ty>> for $self_type {
-            #[inline]
             fn op2val(x: &'a [$x_ty], y: Vec<$y_ty>) -> Res<Val> {
                 match_lengths(x.len(), y.len())?;
                 Ok(iter::zip(x.iter().copied(), y).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
@@ -111,14 +105,12 @@ macro_rules! impl_op2 {
         }
 
         impl Op2Val<Vec<$x_ty>, $y_ty> for $self_type {
-            #[inline]
             fn op2val(x: Vec<$x_ty>, y: $y_ty) -> Res<Val> {
                 Ok(x.into_iter().map(|x| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
             }
         }
 
         impl<'a> Op2Val<Vec<$x_ty>, &'a [$y_ty]> for $self_type {
-            #[inline]
             fn op2val(x: Vec<$x_ty>, y: &'a [$y_ty]) -> Res<Val> {
                 match_lengths(x.len(), y.len())?;
                 Ok(iter::zip(x, y.iter().copied()).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
@@ -126,7 +118,6 @@ macro_rules! impl_op2 {
         }
 
         impl Op2Val<Vec<$x_ty>, Vec<$y_ty>> for $self_type {
-            #[inline]
             fn op2val(x: Vec<$x_ty>, y: Vec<$y_ty>) -> Res<Val> {
                 match_lengths(x.len(), y.len())?;
                 Ok(iter::zip(x, y).map(|(x, y)| Self::op(x, y)).collect::<Res<Vec<_>>>()?.to_val())
@@ -533,14 +524,14 @@ pub struct XVal<X> { pub flip: bool, pub op: AtomOp2, pub x: X }
 impl<X: IsVal> MultiValConsumer for XVal<X> {
     #[inline]
     fn eat_vals<Ys: ExactSizeIterator<Item: IsVal>>(self, ys: Ys) -> Res<Val> {
-        self.x.dispatch(XVals { flip: !self.flip, x: ys, op: self.op })
+        self.x.dispatch(XVals { flip: !self.flip, op: self.op, x: ys })
     }
 }
 
 impl<X: IsVal, Y: Atom> AtomConsumer<Y> for XVal<X> {
     #[inline]
     fn eat_atom(self, y: Y) -> Res<Val> {
-        self.x.dispatch(XAtom { flip: !self.flip, x: y, op: self.op })
+        self.x.dispatch(XAtom { flip: !self.flip, op: self.op, x: y })
     }
 
     #[inline]
