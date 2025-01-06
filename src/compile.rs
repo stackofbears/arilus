@@ -523,17 +523,14 @@ impl Compiler {
         // If we don't know the arity, assume the function is dyadic and then look at the generated
         // code to see which arguments were actually accessed.
         //
-        // Note that we don't need an ArgCheck at all if we know the arity this function will be
-        // called at.
-        let arg_check_index = if arity.is_none() {
-            Some(self.push(Instr::ArgCheck { arg_spec: ArgSpec::saturated(2) }))
-        } else {
-            None
-        };
-
+        // TODO: Optimize cases where the lambda is called immediately and no ArgCheck is needed
+        // (inlining probably supersedes this though).
+        let arg_check_index = self.push(Instr::ArgCheck { arg_spec: ArgSpec::saturated(2) });
         let assumed_arity = arity.unwrap_or(2);
         if assumed_arity > 2 {
-            return cold_err!("Can't compile attempt to use implicit-arg lambda at arity {assumed_arity} > 2");
+            return cold_err!(
+                "Can't compile attempt to use implicit-arg lambda at arity {assumed_arity} > 2"
+            );
         }
         
         let mut scope = HashMap::new();
@@ -559,7 +556,7 @@ impl Compiler {
         self.compile_block(exprs, true)?;
         self.code.push(Instr::Return);
 
-        if let (None, Some(y_start), Some(arg_check_index)) = (arity, y_start, arg_check_index) {
+        if let (None, Some(y_start)) = (arity, y_start) {
             // We compiled at arity 2, but we don't actually know what arity this function will be
             // called at. Scan the body to see what args were actually mentioned, and replace the
             // instructions that prepare unmentioned args with Nops.
@@ -1199,17 +1196,19 @@ fn get_prim_conjunction_rhs_operand_arity(
 }
 
 fn accessed(code: &[Instr], var: Var) -> bool {
+    use Instr::*;
     let mut i = 0;
     while i < code.len() {
         match code[i] {
-            Instr::PushVar { src } | Instr::PushVarLastUse { src } |
-            Instr::TuckVar { src } | Instr::TuckVarLastUse { src } if src == var => return true,
+            PushVar { src } | PushVarLastUse { src } |
+            TuckVar { src } | TuckVarLastUse { src } if src == var => return true,
 
-            Instr::CallOnArgs { var: called } if called == var => return true,
+            CallOnArgs { var: called } if called == var => return true,
 
-            Instr::StoreTo { dst } if dst == var => return true,
+            StoreTo { dst } if dst == var => return true,
 
-            Instr::MakeFunc { num_instructions } => i += num_instructions,
+            MakeFunc { num_instructions } => i += num_instructions,
+
             _ => {}
         }
         i += 1;
@@ -1218,18 +1217,19 @@ fn accessed(code: &[Instr], var: Var) -> bool {
 }
 
 fn decrement_locals(code: &mut [Instr], above_slot: usize) {
+    use Instr::*;
     use Place::*;
     let mut i = 0;
     while i < code.len() {
         match &mut code[i] {
-            Instr::PushVar        { src: Var { place: Local, slot } } |
-            Instr::PushVarLastUse { src: Var { place: Local, slot } } |
-            Instr::TuckVar        { src: Var { place: Local, slot } } |
-            Instr::TuckVarLastUse { src: Var { place: Local, slot } } |
-            Instr::CallOnArgs     { var: Var { place: Local, slot } } |
-            Instr::StoreTo        { dst: Var { place: Local, slot } } if *slot > above_slot => *slot -= 1,
+            PushVar        { src: Var { place: Local, slot } } |
+            PushVarLastUse { src: Var { place: Local, slot } } |
+            TuckVar        { src: Var { place: Local, slot } } |
+            TuckVarLastUse { src: Var { place: Local, slot } } |
+            CallOnArgs     { var: Var { place: Local, slot } } |
+            StoreTo        { dst: Var { place: Local, slot } } if *slot > above_slot => *slot -= 1,
 
-            Instr::MakeFunc { num_instructions } => i += *num_instructions,
+            MakeFunc { num_instructions } => i += *num_instructions,
             _ => {}
         }
         i += 1;
