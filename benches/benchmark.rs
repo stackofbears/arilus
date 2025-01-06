@@ -3,9 +3,7 @@
 extern crate criterion;
 
 use criterion::*;
-
-use arilus::Compiler;
-use arilus::Mem;
+use arilus::{compile::Compiler, vm::Mem};
 
 macro_rules! bench {
     ($name:ident, $prep:literal, $code:literal) => {

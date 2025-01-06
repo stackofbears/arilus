@@ -2,19 +2,18 @@ extern crate arilus;
 
 use std::{
     io::{self, Write},
-    fs,
     mem::swap,
 };
 
 use arilus::*;
 
-fn main() -> io::Result<()> {
+fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     match &args[..] {
         [_] => run_repl(),
-        [_, file] => run_program(&fs::read_to_string(&file)?),
+        [_, file] => run_file(&file),
         _ => err!("Too many command-line options"),
-    }.map_err(io::Error::other)
+    }
 }
 
 struct ReplSession {
@@ -130,12 +129,4 @@ fn count_nesting(tokens: &[lex::Token]) -> i32 {
         }
     }
     level
-}
-
-fn run_program(text: &str) -> Result<(), String> {
-    let code = compile::compile_string(text)?;
-    let mut mem = vm::Mem::new();
-    mem.code = code;
-    mem.execute_from_toplevel(0)?;
-    Ok(())
 }
