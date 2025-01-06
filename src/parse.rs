@@ -252,7 +252,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern_elems(&mut self) -> Many<PatternElem> {
-        self.parse_sequenced_expecting(&"pattern", Self::parse_pattern_elem)
+        println!("-parsing pattern elems");
+        let r = self.parse_sequenced_expecting(&"pattern", Self::parse_pattern_elem);
+        println!("-done parsing pattern elems");
+        r
     }
 
     fn parse_elems(&mut self) -> Many<Elem> {
@@ -280,6 +283,7 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         let mut saw_semicolon = false;
         loop {
+            dbg!("loop head:", self.tokens[self.token_index..].iter().take(5).collect::<Vec<_>>());
             if self.consume(&Token::Semicolon) {
                 ret.push(missing(self)?);
                 saw_semicolon = true;
@@ -292,6 +296,7 @@ impl<'a> Parser<'a> {
                     } else {
                         // There's nothing left, and we didn't see a semicolon at the end of the
                         // last iteration; must've just been some newlines.
+                        println!("nothing left");
                         break;
                     }
                 }
@@ -300,7 +305,7 @@ impl<'a> Parser<'a> {
 
             // We only want to continue if this parse is separated from the next by a semicolon
             // and/or newlines.
-            if !saw_semicolon & !self.skip_newlines() { break }
+            if !saw_semicolon & !self.skip_newlines() { println!("didn't see semicolon, no newlines"); break }
         }
         Ok(ret)
     }
@@ -654,7 +659,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_subarray_pattern(&mut self) -> Parsed<PatternElem> {
-        let dotdot_before_whitespace = match self.peek() {
+        let whitespace_after_dotdot = match self.peek() {
             Some(&Token::DotDot { before_whitespace }) => {
                 self.skip();
                 before_whitespace
@@ -663,7 +668,7 @@ impl<'a> Parser<'a> {
         };
 
         let elem = match self.peek() {
-            Some(Token::LowerName(name)) if !dotdot_before_whitespace => {
+            Some(Token::LowerName(name)) if !whitespace_after_dotdot => {
                 let name = name.clone();
                 self.skip();
                 PatternElem::Subarray(Some(name))
@@ -682,6 +687,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_as_pattern(&mut self) -> Parsed<Pattern> {
+        dbg!(self.tokens[self.token_index..].iter().take(5).collect::<Vec<_>>());
         if !self.consume(&Token::RightArrow) { return Ok(None); }
         let arrow_rhs = self.parse_pattern()?;
         if arrow_rhs.is_none() {
@@ -789,6 +795,7 @@ impl<'a> Parser<'a> {
                 Pattern::Array(stranded_pats)
             }
         };
+        println!("after stranding");
 
         // As-patterns
         while let Some(arrow_rhs) = self.parse_as_pattern()? {
