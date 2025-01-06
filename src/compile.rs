@@ -1174,9 +1174,9 @@ fn get_prim_adverb_operand_arity(
     use PrimAdverb::*;
     match prim {
         Underscore {..} => None,  // TODO is this right?
-        AtColon => Some(1),
+        AtColon | P | Q => Some(1),
         Tilde | Backslash | BackslashColon | Runs => Some(2),
-        Dot | SingleQuote | Backtick | BacktickColon | P | Q => derived_verb_arity,
+        Dot | SingleQuote | Backtick | BacktickColon => derived_verb_arity,
     }
 }
 
