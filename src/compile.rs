@@ -520,16 +520,17 @@ impl Compiler {
     }
 
     fn compile_short_lambda(&mut self, exprs: &[Expr], arity: Option<u32>) -> Res<()> {
+        let arg_check_index = self.push(Instr::Nop);
+
         // If we don't know the arity, assume the function is dyadic and then look at the generated
         // code to see which arguments were actually accessed.
         //
         // TODO: Optimize cases where the lambda is called immediately and no ArgCheck is needed
         // (inlining probably supersedes this though).
-        let arg_check_index = self.push(Instr::ArgCheck { arg_spec: ArgSpec::saturated(2) });
         let assumed_arity = arity.unwrap_or(2);
         if assumed_arity > 2 {
             return cold_err!(
-                "Can't compile attempt to use implicit-arg lambda at arity {assumed_arity} > 2"
+                "It's invalid to call an implicit-arg lambda at arity {assumed_arity} > 2"
             );
         }
         
@@ -541,12 +542,14 @@ impl Compiler {
             self.code.push(Instr::StoreTo { dst: local_var(0) });
         }
 
-        // y_start is the start of the instructions that should be replaced with Nops if y is never
-        // actually accessed.
+        // y_start marks the start of the instructions that should be replaced with Nops if y is
+        // never actually accessed.
         let y_start = if assumed_arity == 2 {
+            self.code[arg_check_index] = Instr::ArgCheck { arg_spec: ArgSpec::saturated(2) };
             scope.insert("y".to_string(), local_var(1));
             Some(self.push(Instr::StoreTo { dst: local_var(1) }))
         } else {
+            self.code[arg_check_index] = Instr::ArgCheck { arg_spec: ArgSpec::saturated(1) };
             None
         };
 
@@ -556,7 +559,7 @@ impl Compiler {
         self.compile_block(exprs, true)?;
         self.code.push(Instr::Return);
 
-        if let (None, Some(y_start)) = (arity, y_start) {
+        if let Some(y_start) = y_start {
             // We compiled at arity 2, but we don't actually know what arity this function will be
             // called at. Scan the body to see what args were actually mentioned, and replace the
             // instructions that prepare unmentioned args with Nops.
@@ -579,6 +582,10 @@ impl Compiler {
                     self.fill_with_nop(y_start..body_start);
                 }
             }
+        } else if !accessed(&self.code[body_start..], local_var(0)) {
+            decrement_locals(&mut self.code[body_start..], 0);
+            self.code[arg_check_index] = Instr::ArgCheck { arg_spec: ArgSpec::saturated(0) };
+            self.fill_with_nop(arg_check_index+1..body_start);
         }
 
         Ok(())

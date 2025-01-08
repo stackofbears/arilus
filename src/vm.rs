@@ -2171,9 +2171,13 @@ fn prim_append(x: Val, y: Val) -> Res<Val> {
 
         (x, y) => match (iter_non_atom(x.clone()), iter_non_atom(y.clone())) {
             (None, None) => Vals(Rc::new(vec![x, y])),
-            (Some(iter), None) => Vals(many_then_one(iter, y)),
-            (None, Some(iter)) => Vals(one_then_many(x, iter)),
-            (Some(x), Some(y)) => Vals(many_then_many(x, y)),
+            (Some(iter), None) =>
+                if iter.len() == 0 { y.singleton() } else { Vals(many_then_one(iter, y)) }
+            (None, Some(iter)) =>
+                if iter.len() == 0 { x.singleton() } else { Vals(one_then_many(x, iter)) }
+            (Some(x_iter), Some(y_iter)) =>
+                if x_iter.len() == 0 { y } else if y_iter.len() == 0 { x }
+                else { Vals(many_then_many(x_iter, y_iter)) }
         }
     };
     Ok(val)

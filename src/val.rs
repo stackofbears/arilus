@@ -189,6 +189,16 @@ impl Val {
             Vals(rc) => Ok(Rc::unwrap_or_clone(rc)),
         }
     }
+
+    pub fn singleton(self) -> Val {
+        use Val::*;
+        match self {
+            Char(c) => U8s(Rc::new(vec![c])),
+            Int(i) => I64s(Rc::new(vec![i])),
+            Float(f) => F64s(Rc::new(vec![f])),
+            val => Vals(Rc::new(vec![val])),
+        }
+    }
 }
 
 // impls for sorting.
