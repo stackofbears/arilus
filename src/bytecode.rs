@@ -333,6 +333,31 @@ impl ArgSpec {
         self.arity() - self.count_args()
     }
 
+    // `more` describes the application of an already-partially-applied ArgSpec `self` to further
+    // arguments. This function lines up the bits in `more` with the 0s in `self`; that is, `more`
+    // fills in `self`'s missing args. Example:
+    // 
+    //     F: {[w; x; y; z] ...}
+    //     G: F[_; x; _; z]  \ self = 0b1_0101
+    //     G[w; _]           \ more = 0b1_10
+    //
+    //   Extract masks:
+    //     0101
+    //       10
+    //
+    //   Line up bits of more with 0s of self:
+    //     0101
+    //     1000
+    //       ^ this is the original 0 from `more`, the rest are used to fill
+    // 
+    //   Or together:
+    //     1101
+    //
+    //   Put arity bit back (in the same location as `self`'s):
+    //     0b1_1101
+    //
+    //   So this call of `G` means `F` is being called with [w; x; _; z].
+    //   
     // Returns None if `more.arity()` != self.missing_args()`
     pub fn apply_more(self, more: Self) -> Result<Self, ArityMismatch> {
         {
