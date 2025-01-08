@@ -452,7 +452,7 @@ pub fn amend(x: Val, i: Val, new_val: Val) -> Res<Val> {
     fn to_index(i: i64, len: usize) -> usize {
         if i >= 0 { i as usize } else { offset_by(len, i) }  // TODO overflow?
     }
-    fn update<A>(slice: &mut [A], i: i64, new: A) -> Res<()> {
+    fn update_in_place<A>(slice: &mut [A], i: i64, new: A) -> Res<()> {
         match slice.get_mut(to_index(i, slice.len())) {
             Some(item) => { *item = new; Ok(()) }
             None => Err(oob(i, slice.len())),
@@ -467,12 +467,12 @@ pub fn amend(x: Val, i: Val, new_val: Val) -> Res<Val> {
     where Rc<Vec<A>>: ToVal, Vec<A>: ToVal {
         match Rc::get_mut(&mut rc) {
             Some(vec_ref) => {
-                update(vec_ref, i, new)?;
+                update_in_place(vec_ref, i, new)?;
                 Ok(rc.to_val())
             }
             None => {
                 let mut vec: Vec<A> = rc.to_vec();
-                update(vec.as_mut_slice(), i, new)?;
+                update_in_place(vec.as_mut_slice(), i, new)?;
                 Ok(vec.to_val())
             }
         }
@@ -493,7 +493,7 @@ pub fn amend(x: Val, i: Val, new_val: Val) -> Res<Val> {
             Err(_atom) => amend_atom(i, val),
             Ok(mut vec) => {
                 // x has a uniform type that `val` doesn't match.
-                update(&mut vec, i, val)?;
+                update_in_place(&mut vec, i, val)?;
                 Ok(vec.to_val())
             }
         }

@@ -642,6 +642,9 @@ impl Mem {
     }
 
     fn consuming_load(&mut self, var: Var) -> Val {
+        // Note that it may be possible to observe this 0 in cases like `a: a (some_verb)` if
+        // some_verb updates the variable's referent in-place but an error occurs before we can
+        // store it back in a.
         let mut ret = Val::Int(0);  // TODO
         let frame = self.current_frame_mut();
         match var.place {
