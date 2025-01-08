@@ -970,6 +970,10 @@ impl Mem {
                         0b1_01 | 0b1_10 => prim::subtract(new_val, &bound_args[0]),
                         _ => todo!(),
                     }
+                    UnappliedFunc::Prim(PrimFunc::Index) => match bound_arg_spec.raw() {
+                        0b1_01 => prim::amend(x, bound_args[0].clone(), new_val),
+                        _ => todo!(),
+                    }
                     _ => todo!("Partially applied inverses"),
                 }
             }
@@ -1637,6 +1641,7 @@ impl Mem {
         use Val::*;
         let val = match (x.as_val(), y.as_val()) {
             (Int(_) | Char(_) | Float(_), &Int(i)) => return index_atom(x, i),
+            (Function(_), _) => return self.call_monad(&x, y.clone()),
             (Char(ch), I64s(is)) => U8s(Rc::new(traverse(&**is, |i| index_atom(ch, *i))?)),
             (Int(int), I64s(is)) => I64s(Rc::new(traverse(&**is, |i| index_atom(int, *i))?)),
             (Float(float), I64s(is)) => F64s(Rc::new(traverse(&**is, |i| index_atom(float, *i))?)),
@@ -1650,7 +1655,7 @@ impl Mem {
             (Vals(vs), I64s(is)) => collect_list(is.iter().map(|i| index(vs, *i).cloned()))?,
             (Char(_) | Int(_) | Float(_) | U8s(_) | I64s(_) | F64s(_) | Vals(_), Vals(is)) =>
                 collect_list(is.iter().map(|i| self.prim_index(x, i)))?,
-            _ => return self.call_monad(&x, y.clone()),
+            (_, non_int) => return cold_err!("invalid index\nExpected integer, got {non_int:?}"),
         };
         Ok(val)
     }
@@ -2272,8 +2277,4 @@ fn for_each(mem: &mut Mem, f: &Val, x: Val) -> Res<Val> {
 
 fn to_string_or<A: ToString>(thing: Option<A>, default: &str) -> String {
     thing.map_or_else(|| default.to_string(), |x| x.to_string())
-}
-
-fn offset_by(n: usize, offset: i64) -> usize {
-    (n as i64 + offset) as usize
 }

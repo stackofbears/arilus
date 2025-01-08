@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::lex::*;
-use crate::util::{cold, float_as_int, match_lengths};
+use crate::util::{cold, float_as_int, match_lengths, Res};
 use crate::bytecode::{PrimFunc, ArgSpec};
 
 // The Val representation isn't very efficient for now.
@@ -176,6 +176,17 @@ impl Val {
             I64s(vec) => Some(vec.len()),
             F64s(vec) => Some(vec.len()),
             Vals(vec) => Some(vec.len()),
+        }
+    }
+
+    pub fn to_vals(self) -> Result<Vec<Val>, Val> {
+        use Val::*;
+        match self {
+            atom!() => Err(self),
+            U8s(rc) => Ok(rc.iter().copied().map(Char).collect()),
+            I64s(rc) => Ok(rc.iter().copied().map(Int).collect()),
+            F64s(rc) => Ok(rc.iter().copied().map(Float).collect()),
+            Vals(rc) => Ok(Rc::unwrap_or_clone(rc)),
         }
     }
 }
@@ -520,7 +531,7 @@ impl Iterator for ZippedVals {
     }
 }
 
-pub fn zip_vals(x: Val, y: Val) -> Result<Result<ZippedVals, String>, (Val, Val)> {
+pub fn zip_vals(x: Val, y: Val) -> Result<Res<ZippedVals>, (Val, Val)> {
     match (x.len(), y.len()) {
         (None, None) => return Err((x, y)),
         (Some(xlen), Some(ylen)) => if let Err(err) = match_lengths(xlen, ylen) { return Ok(Err(err)) }

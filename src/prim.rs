@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::ops::{self, IsVal, ToVal, Op2Val, AtomOp2, dispatch_to_atoms};
 use crate::val::*;
-use crate::util::{cold, err, cold_err, float_as_int, Empty, Res};
+use crate::util::{cold, err, cold_err, float_as_int, offset_by, Empty, Res};
 
 pub fn add<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
     use Val::*;
@@ -441,5 +441,71 @@ pub fn parse_float(x: &Val) -> Res<Val> {
         }
         Vals(vals) => collect_list(vals.iter().map(parse_float)),
         _ => cold_err!("failed parse; expected string, got {}", x.type_name()),
+    }
+}
+
+pub fn amend(x: Val, i: Val, new_val: Val) -> Res<Val> {
+    #[cold]
+    fn oob(i: i64, len: usize) -> String {
+        format!("index out of bounds\nRequested index {i}, but length is {len}")
+    }
+    fn to_index(i: i64, len: usize) -> usize {
+        if i >= 0 { i as usize } else { offset_by(len, i) }  // TODO overflow?
+    }
+    fn update<A>(slice: &mut [A], i: i64, new: A) -> Res<()> {
+        match slice.get_mut(to_index(i, slice.len())) {
+            Some(item) => { *item = new; Ok(()) }
+            None => Err(oob(i, slice.len())),
+        }
+    }
+    fn amend_atom(i: i64, new_val: Val) -> Res<Val> {
+        let len = 1;
+        if to_index(i, len) == 0 { Ok(new_val) } else { Err(oob(i, len)) }
+    }
+
+    fn amend_rc<A: Clone>(mut rc: Rc<Vec<A>>, i: i64, new: A) -> Res<Val>
+    where Rc<Vec<A>>: ToVal, Vec<A>: ToVal {
+        match Rc::get_mut(&mut rc) {
+            Some(vec_ref) => {
+                update(vec_ref, i, new)?;
+                Ok(rc.to_val())
+            }
+            None => {
+                let mut vec: Vec<A> = rc.to_vec();
+                update(vec.as_mut_slice(), i, new)?;
+                Ok(vec.to_val())
+            }
+        }
+    }
+
+    use Val::*;
+    match (x, zip_vals(i, new_val)) {
+        // Err means both i and new_val are atoms.
+        (U8s(rc), Err((Int(i), Char(new)))) => amend_rc(rc, i, new),
+        (I64s(rc), Err((Int(i), Int(new)))) => amend_rc(rc, i, new),
+        (F64s(rc), Err((Int(i), Float(new)))) => amend_rc(rc, i, new),
+
+        // TODO: we may benefit from squashing here if `val` replaces the only non-uniform item of
+        // x, as in 1 "a" 3 (@ 1)<-2
+        (Vals(rc), Err((Int(i), val))) => amend_rc(rc, i, val),
+
+        (x, Err((Int(i), val))) => match x.to_vals() {
+            Err(_atom) => amend_atom(i, val),
+            Ok(mut vec) => {
+                // x has a uniform type that `val` doesn't match.
+                update(&mut vec, i, val)?;
+                Ok(vec.to_val())
+            }
+        }
+
+        (_, Err((non_int, _))) => cold_err!("invalid index\nExpected integer, got {non_int:?}"),
+
+        // TODO avoid repeated matches on x.
+        (mut x, Ok(zipped)) => {
+            for (i, new_val) in zipped? {
+                x = amend(x, i, new_val)?;
+            }
+            Ok(x)
+        }
     }
 }

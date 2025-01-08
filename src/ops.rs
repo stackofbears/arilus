@@ -1,7 +1,7 @@
 use std::iter;
 use std::rc::Rc;
 
-use crate::util::{length_mismatch_error, match_lengths, Res};
+use crate::util::{length_mismatch_error, match_lengths, Either, Res};
 use crate::val::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub enum AtomOp2 {
 }
 
 pub trait Op2<X, Y> {
-    type Out: ToVal + VecToVal;
+    type Out;
     fn op(x: X, y: Y) -> Res<Self::Out>;
 }
 
@@ -213,7 +213,6 @@ impl_op2!(
 );
 
 pub enum Pow {}
-pub enum Either<A, B> { Left(A), Right(B) }
 
 impl ToVal for Either<i64, f64> {
     #[inline]
@@ -225,19 +224,18 @@ impl ToVal for Either<i64, f64> {
     }
 }
 
-impl VecToVal for Either<i64, f64> {
-    #[inline]
-    fn vec_to_val(v: Vec<Self>) -> Val {
+impl ToVal for Vec<Either<i64, f64>> {
+    fn to_val(self) -> Val {
         use Either::*;
-        let mut ints: Vec<i64> = Vec::with_capacity(v.len());
-        for i in 0..v.len() {
-            match &v[i] {
+        let mut ints: Vec<i64> = Vec::with_capacity(self.len());
+        for i in 0..self.len() {
+            match &self[i] {
                 Left(int) => ints.push(*int),
                 Right(float) => {
                     let mut floats: Vec<f64> = ints.drain(..).map(|int| int as f64).collect();
                     floats.push(*float);
-                    for j in (i+1)..v.len() {
-                        floats.push(match &v[j] {
+                    for j in (i+1)..self.len() {
+                        floats.push(match &self[j] {
                             Left(int) => *int as f64,
                             Right(float) => *float,
                         });
@@ -326,33 +324,30 @@ impl ToVal for NoValEmptyEnum {
     fn to_val(self) -> Val { unsafe { std::hint::unreachable_unchecked() } }
 }
 
-pub trait VecToVal: Sized {
-    fn vec_to_val(x: Vec<Self>) -> Val;
+impl ToVal for Rc<Vec<u8>> {
+    #[inline]
+    fn to_val(self) -> Val { Val::U8s(self) }
+}
+impl ToVal for Rc<Vec<i64>> {
+    #[inline]
+    fn to_val(self) -> Val { Val::I64s(self) }
+}
+impl ToVal for Rc<Vec<f64>> {
+    #[inline]
+    fn to_val(self) -> Val { Val::F64s(self) }
+}
+impl ToVal for Rc<Vec<Val>> {
+    #[inline]
+    fn to_val(self) -> Val { Val::Vals(self) }
+}
+impl ToVal for Rc<Vec<NoValEmptyEnum>> {
+    #[inline]
+    fn to_val(self) -> Val { Val::empty_list() }
 }
 
-impl VecToVal for u8 {
+impl<A> ToVal for Vec<A> where Rc<Vec<A>>: ToVal {
     #[inline]
-    fn vec_to_val(v: Vec<Self>) -> Val { Val::U8s(Rc::new(v)) }
-}
-impl VecToVal for i64 {
-    #[inline]
-    fn vec_to_val(v: Vec<Self>) -> Val { Val::I64s(Rc::new(v)) }
-}
-impl VecToVal for f64 {
-    #[inline]
-    fn vec_to_val(v: Vec<Self>) -> Val { Val::F64s(Rc::new(v)) }
-}
-impl VecToVal for Val {
-    #[inline]
-    fn vec_to_val(v: Vec<Self>) -> Val { Val::Vals(Rc::new(v)) }
-}
-impl VecToVal for NoValEmptyEnum {
-    #[inline]
-    fn vec_to_val(_: Vec<NoValEmptyEnum>) -> Val { Val::empty_list() }
-}
-
-impl<A> ToVal for Vec<A> where A: VecToVal {
-    fn to_val(self) -> Val { <A as VecToVal>::vec_to_val(self) }
+    fn to_val(self) -> Val { Rc::new(self).to_val() }
 }
 
 fn match_lengths_flipped(xlen: usize, ylen: usize, flip: bool) -> Res<()> {

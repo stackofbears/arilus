@@ -4,6 +4,10 @@ pub type Res<A> = Result<A, String>;
 #[derive(Debug)]
 pub enum Empty {}
 
+// Like Result, but without the implied error.
+#[derive(Debug)]
+pub enum Either<A, B> { Left(A), Right(B) }
+
 macro_rules! irrefutable {
     ($e:expr, $p:pat => $body:expr) => {
         match $e { $p => $body, _ => unreachable!() }
@@ -80,3 +84,6 @@ where I: IntoIterator,
     Result::from_iter(xs.into_iter().map(f))
 }
 
+pub fn offset_by(n: usize, offset: i64) -> usize {
+    (n as i64 + offset) as usize
+}

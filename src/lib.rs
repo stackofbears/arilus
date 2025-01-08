@@ -12,8 +12,8 @@ pub mod util;
 pub mod val;
 pub mod vm;
 
+use crate::util::Res;
 use std::{fs, path::Path};
-use crate::{compile::Compiler, util::Res, vm::Mem};
 
 pub fn run_file<P: AsRef<Path> + std::fmt::Display>(path: P) -> Res<()> {
     let code = &fs::read_to_string(&path)
@@ -33,6 +33,7 @@ mod tests {
     use super::*;
 
     fn eval_string(code: &str) -> Res<val::Val> {
+        use crate::{compile::Compiler, vm::Mem};
         let mut compiler = Compiler::new();
         let code_start = compiler.code.len();
 

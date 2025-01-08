@@ -189,8 +189,6 @@ enum StrandedElem {
     Underscore,
 }
 
-enum Either<A, B> { Left(A), Right(B) }
-
 impl StrandedElem {
     fn to_elem(self) -> Elem {
         match self {
