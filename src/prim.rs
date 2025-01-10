@@ -2,8 +2,8 @@ use std::cmp;
 use std::rc::Rc;
 
 use crate::ops::{self, IsVal, ToVal, Op2Val, AtomOp2, dispatch_to_atoms};
-use crate::val::*;
 use crate::util::{cold, err, cold_err, float_as_int, offset_by, Empty, Res};
+use crate::val::*;
 
 pub fn add<X: IsVal, Y: IsVal>(x: X, y: Y) -> Res<Val> {
     use Val::*;

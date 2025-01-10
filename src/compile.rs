@@ -68,6 +68,9 @@ impl Compiler {
         let result = self.compile_block(exprs, true);
         if result.is_ok() {
             self.eliminate_unconditional_jump_chains();
+            let scope = self.scopes.last().unwrap();
+            let num_locals = next_local_slot(&scope);
+            self.mark_last_local_uses(start_of_new_code, num_locals);
         } else {
             // Clean up everything compiled during this invocation.
             self.scopes.truncate(1);  // Reset to global scope
@@ -425,7 +428,8 @@ impl Compiler {
                 self.code[make_func_index] = Instr::MakeFunc { num_instructions };
 
                 let final_scope = self.scopes.pop().unwrap();
-                self.mark_last_local_uses(make_func_index, next_local_slot(&final_scope));
+                let num_locals = next_local_slot(&final_scope);
+                self.mark_last_local_uses(make_func_index + 1, num_locals);
 
                 // Tell the outer scope how to populate the closure environment.
                 let mut closure_vars: Vec<(&String, &Var)> =
@@ -919,20 +923,24 @@ impl Compiler {
         scope.retain(|_, var| var.place == Place::ClosureEnv || var.slot < too_high);
     }
 
-    // Mark the last uses of locals in the function that was just compiled. This starts at the end
-    // of self.code and works backwards.
-    // 
+    // Mark the last uses of locals in the code that was just compiled. This starts at the end of
+    // self.code and works backwards.
+    //
+    // `code_start_index` should point at the first executed instruction of the code region we're
+    // examining; this means if we're marking the last local uses in a function scope, it should be
+    // one past the MakeFunc instruction.
+    //
     // We may need to take special care to make sure this works if we add imperative loops.
-    fn mark_last_local_uses(&mut self, make_func_index: usize, num_local_vars_in_scope: usize) {
+    fn mark_last_local_uses(&mut self, code_start_index: usize, num_local_vars_in_scope: usize) {
         // We start at the end of a function and go backwards, marking the first use we encounter of
         // each local. The bodies of inner function definitions have already been processed, so we
-        // need to know where their ends are and how far back to go to skip to their start.
+        // need to know where they end and how far back to go to skip to where they start.
         struct Span {
             start: usize,  // Index of MakeFunc
             end: usize,    // Index of instruction just after Return
         }
         let mut inner_definition_spans = Vec::new();
-        let mut i = make_func_index + 1;
+        let mut i = code_start_index;
         while i < self.code.len() {
             if let Instr::MakeFunc { num_instructions } = self.code[i] {
                 inner_definition_spans.push(Span { start: i, end: i + num_instructions + 1 });
@@ -967,8 +975,11 @@ impl Compiler {
         // branch.
         let mut else_branch_last_uses: Vec<Vec<usize>> = vec![];
 
-        let mut i = self.code.len() - 1;
-        while i > make_func_index {
+        // Note: we manage `i` like this because `code_start_index` may be 0, leading to underflow
+        // if we use `i >= code_start_index` as the condition and decrement `i` at the end.
+        let mut i = self.code.len();
+        while i > code_start_index {
+            i -= 1;
             match self.code[i] {
                 Instr::StoreTo { dst } if dst.is_local() => { set(&mut last_use_seen, dst.slot, false); }
 
@@ -1015,8 +1026,6 @@ impl Compiler {
                     inner_definition_spans.pop();
                 }
             }
-
-            i -= 1;
         }
     }
 }
