@@ -54,8 +54,9 @@
 (defconst arilus-symbol-adverbs-len-1
   (regexp-opt (split-string ". ' ` ~ \\")))
 
+;; <- isn't an adverb, but let's highlight it like one.
 (defconst arilus-symbol-adverbs-len-2
-  (regexp-opt (split-string "\\: `: @:")))
+  (regexp-opt (split-string "\\: `: @: <-")))
 
 ;; TODO It would be nice to highlight colon assignments in a different color,
 ;; but we can't parse the LHS with a regex because it's an arbitrarily-nested

@@ -1123,6 +1123,14 @@ impl Mem {
                 self.call_explicit(explicit, ArgSpec::saturated(2))?;
                 Ok(self.pop())
             }
+            
+            Yield => match &self.current_frame().yielding_to {
+                None => Ok(Val::prim_func(PrimFunc::Identity)),
+                Some(yielding_to) => Ok(Val::conjunction_derived_func(
+                    PrimConjunction::Compose, self.call_monad(&x, yielding_to.clone())?, y
+                )),
+            }
+
             _ => todo!("{x:?} {prim:?} {y:?}"),
         }
     }
@@ -1604,9 +1612,8 @@ impl Mem {
 
     // `i` indexes from the top of the stack, so i=0 is stack.top().
     fn progressive_index_loop(&mut self, x: &Val, arg_spec: &mut ArgSpecIter, i: usize) -> Res<Val> {
-        let arg_provided = match arg_spec.next() {
-            None => return Ok(x.clone()),
-            Some(arg_provided) => arg_provided,
+        let Some(arg_provided) = arg_spec.next() else {
+            return Ok(x.clone());
         };
 
         if arg_provided {
@@ -1883,9 +1890,8 @@ fn prim_reverse(x: Val) -> Val {
 
 // TODO reshape on list y
 fn prim_take(x: Val, y: &Val) -> Res<Val> {
-    let count = match y {
-        &Val::Int(i) => i,
-        _ => return cold_err!("Invalid right argument {y:?}"),
+    let &Val::Int(count) = y else {
+        return cold_err!("Invalid right argument {y:?}");
     };
     take_with_i64(x, count)
 }
@@ -1923,9 +1929,8 @@ fn take_with_i64(x: Val, count: i64) -> Res<Val> {
 
 // TODO list y?
 fn prim_drop(x: Val, y: &Val) -> Res<Val> {
-    let count = match y {
-        &Val::Int(i) => i,
-        _ => return cold_err!("Invalid right argument {y:?}"),
+    let &Val::Int(count) = y else {
+        return cold_err!("Invalid right argument {y:?}");
     };
     let len = x.len().unwrap_or(1) as i64;
     let take_count = if count < 0 {
